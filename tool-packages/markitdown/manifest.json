@@ -1,0 +1,132 @@
+{
+  "tool_id": "document.markitdown_convert",
+  "name": "MarkItDown 文档转 Markdown",
+  "description": "把本地文档转换为适合模型读取的 Markdown 文本。",
+  "version": "0.1.0",
+  "source_type": "external_python_package",
+  "license": "MIT",
+  "runtime": "python_sidecar",
+  "package": {
+    "name": "markitdown",
+    "source": "github",
+    "upstreamUrl": "https://github.com/microsoft/markitdown",
+    "lockedVersion": "0.1.5"
+  },
+  "entrypoint": "python/tools/markitdown_tool.py",
+  "capabilities": ["document.convert.markdown"],
+  "operations": [
+    {
+      "name": "convert_local_file",
+      "description": "把单个本地文件转换为 Markdown artifact。"
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": ["operation", "input_path", "output_path"],
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["convert_local_file"],
+        "description": "要执行的转换操作。"
+      },
+      "input_path": {
+        "type": "string",
+        "description": "项目内或附件中的待转换文档路径。"
+      },
+      "output_path": {
+        "type": "string",
+        "description": "写入 Markdown artifact 的输出路径。"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["text", "artifacts"],
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "转换后的 Markdown 文本。"
+      },
+      "artifacts": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "生成的 Markdown artifact 路径。"
+      },
+      "metadata": {
+        "type": "object",
+        "description": "可选的转换元数据。"
+      }
+    }
+  },
+  "permissions": [
+    "read_project_files",
+    "write_project_outputs",
+    "run_python_plugin"
+  ],
+  "examples": [
+    {
+      "title": "转换 Word 文档",
+      "input": {
+        "operation": "convert_local_file",
+        "input_path": "inputs/需求说明.docx",
+        "output_path": "artifacts/converted/需求说明.md"
+      }
+    },
+    {
+      "title": "转换 PDF 文档",
+      "input": {
+        "operation": "convert_local_file",
+        "input_path": "inputs/产品白皮书.pdf",
+        "output_path": "artifacts/converted/产品白皮书.md"
+      }
+    }
+  ],
+  "error_codes": [
+    "unsupported_format",
+    "input_not_found",
+    "path_outside_project",
+    "network_input_forbidden",
+    "dependency_missing",
+    "conversion_failed",
+    "output_write_failed",
+    "timeout"
+  ],
+  "timeout_policy": {
+    "seconds": 120
+  },
+  "artifact_policy": {
+    "writes_to": "artifacts/converted"
+  },
+  "dependency_policy": {
+    "python": ["markitdown[pdf,docx,pptx,xlsx]==0.1.5"]
+  },
+  "security_policy": {
+    "network": false,
+    "plugins": false,
+    "allowedInput": "project_or_attachment_file",
+    "allowedOutput": "project_artifacts_converted",
+    "maxFileSizeMb": 100
+  },
+  "node_templates": [
+    {
+      "nodeType": "fixed_tool",
+      "displayName": "文档转 Markdown",
+      "inputPorts": [
+        {
+          "id": "document-input",
+          "label": "文档",
+          "dataType": "document"
+        }
+      ],
+      "outputPorts": [
+        {
+          "id": "markdown-output",
+          "label": "Markdown",
+          "dataType": "text"
+        }
+      ]
+    }
+  ]
+}

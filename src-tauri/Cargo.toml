@@ -1,0 +1,26 @@
+[package]
+name = "alita"
+version = "0.1.0"
+description = "Alita"
+authors = ["Alita"]
+edition = "2021"
+
+[lib]
+name = "alita_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.6.1", features = [] }
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "=2.11.1", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"

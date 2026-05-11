@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "recentProjects": [
+    "D:\\Software Project\\Alita\\Alita files\\未命名工程.alita"
+  ],
+  "modelDirectories": [],
+  "modelStorageDir": "C:\\Users\\Drew\\AppData\\Local\\com.alita.ai-workbench\\models",
+  "models": [
+    {
+      "modelId": "662d6777-9500-4a1d-8387-f5cf283bd55c",
+      "name": "Qwen3.6-35B-A3B-UD-Q4_K_M",
+      "path": "D:\\Software Project\\Alita\\models\\Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+      "source": "recovered",
+      "runtime": "llama_cpp",
+      "fileExists": true,
+      "createdAt": "2026-05-11T13:55:25.793Z",
+      "updatedAt": "2026-05-11T13:55:25.793Z"
+    }
+  ],
+  "defaultModelId": "662d6777-9500-4a1d-8387-f5cf283bd55c",
+  "toolEnablement": {}
+}

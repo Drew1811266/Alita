@@ -1,0 +1,92 @@
+{
+  "tool_id": "document.read_write",
+  "name": "文档处理工具包",
+  "description": "读取 txt、md、docx，并导出 md 或 docx 文件。",
+  "version": "0.1.0",
+  "source_type": "python_plugin",
+  "license": "internal",
+  "entrypoint": "python/tools/document_tool.py",
+  "input_schema": {
+    "type": "object",
+    "required": ["operation", "input_paths", "output_path"],
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["read", "write_markdown", "write_docx"],
+        "description": "要执行的文档操作。"
+      },
+      "input_paths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "需要读取或转换的输入文件路径。"
+      },
+      "output_path": {
+        "type": "string",
+        "description": "写入 md 或 docx 的输出路径。"
+      },
+      "content": {
+        "type": "string",
+        "description": "写入文档时使用的正文内容。"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["artifacts"],
+    "properties": {
+      "artifacts": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "生成或读取到的文件产物路径。"
+      },
+      "text": {
+        "type": "string",
+        "description": "读取文档后提取的文本内容。"
+      }
+    }
+  },
+  "permissions": [
+    "read_project_files",
+    "write_project_outputs",
+    "run_python_plugin"
+  ],
+  "examples": [
+    {
+      "title": "读取多个文档",
+      "input": {
+        "operation": "read",
+        "input_paths": ["inputs/需求.md", "inputs/说明.txt"],
+        "output_path": "outputs/读取结果.md"
+      }
+    },
+    {
+      "title": "写入 Markdown",
+      "input": {
+        "operation": "write_markdown",
+        "input_paths": [],
+        "output_path": "outputs/总结.md",
+        "content": "这是自动生成的项目总结。"
+      }
+    },
+    {
+      "title": "导出 Word 文档",
+      "input": {
+        "operation": "write_docx",
+        "input_paths": [],
+        "output_path": "outputs/报告.docx",
+        "content": "这是自动生成的报告内容。"
+      }
+    }
+  ],
+  "error_codes": ["unsupported_format", "read_failed", "write_failed"],
+  "timeout_policy": {
+    "seconds": 60
+  },
+  "artifact_policy": {
+    "writes_to": "outputs"
+  }
+}

@@ -1,0 +1,23 @@
+[project]
+name = "alita-sidecar"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi",
+  "langgraph",
+  "markitdown[pdf,docx,pptx,xlsx]==0.1.5",
+  "pydantic",
+  "python-docx",
+  "uvicorn",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+package = ["pyinstaller"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+  "ignore:The default value of `allowed_objects` will change in a future version:langchain_core._api.deprecation.LangChainPendingDeprecationWarning"
+]
