@@ -26,6 +26,8 @@ Push-Location $repoRoot
 try {
     & (Join-Path $PSScriptRoot "check-windows-tauri-prereqs.ps1")
     . (Join-Path $PSScriptRoot "import-vs-dev-env.ps1")
+    . (Join-Path $PSScriptRoot "dev-model-env.ps1")
+    Set-AlitaDevModelEnvironment -RepoRoot $repoRoot | Out-Null
 
     $frontendListeners = Get-NetTCPConnection -LocalPort $frontendPort -State Listen -ErrorAction SilentlyContinue
     if ($frontendListeners) {
