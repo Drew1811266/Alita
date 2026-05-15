@@ -208,58 +208,60 @@ $samplePdf = Join-Path $fixtureRoot "sample-reference.pdf"
 $fakeImportModel = Join-Path $fixtureRoot "fake-import-model.gguf"
 $fakeScannedModel = Join-Path $scanModelRoot "fake-scanned-model.gguf"
 
-Set-Content -LiteralPath $sampleMarkdown -Encoding UTF8 -Value @"
-# Alita Release Validation
+Set-Content -LiteralPath $sampleMarkdown -Encoding UTF8 -Value @(
+  "# Alita Release Validation",
+  "",
+  "这是一份发布验收测试文档。",
+  "",
+  "- 目标：验证附件、节点图、流程运行和 artifact 输出。",
+  "- 输出：生成中文摘要报告。"
+)
 
-这是一份发布验收测试文档。
-
-- 目标：验证附件、节点图、流程运行和 artifact 输出。
-- 输出：生成中文摘要报告。
-"@
-
-Set-Content -LiteralPath $sampleText -Encoding UTF8 -Value @"
-Alita release validation text fixture
-测试重点：聊天、附件、节点执行、artifact 预览。
-"@
+Set-Content -LiteralPath $sampleText -Encoding UTF8 -Value @(
+  "Alita release validation text fixture",
+  "测试重点：聊天、附件、节点执行、artifact 预览。"
+)
 
 Set-Content -LiteralPath $fakeImportModel -Encoding ASCII -Value "fake gguf import fixture for preferences UI only"
 Set-Content -LiteralPath $fakeScannedModel -Encoding ASCII -Value "fake gguf scan fixture for preferences UI only"
 
+$fixtureScript = Join-Path $fixtureRoot "create-fixtures.py"
+Set-Content -LiteralPath $fixtureScript -Encoding UTF8 -Value @(
+  "from pathlib import Path",
+  "import os",
+  "from docx import Document",
+  "",
+  "docx_path = Path(os.environ['ALITA_SAMPLE_DOCX'])",
+  "doc = Document()",
+  "doc.add_heading('Alita Release Validation', level=1)",
+  "doc.add_paragraph('这是一份用于发布验收的 Word 附件。')",
+  "doc.add_paragraph('请整理为中文报告，并保留关键要点。')",
+  "doc.save(docx_path)",
+  "",
+  "pdf_path = Path(os.environ['ALITA_SAMPLE_PDF'])",
+  "objects = []",
+  "objects.append('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n')",
+  "objects.append('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n')",
+  "objects.append('3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n')",
+  "stream = 'BT /F1 24 Tf 72 720 Td (Alita Test PDF) Tj ET'",
+  "objects.append(f'4 0 obj\n<< /Length {len(stream)} >>\nstream\n{stream}\nendstream\nendobj\n')",
+  "objects.append('5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n')",
+  "content = '%PDF-1.4\n'",
+  "offsets = [0]",
+  "for obj in objects:",
+  "    offsets.append(len(content.encode('ascii')))",
+  "    content += obj",
+  "xref_offset = len(content.encode('ascii'))",
+  "content += f'xref\n0 {len(objects) + 1}\n'",
+  "content += '0000000000 65535 f \n'",
+  "for offset in offsets[1:]:",
+  "    content += f'{offset:010d} 00000 n \n'",
+  "content += f'trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n'",
+  "pdf_path.write_bytes(content.encode('ascii'))"
+)
 $env:ALITA_SAMPLE_DOCX = $sampleDocx
 $env:ALITA_SAMPLE_PDF = $samplePdf
-@'
-from pathlib import Path
-import os
-from docx import Document
-
-docx_path = Path(os.environ["ALITA_SAMPLE_DOCX"])
-doc = Document()
-doc.add_heading("Alita Release Validation", level=1)
-doc.add_paragraph("这是一份用于发布验收的 Word 附件。")
-doc.add_paragraph("请整理为中文报告，并保留关键要点。")
-doc.save(docx_path)
-
-pdf_path = Path(os.environ["ALITA_SAMPLE_PDF"])
-objects = []
-objects.append("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
-objects.append("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
-objects.append("3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n")
-stream = "BT /F1 24 Tf 72 720 Td (Alita Test PDF) Tj ET"
-objects.append(f"4 0 obj\n<< /Length {len(stream)} >>\nstream\n{stream}\nendstream\nendobj\n")
-objects.append("5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n")
-content = "%PDF-1.4\n"
-offsets = [0]
-for obj in objects:
-    offsets.append(len(content.encode("ascii")))
-    content += obj
-xref_offset = len(content.encode("ascii"))
-content += f"xref\n0 {len(objects) + 1}\n"
-content += "0000000000 65535 f \n"
-for offset in offsets[1:]:
-    content += f"{offset:010d} 00000 n \n"
-content += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
-pdf_path.write_bytes(content.encode("ascii"))
-'@ | python -
+python $fixtureScript
 
 Get-ChildItem -LiteralPath $fixtureRoot,$scanModelRoot -File |
   Select-Object Name,Length,FullName |
