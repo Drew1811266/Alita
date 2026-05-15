@@ -211,15 +211,15 @@ $fakeScannedModel = Join-Path $scanModelRoot "fake-scanned-model.gguf"
 Set-Content -LiteralPath $sampleMarkdown -Encoding UTF8 -Value @(
   "# Alita Release Validation",
   "",
-  "这是一份发布验收测试文档。",
+  "This is a release validation fixture document.",
   "",
-  "- 目标：验证附件、节点图、流程运行和 artifact 输出。",
-  "- 输出：生成中文摘要报告。"
+  "- Goal: validate attachment handling, graph generation, workflow execution, and artifact output.",
+  "- Output: generate a structured report."
 )
 
 Set-Content -LiteralPath $sampleText -Encoding UTF8 -Value @(
   "Alita release validation text fixture",
-  "测试重点：聊天、附件、节点执行、artifact 预览。"
+  "Focus: chat, attachments, node execution, and artifact preview."
 )
 
 Set-Content -LiteralPath $fakeImportModel -Encoding ASCII -Value "fake gguf import fixture for preferences UI only"
@@ -234,8 +234,8 @@ Set-Content -LiteralPath $fixtureScript -Encoding UTF8 -Value @(
   "docx_path = Path(os.environ['ALITA_SAMPLE_DOCX'])",
   "doc = Document()",
   "doc.add_heading('Alita Release Validation', level=1)",
-  "doc.add_paragraph('这是一份用于发布验收的 Word 附件。')",
-  "doc.add_paragraph('请整理为中文报告，并保留关键要点。')",
+  "doc.add_paragraph('This Word attachment is used for release validation.')",
+  "doc.add_paragraph('Summarize it into a structured report and preserve the key points.')",
   "doc.save(docx_path)",
   "",
   "pdf_path = Path(os.environ['ALITA_SAMPLE_PDF'])",
