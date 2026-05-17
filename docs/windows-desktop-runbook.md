@@ -75,6 +75,19 @@ npm run desktop:dev
 
 默认本地模型服务地址为 `http://127.0.0.1:8766`。默认 GPU 层数是 `all`，也可以把 `ALITA_LLAMA_GPU_LAYERS` 设置为 `auto` 或具体数字。如果没有设置 `ALITA_LLAMA_MODEL_PATH`，软件会跳过启动本地模型服务，Agent sidecar 和现有工作台功能仍然可以运行。
 
+## 本地 ASR 开发
+
+开发环境中，当 `ALITA_ASR_MODEL_PATH` 指向本机 Qwen3-ASR-1.7B 模型目录时，语音输入会启用。ASR 路径不会写入项目文件。
+
+示例：
+
+```powershell
+$env:ALITA_ASR_MODEL_PATH = "D:\Models\Qwen3-ASR-1.7B"
+npm run desktop:dev
+```
+
+第一次转写会在 CPU 上延迟加载 ASR 模型。如果环境变量缺失或运行时依赖未安装，麦克风按钮仍会显示，但会保持禁用状态。
+
 构建完成后，也可以直接运行 release 版程序做本地验证：
 
 ```powershell
