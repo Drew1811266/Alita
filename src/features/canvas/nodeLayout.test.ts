@@ -14,12 +14,13 @@ describe("createDocumentGraph", () => {
   it("creates a document graph with the required nodes and node types", () => {
     const graph = createDocumentGraph();
 
-    expect(graph.nodes).toHaveLength(5);
+    expect(graph.nodes).toHaveLength(6);
     expect(graph.nodes.map((node) => node.nodeId)).toEqual([
       "document-input",
       "document-parse",
       "content-organize",
       "report-generate",
+      "typst-export",
       "file-export",
     ]);
     expect(new Set(graph.nodes.map((node) => node.nodeType))).toEqual(
@@ -33,19 +34,21 @@ describe("createDocumentGraph", () => {
     const parse = nodeById(graph, "document-parse");
     const organize = nodeById(graph, "content-organize");
     const report = nodeById(graph, "report-generate");
+    const typst = nodeById(graph, "typst-export");
     const exportNode = nodeById(graph, "file-export");
 
     expect(input.position.y).toBeLessThan(parse.position.y);
     expect(parse.position.y).toBeLessThan(organize.position.y);
     expect(parse.position.y).toBeLessThan(report.position.y);
-    expect(organize.position.y).toBeLessThan(exportNode.position.y);
-    expect(report.position.y).toBeLessThan(exportNode.position.y);
+    expect(organize.position.y).toBeLessThan(typst.position.y);
+    expect(report.position.y).toBeLessThan(typst.position.y);
+    expect(typst.position.y).toBeLessThan(exportNode.position.y);
   });
 
   it("branches after parsing and merges before export", () => {
     const graph = createDocumentGraph();
 
-    expect(graph.edges).toHaveLength(5);
+    expect(graph.edges).toHaveLength(6);
     expect(graph.edges).toEqual(
       expect.arrayContaining([
         {
@@ -64,13 +67,18 @@ describe("createDocumentGraph", () => {
           target: "report-generate",
         },
         {
-          id: "content-organize-file-export",
+          id: "content-organize-typst-export",
           source: "content-organize",
-          target: "file-export",
+          target: "typst-export",
         },
         {
-          id: "report-generate-file-export",
+          id: "report-generate-typst-export",
           source: "report-generate",
+          target: "typst-export",
+        },
+        {
+          id: "typst-export-file-export",
+          source: "typst-export",
           target: "file-export",
         },
       ]),

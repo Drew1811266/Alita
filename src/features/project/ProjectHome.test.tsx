@@ -10,6 +10,7 @@ describe("ProjectHome", () => {
         error={null}
         onCreateProject={() => undefined}
         onOpenProject={() => undefined}
+        onOpenRecentProject={() => undefined}
         onOpenPreferences={() => undefined}
         recentProjects={["D:\\Projects\\文档整理测试.alita"]}
       />,
@@ -21,5 +22,22 @@ describe("ProjectHome", () => {
     expect(markup).toContain("最近工程");
     expect(markup).toContain("首选项");
     expect(markup).toContain("文档整理测试.alita");
+  });
+
+  it("renders recent projects as clickable project entries", () => {
+    const markup = renderToStaticMarkup(
+      <ProjectHome
+        error={null}
+        onCreateProject={() => undefined}
+        onOpenProject={() => undefined}
+        onOpenRecentProject={() => undefined}
+        onOpenPreferences={() => undefined}
+        recentProjects={["D:\\Projects\\Alita\\example.alita"]}
+      />,
+    );
+
+    expect(markup).toContain("recentProjectButton");
+    expect(markup).toContain('type="button"');
+    expect(markup).toContain("D:\\Projects\\Alita\\example.alita");
   });
 });

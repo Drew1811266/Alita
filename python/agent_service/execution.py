@@ -126,7 +126,39 @@ class DocumentFlowExecutor:
             )
             return NodeOutput(values={"report": content})
 
+        if node_id == "typst-export":
+            outline = _first_input_value(inputs, "outline")
+            report = _first_input_value(inputs, "report")
+            output_stem = f"report-{uuid4().hex[:8]}"
+            result = self.tool_executor.run(
+                ToolInvocation(
+                    tool_id="document.typst_compile",
+                    operation="compile_report_pdf",
+                    arguments={
+                        "title": Path(self.request.project_path).stem or "Alita Report",
+                        "outline": outline,
+                        "report": report,
+                        "source_output_path": str(
+                            self.artifact_dir / "typst" / f"{output_stem}.typ"
+                        ),
+                        "pdf_output_path": str(
+                            self.artifact_dir / "typst" / f"{output_stem}.pdf"
+                        ),
+                    },
+                    project_path=self.request.project_path,
+                    allowed_roots=self._allowed_roots(),
+                )
+            )
+            return NodeOutput(artifacts=result.artifacts, values=result.values)
+
         if node_id == "file-export":
+            compiled_artifact = _first_input_value(inputs, "artifact")
+            if compiled_artifact:
+                return NodeOutput(
+                    artifacts=_unique_artifacts_from_inputs(inputs),
+                    values={"artifact": compiled_artifact},
+                )
+
             outline = _first_input_value(inputs, "outline")
             report = _first_input_value(inputs, "report")
             output_path = self.artifact_dir / f"report-{uuid4().hex[:8]}.md"
@@ -544,6 +576,18 @@ def _first_input_value(inputs: dict[str, NodeOutput], key: str) -> str:
         if key in output.values:
             return output.values[key]
     return ""
+
+
+def _unique_artifacts_from_inputs(inputs: dict[str, NodeOutput]) -> list[str]:
+    artifacts: list[str] = []
+    seen: set[str] = set()
+    for output in inputs.values():
+        for artifact in output.artifacts:
+            if artifact in seen:
+                continue
+            artifacts.append(artifact)
+            seen.add(artifact)
+    return artifacts
 
 
 def _event_record(record: dict) -> dict:

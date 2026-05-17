@@ -27,4 +27,6 @@ pnpm-debug.log*
 .env.*
 
 .superpowers/
+.codex-run/
+docs/test-results/
 task*.png

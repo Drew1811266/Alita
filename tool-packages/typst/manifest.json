@@ -1,0 +1,148 @@
+{
+  "tool_id": "document.typst_compile",
+  "name": "Typst PDF 排版导出",
+  "description": "把 Alita 生成的报告内容写入 Typst 源文件，并调用本地 Typst CLI 编译为 PDF。",
+  "version": "0.1.0",
+  "source_type": "external_cli",
+  "license": "Apache-2.0",
+  "runtime": "python_sidecar",
+  "package": {
+    "name": "typst",
+    "source": "github",
+    "upstreamUrl": "https://github.com/typst/typst",
+    "lockedVersion": "0.14.2"
+  },
+  "entrypoint": "python/tools/typst_tool.py",
+  "capabilities": ["document.render.typst_pdf"],
+  "operations": [
+    {
+      "name": "compile_report_pdf",
+      "description": "把报告文本编译为 Typst 源文件和 PDF artifact。"
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": [
+      "operation",
+      "title",
+      "outline",
+      "report",
+      "source_output_path",
+      "pdf_output_path"
+    ],
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["compile_report_pdf"],
+        "description": "要执行的 Typst 编译操作。"
+      },
+      "title": {
+        "type": "string",
+        "description": "生成文档标题。"
+      },
+      "outline": {
+        "type": "string",
+        "description": "整理后的要点内容。"
+      },
+      "report": {
+        "type": "string",
+        "description": "报告正文内容。"
+      },
+      "source_output_path": {
+        "type": "string",
+        "description": "写入 .typ artifact 的路径。"
+      },
+      "pdf_output_path": {
+        "type": "string",
+        "description": "写入 .pdf artifact 的路径。"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["source", "artifact", "artifacts"],
+    "properties": {
+      "source": {
+        "type": "string",
+        "description": "生成的 Typst 源文件路径。"
+      },
+      "artifact": {
+        "type": "string",
+        "description": "生成的 PDF 文件路径。"
+      },
+      "artifacts": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "生成的 Typst 和 PDF artifact 路径。"
+      },
+      "metadata": {
+        "type": "object",
+        "description": "编译器与输出格式信息。"
+      }
+    }
+  },
+  "permissions": [
+    "write_project_outputs",
+    "run_local_cli"
+  ],
+  "examples": [
+    {
+      "title": "编译报告 PDF",
+      "input": {
+        "operation": "compile_report_pdf",
+        "title": "项目报告",
+        "outline": "一、背景\\n二、结论",
+        "report": "这是报告正文。",
+        "source_output_path": "artifacts/typst/report.typ",
+        "pdf_output_path": "artifacts/typst/report.pdf"
+      }
+    }
+  ],
+  "error_codes": [
+    "dependency_missing",
+    "compile_failed",
+    "output_write_failed",
+    "timeout"
+  ],
+  "timeout_policy": {
+    "seconds": 90
+  },
+  "artifact_policy": {
+    "writes_to": "artifacts/typst"
+  },
+  "dependency_policy": {
+    "cli": ["typst>=0.14.2"]
+  },
+  "security_policy": {
+    "network": false,
+    "plugins": false,
+    "allowedOutput": "project_artifacts_typst"
+  },
+  "node_templates": [
+    {
+      "nodeType": "fixed_tool",
+      "displayName": "Typst PDF 导出",
+      "inputPorts": [
+        {
+          "id": "outline-input",
+          "label": "整理内容",
+          "dataType": "json"
+        },
+        {
+          "id": "report-input",
+          "label": "报告正文",
+          "dataType": "text"
+        }
+      ],
+      "outputPorts": [
+        {
+          "id": "pdf-output",
+          "label": "PDF 文件",
+          "dataType": "artifact"
+        }
+      ]
+    }
+  ]
+}

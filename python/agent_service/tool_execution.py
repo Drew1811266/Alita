@@ -10,6 +10,7 @@ from agent_service.harness_errors import HarnessError
 from agent_service.schema_validation import validate_json_schema_subset
 from agent_service.tool_registry import ToolRegistry
 from tools.markitdown_tool import convert_local_file as convert_markitdown_local_file
+from tools.typst_tool import compile_report_pdf as compile_typst_report_pdf
 
 
 def _default_tool_packages_root() -> Path:
@@ -98,6 +99,8 @@ class ToolExecutor:
 
         if invocation.tool_id == "document.markitdown_convert":
             return self._run_markitdown(invocation)
+        if invocation.tool_id == "document.typst_compile":
+            return self._run_typst(invocation)
 
         raise HarnessError("unsupported_tool", f"unsupported tool: {invocation.tool_id}")
 
@@ -117,6 +120,29 @@ class ToolExecutor:
 
         return ToolResult(
             values={"text": result.text},
+            artifacts=result.artifacts,
+            metadata=result.metadata,
+        )
+
+    def _run_typst(self, invocation: ToolInvocation) -> ToolResult:
+        if invocation.operation != "compile_report_pdf":
+            raise HarnessError(
+                "unsupported_operation",
+                f"unsupported operation for {invocation.tool_id}: {invocation.operation}",
+            )
+
+        result = compile_typst_report_pdf(
+            title=str(invocation.arguments["title"]),
+            outline=str(invocation.arguments["outline"]),
+            report=str(invocation.arguments["report"]),
+            source_output_path=str(invocation.arguments["source_output_path"]),
+            pdf_output_path=str(invocation.arguments["pdf_output_path"]),
+            project_path=invocation.project_path,
+            allowed_roots=invocation.allowed_roots,
+        )
+
+        return ToolResult(
+            values={"source": result.source_path, "artifact": result.pdf_path},
             artifacts=result.artifacts,
             metadata=result.metadata,
         )

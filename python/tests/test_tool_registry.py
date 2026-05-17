@@ -89,5 +89,9 @@ def test_loads_real_tool_packages_with_legacy_document_manifest() -> None:
     markitdown = registry.get("document.markitdown_convert")
     assert "read_project_files" in markitdown.permissions
 
+    typst = registry.get("document.typst_compile")
+    assert registry.has_operation("document.typst_compile", "compile_report_pdf")
+    assert "write_project_outputs" in typst.permissions
+
     document_tool = registry.get("document.read_write")
     assert document_tool.runtime is None

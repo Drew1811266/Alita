@@ -219,8 +219,7 @@ fn recovers_default_model_from_previous_project_directory() {
     };
     let mut preferences = AppPreferences::default();
 
-    let changed =
-        recover_model_preferences(&mut preferences, &previous_preferences, &[]).unwrap();
+    let changed = recover_model_preferences(&mut preferences, &previous_preferences, &[]).unwrap();
 
     assert!(changed);
     assert_eq!(preferences.models.len(), 1);

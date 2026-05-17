@@ -1,0 +1,125 @@
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("react-pdf", () => ({
+  Document: () => null,
+  Page: () => null,
+  pdfjs: { GlobalWorkerOptions: {} },
+}));
+
+vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({
+  default: "pdf-worker.js",
+}));
+
+import { ArtifactPreviewPanel } from "./ArtifactPreviewPanel";
+import type { ArtifactTextPreview } from "./artifactApi";
+import type { PreviewArtifactSelection } from "./artifactPreview";
+import type { AgentNode } from "../../shared/types";
+
+const outputNode: AgentNode = {
+  nodeId: "file-export",
+  nodeType: "output",
+  displayName: "导出文件",
+  status: "completed",
+  inputPorts: [],
+  outputPorts: [],
+  dependencies: [],
+  summary: "导出最终文件",
+  createdBy: "agent",
+  artifactRefs: ["D:\\Project\\artifacts\\report.md"],
+  retryCount: 0,
+  position: { x: 0, y: 0 },
+};
+
+const artifact: PreviewArtifactSelection = {
+  artifactId: "report",
+  fileName: "report.md",
+  path: "D:\\Project\\artifacts\\report.md",
+  sourceNodeId: "file-export",
+};
+
+const preview: ArtifactTextPreview = {
+  path: "D:\\Project\\artifacts\\report.md",
+  fileName: "report.md",
+  sizeBytes: 42,
+  content: "# Report\n\nAlpha",
+  truncated: false,
+};
+
+describe("ArtifactPreviewPanel", () => {
+  it("renders an empty state before an output artifact is selected", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactPreviewPanel
+        artifact={null}
+        error={null}
+        fileUrl={null}
+        loading={false}
+        preview={null}
+        previewKind="unsupported"
+        selectedNode={null}
+      />,
+    );
+
+    expect(markup).toContain("文件预览");
+    expect(markup).toContain("未选择导出文件");
+  });
+
+  it("renders text preview content for the selected artifact", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactPreviewPanel
+        artifact={artifact}
+        error={null}
+        fileUrl={null}
+        loading={false}
+        preview={preview}
+        previewKind="text"
+        selectedNode={outputNode}
+        onOpenArtifact={() => undefined}
+        onRevealArtifact={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("report.md");
+    expect(markup).toContain("D:\\Project\\artifacts\\report.md");
+    expect(markup).toContain("# Report");
+    expect(markup).toContain("Alpha");
+    expect(markup).toContain("打开");
+    expect(markup).toContain("定位");
+  });
+
+  it("routes markdown files to a markdown preview surface", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactPreviewPanel
+        artifact={artifact}
+        error={null}
+        fileUrl={null}
+        loading={false}
+        preview={preview}
+        previewKind="markdown"
+        selectedNode={outputNode}
+      />,
+    );
+
+    expect(markup).toContain("artifactPreviewMarkdown");
+  });
+
+  it("renders a pdf preview surface when the selected artifact is a PDF", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactPreviewPanel
+        artifact={{ ...artifact, fileName: "report.pdf", path: "D:\\Project\\artifacts\\report.pdf" }}
+        error={null}
+        fileUrl="asset://localhost/report.pdf"
+        loading={false}
+        preview={null}
+        previewKind="pdf"
+        selectedNode={{
+          ...outputNode,
+          artifactRefs: ["D:\\Project\\artifacts\\report.pdf"],
+        }}
+      />,
+    );
+
+    expect(markup).toContain("artifactPreviewPdf");
+    expect(markup).toContain("PDF 预览");
+  });
+});

@@ -63,6 +63,33 @@ class FakeToolExecutor:
         )
 
 
+class TypstFlowToolExecutor:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def run(self, invocation):
+        self.calls.append(invocation)
+        if invocation.tool_id == "document.markitdown_convert":
+            output_path = Path(invocation.arguments["output_path"])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("# Markdown\n\nparsed text", encoding="utf-8")
+            return ToolResult(values={"text": "parsed text"}, artifacts=[str(output_path)])
+
+        if invocation.tool_id == "document.typst_compile":
+            source_path = Path(invocation.arguments["source_output_path"])
+            pdf_path = Path(invocation.arguments["pdf_output_path"])
+            source_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.write_text("typst source", encoding="utf-8")
+            pdf_path.write_bytes(b"%PDF-1.7\n")
+            return ToolResult(
+                values={"source": str(source_path), "artifact": str(pdf_path)},
+                artifacts=[str(source_path), str(pdf_path)],
+                metadata={"compiler": "typst"},
+            )
+
+        raise AssertionError(f"unexpected tool invocation: {invocation.tool_id}")
+
+
 class FailingNodeExecutor:
     def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
         raise RuntimeError(f"boom from {node_id}")
@@ -347,6 +374,41 @@ def test_document_parse_uses_markitdown_tool_executor(tmp_path: Path) -> None:
     assert events[-1].type == "task.completed"
 
 
+def test_document_flow_runs_typst_export_and_file_export_passes_pdf_artifact(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("# Title\n\nBody", encoding="utf-8")
+    request = build_document_flow_request_with_typst(tmp_path, source)
+    tool_executor = TypstFlowToolExecutor()
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=FakeModelClient(),
+            tool_executor=tool_executor,
+        )
+    )
+
+    assert [call.tool_id for call in tool_executor.calls] == [
+        "document.markitdown_convert",
+        "document.typst_compile",
+    ]
+    typst_call = tool_executor.calls[1]
+    assert typst_call.operation == "compile_report_pdf"
+    assert typst_call.arguments["source_output_path"].endswith(".typ")
+    assert typst_call.arguments["pdf_output_path"].endswith(".pdf")
+
+    export_events = [
+        event
+        for event in events
+        if event.type == "artifact.created"
+        and event.payload["sourceNodeId"] == "file-export"
+    ]
+    assert any(Path(event.payload["path"]).suffix == ".pdf" for event in export_events)
+    assert events[-1].type == "task.completed"
+
+
 def test_document_parse_uses_unique_output_paths_for_duplicate_attachment_names(
     tmp_path: Path,
 ) -> None:
@@ -524,6 +586,74 @@ def build_document_flow_request(
                 ),
             ],
             "edges": [],
+        },
+    )
+
+
+def build_document_flow_request_with_typst(
+    tmp_path: Path,
+    source: Path,
+    *,
+    run_id: str = "run-document-flow",
+) -> RunGraphRequest:
+    nodes = [
+        build_node(
+            "document-input",
+            "fixed_tool",
+            [],
+            tool_ref="document.receive_attachment",
+        ),
+        build_node(
+            "document-parse",
+            "fixed_tool",
+            ["document-input"],
+            tool_ref="document.markitdown_convert",
+        ),
+        build_node(
+            "content-organize",
+            "model",
+            ["document-parse"],
+            model_ref="local-content-organizer",
+        ),
+        build_node(
+            "report-generate",
+            "model",
+            ["document-parse"],
+            model_ref="local-report-writer",
+        ),
+        build_node(
+            "typst-export",
+            "fixed_tool",
+            ["content-organize", "report-generate"],
+            tool_ref="document.typst_compile",
+        ),
+        build_node("file-export", "output", ["typst-export"]),
+    ]
+    return RunGraphRequest(
+        task_id="task-document-flow",
+        project_path=str(tmp_path / "project.alita"),
+        run_id=run_id,
+        attachments=[
+            {
+                "attachment_id": "a1",
+                "name": source.name,
+                "path": str(source),
+                "size_bytes": source.stat().st_size,
+                "mime_type": "text/markdown",
+            }
+        ],
+        graph={
+            "graphId": "graph-document-flow",
+            "nodes": nodes,
+            "edges": [
+                {
+                    "id": f"{dependency}-{node['nodeId']}",
+                    "source": dependency,
+                    "target": node["nodeId"],
+                }
+                for node in nodes
+                for dependency in node["dependencies"]
+            ],
         },
     )
 

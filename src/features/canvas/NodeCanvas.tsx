@@ -33,6 +33,7 @@ type NodeCanvasProps = {
   onStop?: () => void;
   onRetryFailed?: () => void;
   onRunFromNode?: (nodeId: string) => void;
+  onNodeSelect?: (node: AgentNode | null) => void;
   onOpenArtifact?: (path: string) => void;
   onRevealArtifact?: (path: string) => void;
 };
@@ -99,6 +100,7 @@ export function NodeCanvas({
   onStop,
   onRetryFailed,
   onRunFromNode,
+  onNodeSelect,
   onOpenArtifact,
   onRevealArtifact,
 }: NodeCanvasProps) {
@@ -146,6 +148,12 @@ export function NodeCanvas({
 
   const handleNodeClick: NodeMouseHandler<AgentFlowNode> = (_event, node) => {
     setSelectedNodeId(node.id);
+    onNodeSelect?.(node.data.agentNode);
+  };
+
+  const clearSelectedNode = () => {
+    setSelectedNodeId(null);
+    onNodeSelect?.(null);
   };
 
   if (!graph) {
@@ -195,7 +203,7 @@ export function NodeCanvas({
         edges={edges}
         nodeTypes={nodeTypes}
         onNodeClick={handleNodeClick}
-        onPaneClick={() => setSelectedNodeId(null)}
+        onPaneClick={clearSelectedNode}
         fitView
         fitViewOptions={{ padding: 0.18 }}
         minZoom={0.55}
@@ -215,7 +223,7 @@ export function NodeCanvas({
       {selectedNode ? (
         <NodePopover
           node={selectedNode}
-          onClose={() => setSelectedNodeId(null)}
+          onClose={clearSelectedNode}
           onRunFromNode={onRunFromNode}
           onOpenArtifact={onOpenArtifact}
           onRevealArtifact={onRevealArtifact}

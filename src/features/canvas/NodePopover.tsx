@@ -29,6 +29,7 @@ const statusLabels: Record<NodeStatus, string> = {
 const toolCapabilityLabels: Record<string, string> = {
   "document.receive_attachment": "接收附件文档",
   "document.extract_text": "提取文档正文和结构",
+  "document.typst_compile": "Typst PDF 排版导出",
 };
 
 const modelCapabilityLabels: Record<string, string> = {

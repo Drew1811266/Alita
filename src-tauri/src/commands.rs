@@ -21,6 +21,8 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    fs::File,
+    io::Read,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -122,11 +124,23 @@ pub struct PreferencesView {
     pub tools: Vec<ToolSummary>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactTextPreview {
+    pub path: String,
+    pub file_name: String,
+    pub size_bytes: u64,
+    pub content: String,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactLaunchCommand {
     pub program: String,
     pub args: Vec<String>,
 }
+
+const MAX_ARTIFACT_PREVIEW_BYTES: u64 = 256 * 1024;
 
 pub fn open_artifact_command(path: &str) -> ArtifactLaunchCommand {
     #[cfg(windows)]
@@ -199,6 +213,61 @@ pub fn open_artifact(path: String) -> Result<(), String> {
 pub fn reveal_artifact(path: String) -> Result<(), String> {
     ensure_artifact_path_exists(&path)?;
     spawn_artifact_command(reveal_artifact_command(&path))
+}
+
+#[tauri::command]
+pub fn read_artifact_text(path: String) -> Result<ArtifactTextPreview, String> {
+    read_artifact_preview_from_path(path, MAX_ARTIFACT_PREVIEW_BYTES)
+}
+
+pub fn read_artifact_preview_from_path(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+) -> Result<ArtifactTextPreview, String> {
+    let path = path.as_ref();
+    let metadata = path
+        .metadata()
+        .map_err(|error| format!("failed to read artifact metadata: {error}"))?;
+    if !metadata.is_file() {
+        return Err(format!("artifact path is not a file: {}", path.display()));
+    }
+
+    let size_bytes = metadata.len();
+    let truncated = size_bytes > max_bytes;
+    let read_limit = if truncated { max_bytes } else { size_bytes };
+    let mut bytes = Vec::with_capacity(read_limit as usize);
+    File::open(path)
+        .map_err(|error| format!("failed to open artifact: {error}"))?
+        .take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read artifact: {error}"))?;
+
+    let content = decode_artifact_preview(&bytes)?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("artifact")
+        .to_string();
+
+    Ok(ArtifactTextPreview {
+        path: path.to_string_lossy().to_string(),
+        file_name,
+        size_bytes,
+        content,
+        truncated,
+    })
+}
+
+fn decode_artifact_preview(bytes: &[u8]) -> Result<String, String> {
+    match std::str::from_utf8(bytes) {
+        Ok(content) => Ok(content.to_string()),
+        Err(error) if error.error_len().is_none() => {
+            Ok(std::str::from_utf8(&bytes[..error.valid_up_to()])
+                .unwrap_or_default()
+                .to_string())
+        }
+        Err(_) => Err("artifact preview only supports UTF-8 text files".to_string()),
+    }
 }
 
 fn ensure_artifact_path_exists(path: &str) -> Result<(), String> {

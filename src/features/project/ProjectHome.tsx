@@ -3,6 +3,7 @@ type ProjectHomeProps = {
   error: string | null;
   onCreateProject(): void;
   onOpenProject(): void;
+  onOpenRecentProject(path: string): void;
   onOpenPreferences(): void;
 };
 
@@ -11,6 +12,7 @@ export function ProjectHome({
   error,
   onCreateProject,
   onOpenProject,
+  onOpenRecentProject,
   onOpenPreferences,
 }: ProjectHomeProps) {
   return (
@@ -54,7 +56,16 @@ export function ProjectHome({
           {recentProjects.length > 0 ? (
             <ul>
               {recentProjects.map((projectPath) => (
-                <li key={projectPath}>{projectPath}</li>
+                <li key={projectPath}>
+                  <button
+                    className="recentProjectButton"
+                    onClick={() => onOpenRecentProject(projectPath)}
+                    title={projectPath}
+                    type="button"
+                  >
+                    {projectPath}
+                  </button>
+                </li>
               ))}
             </ul>
           ) : (

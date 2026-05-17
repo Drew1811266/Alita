@@ -11,6 +11,7 @@ from agent_service.tool_execution import (
 )
 from agent_service.tool_registry import ToolRegistry
 from tools.markitdown_tool import MarkItDownResult
+from tools.typst_tool import TypstCompileResult
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -69,6 +70,60 @@ def test_tool_executor_routes_markitdown_conversion(monkeypatch, tmp_path):
             "input_path": str(tmp_path / "source.docx"),
             "output_path": str(output),
             "project_path": str(tmp_path),
+            "allowed_roots": [str(tmp_path)],
+        }
+    ]
+
+
+def test_tool_executor_routes_typst_pdf_compilation(monkeypatch, tmp_path):
+    source = tmp_path / "artifacts" / "typst" / "report.typ"
+    pdf = tmp_path / "artifacts" / "typst" / "report.pdf"
+    calls = []
+
+    def fake_compile_typst_report_pdf(**kwargs):
+        calls.append(kwargs)
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("typst source", encoding="utf-8")
+        pdf.write_bytes(b"%PDF-1.7\n")
+        return TypstCompileResult(
+            source_path=str(source),
+            pdf_path=str(pdf),
+            artifacts=[str(source), str(pdf)],
+            metadata={"compiler": "typst"},
+        )
+
+    monkeypatch.setattr(
+        "agent_service.tool_execution.compile_typst_report_pdf",
+        fake_compile_typst_report_pdf,
+    )
+
+    result = ToolExecutor().run(
+        ToolInvocation(
+            tool_id="document.typst_compile",
+            operation="compile_report_pdf",
+            arguments={
+                "title": "Report",
+                "outline": "outline",
+                "report": "report",
+                "source_output_path": str(source),
+                "pdf_output_path": str(pdf),
+            },
+            project_path=str(tmp_path / "project.alita"),
+            allowed_roots=[str(tmp_path)],
+        )
+    )
+
+    assert result.values["artifact"] == str(pdf)
+    assert result.values["source"] == str(source)
+    assert result.artifacts == [str(source), str(pdf)]
+    assert calls == [
+        {
+            "title": "Report",
+            "outline": "outline",
+            "report": "report",
+            "source_output_path": str(source),
+            "pdf_output_path": str(pdf),
+            "project_path": str(tmp_path / "project.alita"),
             "allowed_roots": [str(tmp_path)],
         }
     ]

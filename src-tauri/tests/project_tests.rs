@@ -64,7 +64,10 @@ fn rejects_non_alita_project_extension() {
 
     let error = load_project_from_path(&project_path).unwrap_err();
 
-    assert!(matches!(error, ProjectFileError::UnsupportedExtension { .. }));
+    assert!(matches!(
+        error,
+        ProjectFileError::UnsupportedExtension { .. }
+    ));
 }
 
 #[test]

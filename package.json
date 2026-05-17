@@ -1,7 +1,7 @@
 {
   "name": "alita",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
@@ -22,7 +22,11 @@
     "@xyflow/react": "12.10.2",
     "clsx": "2.1.1",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "react-markdown": "^10.1.0",
+    "react-pdf": "^10.4.1",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.1",

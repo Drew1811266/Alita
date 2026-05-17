@@ -91,7 +91,10 @@ impl std::fmt::Display for ProjectFileError {
                 write!(formatter, "unsupported .alita schema version: {version}")
             }
             Self::UnsupportedExtension { path } => {
-                write!(formatter, "unsupported project extension: expected .alita for '{path}'")
+                write!(
+                    formatter,
+                    "unsupported project extension: expected .alita for '{path}'"
+                )
             }
         }
     }

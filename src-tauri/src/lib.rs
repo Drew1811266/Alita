@@ -70,6 +70,7 @@ pub fn run() {
             commands::save_project,
             commands::open_artifact,
             commands::reveal_artifact,
+            commands::read_artifact_text,
             commands::get_preferences,
             commands::add_model_file,
             commands::add_speech_to_text_model_directory,

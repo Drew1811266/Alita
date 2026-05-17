@@ -45,6 +45,13 @@ const unknownModelNode: AgentNode = {
   modelRef: "raw-unknown-model",
 };
 
+const typstToolNode: AgentNode = {
+  ...toolNode,
+  nodeId: "typst-export",
+  toolRef: "document.typst_compile",
+  displayName: "Typst PDF",
+};
+
 function renderPopover(node: AgentNode) {
   return renderToStaticMarkup(
     <NodePopover node={node} onClose={() => undefined} />,
@@ -86,6 +93,13 @@ describe("NodePopover", () => {
 
     expect(markup).toContain("已注册工具能力");
     expect(markup).not.toContain("external.raw_unknown_tool");
+  });
+
+  it("renders a Typst tool capability label", () => {
+    const markup = renderPopover(typstToolNode);
+
+    expect(markup).toContain("Typst PDF");
+    expect(markup).not.toContain("document.typst_compile");
   });
 
   it("renders a Chinese fallback for unknown model refs", () => {

@@ -132,6 +132,23 @@ def test_attachment_generates_node_graph_for_document_task() -> None:
         "source": "document-input",
         "target": "document-parse",
     }
+    assert [node["nodeId"] for node in graph["nodes"]] == [
+        "document-input",
+        "document-parse",
+        "content-organize",
+        "report-generate",
+        "typst-export",
+        "file-export",
+    ]
+    typst_node = graph["nodes"][4]
+    assert typst_node["nodeType"] == "fixed_tool"
+    assert typst_node["toolRef"] == "document.typst_compile"
+    assert typst_node["dependencies"] == ["content-organize", "report-generate"]
+    assert {
+        "id": "typst-export-file-export",
+        "source": "typst-export",
+        "target": "file-export",
+    } in graph["edges"]
 
 
 def test_temporary_placeholder_node_gets_default_script_review_state() -> None:

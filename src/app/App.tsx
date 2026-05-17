@@ -1,12 +1,21 @@
 import "./app.css";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { NodeCanvas } from "../features/canvas/NodeCanvas";
+import { ArtifactPreviewPanel } from "../features/artifacts/ArtifactPreviewPanel";
 import {
+  artifactFileUrl,
   openArtifact,
+  readArtifactText,
   revealArtifact,
+  type ArtifactTextPreview,
 } from "../features/artifacts/artifactApi";
+import { resolvePreviewArtifactForNode } from "../features/artifacts/artifactPreview";
+import {
+  detectArtifactPreviewKind,
+  shouldReadArtifactText,
+} from "../features/artifacts/artifactPreviewKind";
 import { pickChatAttachments } from "../features/chat/attachmentApi";
 import { ChatPanel } from "../features/chat/ChatPanel";
 import {
@@ -69,6 +78,7 @@ import { WorkbenchTopBar } from "../features/workbench/WorkbenchTopBar";
 import { reduceBackendEvents } from "./backendEvents";
 import type {
   AlitaProject,
+  AgentNode,
   ArtifactRef,
   ChatAttachment,
   ChatMessage,
@@ -157,6 +167,15 @@ export function App() {
   const runHistoryRef = useRef<RunHistoryEntry[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactRef[]>([]);
   const artifactsRef = useRef<ArtifactRef[]>([]);
+  const [selectedCanvasNodeId, setSelectedCanvasNodeId] = useState<
+    string | null
+  >(null);
+  const [artifactPreview, setArtifactPreview] =
+    useState<ArtifactTextPreview | null>(null);
+  const [artifactPreviewLoading, setArtifactPreviewLoading] = useState(false);
+  const [artifactPreviewError, setArtifactPreviewError] = useState<
+    string | null
+  >(null);
   const [preferencesView, setPreferencesView] =
     useState<PreferencesView | null>(null);
   const [preferencesLoading, setPreferencesLoading] = useState(false);
@@ -222,6 +241,62 @@ export function App() {
     artifactsRef.current = artifacts;
   }, [artifacts]);
 
+  const selectedCanvasNode = useMemo<AgentNode | null>(
+    () =>
+      graph?.nodes.find((node) => node.nodeId === selectedCanvasNodeId) ?? null,
+    [graph, selectedCanvasNodeId],
+  );
+
+  const selectedPreviewArtifact = useMemo(
+    () => resolvePreviewArtifactForNode(selectedCanvasNode, artifacts),
+    [selectedCanvasNode, artifacts],
+  );
+
+  const selectedPreviewPath = selectedPreviewArtifact?.path ?? null;
+  const selectedPreviewKind = selectedPreviewPath
+    ? detectArtifactPreviewKind(selectedPreviewPath)
+    : "unsupported";
+  const selectedPreviewFileUrl = selectedPreviewPath
+    ? artifactFileUrl(selectedPreviewPath)
+    : null;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!selectedPreviewPath || !shouldReadArtifactText(selectedPreviewKind)) {
+      setArtifactPreview(null);
+      setArtifactPreviewError(null);
+      setArtifactPreviewLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setArtifactPreview(null);
+    setArtifactPreviewError(null);
+    setArtifactPreviewLoading(true);
+    readArtifactText(selectedPreviewPath)
+      .then((preview) => {
+        if (!cancelled) {
+          setArtifactPreview(preview);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setArtifactPreviewError(String(error));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setArtifactPreviewLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPreviewKind, selectedPreviewPath]);
+
   const applyProjectOpenResult = (result: ProjectOpenResult) => {
     const projectMessages =
       result.project.messages.length > 0 ? result.project.messages : initialMessages;
@@ -232,6 +307,7 @@ export function App() {
     runHistoryRef.current = result.project.runHistory;
     setArtifacts([]);
     artifactsRef.current = [];
+    setSelectedCanvasNodeId(null);
     setActiveRunId(null);
     activeRunIdRef.current = null;
     setGraphRunning(false);
@@ -297,12 +373,7 @@ export function App() {
     }
   };
 
-  const handleOpenProject = async () => {
-    const path = await pickOpenProjectPath();
-    if (!path) {
-      return;
-    }
-
+  const openProjectFromPath = async (path: string) => {
     try {
       setProjectError(null);
       const result = await openProject(path);
@@ -310,6 +381,19 @@ export function App() {
     } catch (error) {
       setProjectError(String(error));
     }
+  };
+
+  const handleOpenProject = async () => {
+    const path = await pickOpenProjectPath();
+    if (!path) {
+      return;
+    }
+
+    await openProjectFromPath(path);
+  };
+
+  const handleOpenRecentProject = async (path: string) => {
+    await openProjectFromPath(path);
   };
 
   const applyBackendEvent = (event: BackendEvent) => {
@@ -448,6 +532,10 @@ export function App() {
     } catch (error) {
       setProjectError(String(error));
     }
+  };
+
+  const handleNodeSelect = (node: AgentNode | null) => {
+    setSelectedCanvasNodeId(node?.nodeId ?? null);
   };
 
   const handleDraftSelectionChange = (selection: DraftSelection | null) => {
@@ -877,6 +965,7 @@ export function App() {
           onCreateProject={handleCreateProject}
           onOpenPreferences={handleOpenPreferences}
           onOpenProject={handleOpenProject}
+          onOpenRecentProject={handleOpenRecentProject}
           recentProjects={recentProjects}
         />
         {preferencesDialog}
@@ -929,6 +1018,20 @@ export function App() {
           onStop={handleStopGraph}
           onRetryFailed={handleRetryFailed}
           onRunFromNode={handleRunFromNode}
+          onNodeSelect={handleNodeSelect}
+          onOpenArtifact={handleOpenArtifact}
+          onRevealArtifact={handleRevealArtifact}
+        />
+      </section>
+      <section className="previewColumn" aria-label="文件预览区域">
+        <ArtifactPreviewPanel
+          selectedNode={selectedCanvasNode}
+          artifact={selectedPreviewArtifact}
+          previewKind={selectedPreviewKind}
+          fileUrl={selectedPreviewFileUrl}
+          preview={artifactPreview}
+          loading={artifactPreviewLoading}
+          error={artifactPreviewError}
           onOpenArtifact={handleOpenArtifact}
           onRevealArtifact={handleRevealArtifact}
         />
