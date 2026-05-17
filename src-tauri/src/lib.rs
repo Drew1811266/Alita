@@ -72,10 +72,12 @@ pub fn run() {
             commands::reveal_artifact,
             commands::get_preferences,
             commands::add_model_file,
+            commands::add_speech_to_text_model_directory,
             commands::import_model_file,
             commands::scan_model_directory_command,
             commands::set_model_storage_directory,
             commands::set_default_model_command,
+            commands::set_model_assignment_command,
             commands::set_tool_enabled
         ])
         .build(tauri::generate_context!())

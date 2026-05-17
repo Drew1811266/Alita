@@ -1,3 +1,4 @@
+use alita_lib::commands::model_assignment_role_from_payload;
 use alita_lib::preferences::{
     add_manual_model, add_speech_to_text_model, agent_model_path, default_model_path,
     ensure_model_storage_dir, import_model_to_storage, load_preferences_from_path,
@@ -119,6 +120,59 @@ fn rejects_assignment_to_wrong_model_kind() {
     .unwrap_err();
 
     assert!(error.contains("speech_to_text"));
+}
+
+#[test]
+fn set_model_assignment_clears_agent_and_speech_to_text_roles() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let agent_path = temp_dir.path().join("agent.gguf");
+    let asr_dir = temp_dir.path().join("Qwen3-ASR-1.7B");
+    fs::write(&agent_path, "model").unwrap();
+    fs::create_dir_all(&asr_dir).unwrap();
+    let mut preferences = AppPreferences::default();
+    let agent_model = add_manual_model(&mut preferences, &agent_path).unwrap();
+    let asr_model = add_speech_to_text_model(&mut preferences, &asr_dir).unwrap();
+    set_model_assignment(
+        &mut preferences,
+        ModelAssignmentRole::AgentChat,
+        Some(&agent_model.model_id),
+    )
+    .unwrap();
+    set_model_assignment(
+        &mut preferences,
+        ModelAssignmentRole::SpeechToText,
+        Some(&asr_model.model_id),
+    )
+    .unwrap();
+
+    set_model_assignment(&mut preferences, ModelAssignmentRole::AgentChat, None).unwrap();
+    set_model_assignment(&mut preferences, ModelAssignmentRole::SpeechToText, None).unwrap();
+
+    assert!(preferences.default_model_id.is_none());
+    assert!(preferences.model_assignments.agent_chat_model_id.is_none());
+    assert!(preferences
+        .model_assignments
+        .speech_to_text_model_id
+        .is_none());
+    assert!(agent_model_path(&preferences).is_none());
+    assert!(speech_to_text_model_path(&preferences).is_none());
+}
+
+#[test]
+fn model_assignment_command_role_parser_rejects_unknown_roles() {
+    assert_eq!(
+        model_assignment_role_from_payload("agentChat").unwrap(),
+        ModelAssignmentRole::AgentChat
+    );
+    assert_eq!(
+        model_assignment_role_from_payload("speechToText").unwrap(),
+        ModelAssignmentRole::SpeechToText
+    );
+
+    let error = model_assignment_role_from_payload("voiceInput").unwrap_err();
+
+    assert!(error.contains("unknown model assignment role"));
+    assert!(error.contains("voiceInput"));
 }
 
 #[test]

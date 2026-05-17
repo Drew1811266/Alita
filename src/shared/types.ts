@@ -143,14 +143,27 @@ export type ProjectOpenResult = {
   warnings: ProjectOpenWarning[];
 };
 
-export type ModelSource = "manual" | "scan" | "imported";
+export type ModelKind = "agent_llm" | "speech_to_text";
+
+export type ModelRuntime = "llama_cpp" | "qwen_asr";
+
+export type ModelPathKind = "file" | "directory";
+
+export type ModelSource = "manual" | "scan" | "imported" | "recovered";
+
+export type ModelAssignments = {
+  agentChatModelId: string | null;
+  speechToTextModelId: string | null;
+};
 
 export type ModelEntry = {
   modelId: string;
   name: string;
   path: string;
+  modelKind: ModelKind;
   source: ModelSource;
-  runtime: "llama_cpp";
+  runtime: ModelRuntime;
+  pathKind: ModelPathKind;
   fileExists: boolean;
   createdAt: string;
   updatedAt: string;
@@ -175,11 +188,17 @@ export type ToolSummary = {
 };
 
 export type AppPreferences = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   recentProjects: string[];
   modelDirectories: string[];
   modelStorageDir: string;
   models: ModelEntry[];
   defaultModelId: string | null;
+  modelAssignments: ModelAssignments;
   toolEnablement: Record<string, boolean>;
+};
+
+export type PreferencesView = {
+  preferences: AppPreferences;
+  tools: ToolSummary[];
 };

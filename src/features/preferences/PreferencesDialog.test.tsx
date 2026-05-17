@@ -6,19 +6,25 @@ import type { PreferencesView } from "./preferencesApi";
 
 const view: PreferencesView = {
   preferences: {
-    schemaVersion: 1,
+    schemaVersion: 2,
     recentProjects: [],
     modelDirectories: ["D:\\Models"],
     modelStorageDir:
       "C:\\Users\\Drew\\AppData\\Local\\Alita\\models",
     defaultModelId: "model-1",
+    modelAssignments: {
+      agentChatModelId: "model-1",
+      speechToTextModelId: null,
+    },
     models: [
       {
         modelId: "model-1",
         name: "qwen3-8b",
         path: "D:\\Models\\qwen3-8b.gguf",
+        modelKind: "agent_llm",
         source: "manual",
         runtime: "llama_cpp",
+        pathKind: "file",
         fileExists: true,
         createdAt: "2026-05-09T12:00:00.000Z",
         updatedAt: "2026-05-09T12:00:00.000Z",

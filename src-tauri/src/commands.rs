@@ -8,10 +8,12 @@ use crate::{
         TranscribeVoiceAudioPayload,
     },
     preferences::{
-        add_manual_model, import_model_to_storage, load_preferences_with_model_recovery,
-        model_recovery_candidate_dirs, previous_preferences_path_for_current_path,
-        record_recent_project, save_preferences_to_path, scan_model_directory, set_default_model,
-        set_model_storage_dir, summarize_tool_manifests, AppPreferences, ToolSummary,
+        add_manual_model, add_speech_to_text_model, import_model_to_storage,
+        load_preferences_with_model_recovery, model_recovery_candidate_dirs,
+        previous_preferences_path_for_current_path, record_recent_project,
+        save_preferences_to_path, scan_model_directory, set_default_model, set_model_assignment,
+        set_model_storage_dir, summarize_tool_manifests, AppPreferences, ModelAssignmentRole,
+        ToolSummary,
     },
     project::{
         load_project_from_path, new_project, save_project_to_path, AlitaProject, ProjectOpenResult,
@@ -71,6 +73,12 @@ pub struct AddModelPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AddSpeechToTextModelPayload {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportModelPayload {
     pub path: String,
 }
@@ -90,6 +98,13 @@ pub struct SetModelStorageDirectoryPayload {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetDefaultModelPayload {
+    pub model_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetModelAssignmentPayload {
+    pub role: String,
     pub model_id: Option<String>,
 }
 
@@ -382,6 +397,18 @@ pub async fn add_model_file(
 }
 
 #[tauri::command]
+pub async fn add_speech_to_text_model_directory(
+    app: AppHandle,
+    payload: AddSpeechToTextModelPayload,
+) -> Result<PreferencesView, String> {
+    let (path, mut preferences) = load_preferences_for_app(&app)?;
+    add_speech_to_text_model(&mut preferences, PathBuf::from(payload.path))?;
+    save_preferences_to_path(&path, &preferences)?;
+    let tools = summarize_tool_manifests(packages_root(), &preferences);
+    Ok(PreferencesView { preferences, tools })
+}
+
+#[tauri::command]
 pub async fn import_model_file(
     app: AppHandle,
     payload: ImportModelPayload,
@@ -428,6 +455,27 @@ pub async fn set_default_model_command(
     save_preferences_to_path(&path, &preferences)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
     Ok(PreferencesView { preferences, tools })
+}
+
+#[tauri::command]
+pub async fn set_model_assignment_command(
+    app: AppHandle,
+    payload: SetModelAssignmentPayload,
+) -> Result<PreferencesView, String> {
+    let role = model_assignment_role_from_payload(&payload.role)?;
+    let (path, mut preferences) = load_preferences_for_app(&app)?;
+    set_model_assignment(&mut preferences, role, payload.model_id.as_deref())?;
+    save_preferences_to_path(&path, &preferences)?;
+    let tools = summarize_tool_manifests(packages_root(), &preferences);
+    Ok(PreferencesView { preferences, tools })
+}
+
+pub fn model_assignment_role_from_payload(role: &str) -> Result<ModelAssignmentRole, String> {
+    match role {
+        "agentChat" => Ok(ModelAssignmentRole::AgentChat),
+        "speechToText" => Ok(ModelAssignmentRole::SpeechToText),
+        unknown => Err(format!("unknown model assignment role: {unknown}")),
+    }
 }
 
 #[tauri::command]
