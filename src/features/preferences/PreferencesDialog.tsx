@@ -1,6 +1,8 @@
 import type { ModelEntry, ToolSummary } from "../../shared/types";
 import type { PreferencesView } from "./preferencesApi";
 
+type ModelAssignmentRole = "agentChat" | "speechToText";
+
 type PreferencesDialogProps = {
   open: boolean;
   loading: boolean;
@@ -8,9 +10,11 @@ type PreferencesDialogProps = {
   view: PreferencesView | null;
   onClose(): void;
   onAddModel(): void;
+  onAddSpeechToTextModel(): void;
   onImportModel(): void;
   onScanModelDirectory(): void;
   onSetDefaultModel(modelId: string): void;
+  onSetModelAssignment(role: ModelAssignmentRole, modelId: string): void;
   onSetModelStorageDirectory(): void;
   onSetToolEnabled(toolId: string, enabled: boolean): void;
 };
@@ -22,15 +26,29 @@ export function PreferencesDialog({
   view,
   onClose,
   onAddModel,
+  onAddSpeechToTextModel,
   onImportModel,
   onScanModelDirectory,
   onSetDefaultModel,
+  onSetModelAssignment,
   onSetModelStorageDirectory,
   onSetToolEnabled,
 }: PreferencesDialogProps) {
   if (!open) {
     return null;
   }
+
+  const agentAssignmentId =
+    view?.preferences.modelAssignments.agentChatModelId ??
+    view?.preferences.defaultModelId ??
+    null;
+  const speechToTextAssignmentId =
+    view?.preferences.modelAssignments.speechToTextModelId ?? null;
+  const agentModel = findModelById(view?.preferences.models, agentAssignmentId);
+  const speechToTextModel = findModelById(
+    view?.preferences.models,
+    speechToTextAssignmentId,
+  );
 
   return (
     <div className="preferencesBackdrop" role="presentation">
@@ -60,7 +78,7 @@ export function PreferencesDialog({
             <div className="preferencesContent">
               <section className="preferencesSection">
                 <div className="preferencesSectionHeader">
-                  <h3>模型</h3>
+                  <h3>模型库</h3>
                   <div className="preferencesActions">
                     <button
                       className="secondaryButton"
@@ -83,6 +101,13 @@ export function PreferencesDialog({
                     >
                       扫描模型目录
                     </button>
+                    <button
+                      className="secondaryButton"
+                      onClick={onAddSpeechToTextModel}
+                      type="button"
+                    >
+                      添加语音转文字模型
+                    </button>
                   </div>
                 </div>
 
@@ -100,16 +125,26 @@ export function PreferencesDialog({
                   </button>
                 </div>
 
+                <div className="modelAssignments" aria-label="当前模型分配">
+                  <div>
+                    <span>Agent 模型</span>
+                    <strong>{agentModel?.name ?? "未配置"}</strong>
+                  </div>
+                  <div>
+                    <span>语音转文字</span>
+                    <strong>{speechToTextModel?.name ?? "未配置"}</strong>
+                  </div>
+                </div>
+
                 {view.preferences.models.length > 0 ? (
                   <ul className="modelList">
                     {view.preferences.models.map((model) => (
                       <ModelItem
-                        isDefault={
-                          model.modelId === view.preferences.defaultModelId
-                        }
+                        agentAssignmentId={agentAssignmentId}
                         key={model.modelId}
                         model={model}
-                        onSetDefaultModel={onSetDefaultModel}
+                        onSetModelAssignment={onSetModelAssignment}
+                        speechToTextAssignmentId={speechToTextAssignmentId}
                       />
                     ))}
                   </ul>
@@ -139,33 +174,57 @@ export function PreferencesDialog({
 }
 
 function ModelItem({
-  isDefault,
+  agentAssignmentId,
   model,
-  onSetDefaultModel,
+  onSetModelAssignment,
+  speechToTextAssignmentId,
 }: {
-  isDefault: boolean;
+  agentAssignmentId: string | null;
   model: ModelEntry;
-  onSetDefaultModel(modelId: string): void;
+  onSetModelAssignment(role: ModelAssignmentRole, modelId: string): void;
+  speechToTextAssignmentId: string | null;
 }) {
+  const isAgentModel = model.modelKind === "agent_llm";
+  const isSpeechToTextModel = model.modelKind === "speech_to_text";
+  const isAssignedAgent = isAgentModel && model.modelId === agentAssignmentId;
+  const isAssignedSpeechToText =
+    isSpeechToTextModel && model.modelId === speechToTextAssignmentId;
+
   return (
     <li>
       <div className="modelItemHeader">
         <strong>{model.name}</strong>
-        {isDefault ? (
-          <span className="modelDefaultBadge">默认模型</span>
-        ) : (
+        {isAssignedAgent ? (
+          <span className="modelDefaultBadge">当前 Agent 模型</span>
+        ) : null}
+        {isAssignedSpeechToText ? (
+          <span className="modelDefaultBadge">当前语音转文字模型</span>
+        ) : null}
+        {isAgentModel && !isAssignedAgent ? (
           <button
             className="secondaryButton compactButton"
-            onClick={() => onSetDefaultModel(model.modelId)}
+            onClick={() => onSetModelAssignment("agentChat", model.modelId)}
             type="button"
           >
-            设为默认
+            设为 Agent 默认模型
           </button>
-        )}
+        ) : null}
+        {isSpeechToTextModel && !isAssignedSpeechToText ? (
+          <button
+            className="secondaryButton compactButton"
+            onClick={() => onSetModelAssignment("speechToText", model.modelId)}
+            type="button"
+          >
+            设为语音转文字模型
+          </button>
+        ) : null}
       </div>
-      <span>{sourceLabel(model.source)}</span>
-      <span>{model.runtime}</span>
-      <span>{model.fileExists ? model.path : `文件缺失：${model.path}`}</span>
+      <span className="modelMetaLine">{modelKindLabel(model.modelKind)}</span>
+      <span className="modelMetaLine">{sourceLabel(model.source)}</span>
+      <span className="modelMetaLine">{runtimeLabel(model.runtime)}</span>
+      <span className="modelMetaLine">
+        {model.fileExists ? model.path : `文件缺失：${model.path}`}
+      </span>
     </li>
   );
 }
@@ -218,4 +277,23 @@ function sourceLabel(source: ModelEntry["source"]): string {
     return "扫描目录";
   }
   return "外部引用";
+}
+
+function findModelById(
+  models: ModelEntry[] | undefined,
+  modelId: string | null,
+): ModelEntry | undefined {
+  if (!modelId) {
+    return undefined;
+  }
+
+  return models?.find((model) => model.modelId === modelId);
+}
+
+function modelKindLabel(modelKind: ModelEntry["modelKind"]): string {
+  return modelKind === "speech_to_text" ? "语音转文字" : "Agent 模型";
+}
+
+function runtimeLabel(runtime: ModelEntry["runtime"]): string {
+  return runtime === "qwen_asr" ? "Qwen ASR" : "llama.cpp";
 }

@@ -34,14 +34,18 @@ import {
 } from "../features/voice/voiceRecordingGuards";
 import {
   addModelFile,
+  addSpeechToTextModelDirectory,
   getPreferences,
   importModelFile,
   pickModelDirectory,
   pickModelFile,
+  pickSpeechToTextModelDirectory,
   scanModelDirectory,
   setDefaultModel,
+  setModelAssignment,
   setModelStorageDirectory,
   setToolEnabled,
+  type ModelAssignmentRole,
   type PreferencesView,
 } from "../features/preferences/preferencesApi";
 import { PreferencesDialog } from "../features/preferences/PreferencesDialog";
@@ -737,6 +741,11 @@ export function App() {
     }
   };
 
+  const applyPreferencesView = (view: PreferencesView) => {
+    setPreferencesView(view);
+    setRecentProjects(view.preferences.recentProjects);
+  };
+
   const handleAddModel = async () => {
     const path = await pickModelFile();
     if (!path) {
@@ -744,6 +753,19 @@ export function App() {
     }
     try {
       setPreferencesView(await addModelFile(path));
+    } catch (error) {
+      setPreferencesError(String(error));
+    }
+  };
+
+  const handleAddSpeechToTextModel = async () => {
+    const path = await pickSpeechToTextModelDirectory();
+    if (!path) {
+      return;
+    }
+    try {
+      setPreferencesError(null);
+      applyPreferencesView(await addSpeechToTextModelDirectory(path));
     } catch (error) {
       setPreferencesError(String(error));
     }
@@ -796,6 +818,18 @@ export function App() {
     }
   };
 
+  const handleSetModelAssignment = async (
+    role: ModelAssignmentRole,
+    modelId: string,
+  ) => {
+    try {
+      setPreferencesError(null);
+      applyPreferencesView(await setModelAssignment(role, modelId));
+    } catch (error) {
+      setPreferencesError(String(error));
+    }
+  };
+
   const handleSetToolEnabled = async (toolId: string, enabled: boolean) => {
     try {
       setPreferencesView(await setToolEnabled(toolId, enabled));
@@ -809,10 +843,12 @@ export function App() {
       error={preferencesError}
       loading={preferencesLoading}
       onAddModel={handleAddModel}
+      onAddSpeechToTextModel={handleAddSpeechToTextModel}
       onClose={() => setPreferencesOpen(false)}
       onImportModel={handleImportModel}
       onScanModelDirectory={handleScanModelDirectory}
       onSetDefaultModel={handleSetDefaultModel}
+      onSetModelAssignment={handleSetModelAssignment}
       onSetModelStorageDirectory={handleSetModelStorageDirectory}
       onSetToolEnabled={handleSetToolEnabled}
       open={preferencesOpen}

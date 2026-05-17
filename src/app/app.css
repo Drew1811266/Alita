@@ -965,6 +965,44 @@ button:focus-visible {
   white-space: nowrap;
 }
 
+.modelAssignments {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.modelAssignments > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #d9e2ea;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.modelAssignments span,
+.modelMetaLine {
+  min-width: 0;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modelAssignments strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #111827;
+  font-size: 13px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .preferencesState {
   margin: 12px 14px 0;
   color: #475569;
@@ -1149,6 +1187,25 @@ button:focus-visible {
 
   .modelStorageBox {
     grid-template-columns: 1fr;
+  }
+
+  .modelAssignments {
+    grid-template-columns: 1fr;
+  }
+
+  .modelItemHeader {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .modelItemHeader strong {
+    white-space: normal;
+  }
+
+  .modelItemHeader .compactButton {
+    width: 100%;
+    white-space: normal;
   }
 
   .toolItem {
