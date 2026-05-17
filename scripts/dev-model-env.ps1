@@ -14,7 +14,13 @@ function Get-AlitaDevModelPath {
     if (Test-Path -LiteralPath $PreferencesPath -PathType Leaf) {
         try {
             $preferences = Get-Content -LiteralPath $PreferencesPath -Raw | ConvertFrom-Json
-            $defaultModelId = $preferences.defaultModelId
+            $defaultModelId = $null
+            if ($preferences.PSObject.Properties.Name -contains "modelAssignments" -and $null -ne $preferences.modelAssignments) {
+                $defaultModelId = $preferences.modelAssignments.agentChatModelId
+            }
+            if ([string]::IsNullOrWhiteSpace($defaultModelId)) {
+                $defaultModelId = $preferences.defaultModelId
+            }
             if (-not [string]::IsNullOrWhiteSpace($defaultModelId)) {
                 $defaultModel = @($preferences.models) |
                     Where-Object { $_.modelId -eq $defaultModelId } |

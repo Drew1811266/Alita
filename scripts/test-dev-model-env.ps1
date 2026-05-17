@@ -9,20 +9,40 @@ $preferencesPath = Join-Path $testRoot "preferences.json"
 New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
 $modelPath = Join-Path $modelDir "Qwen-Test.gguf"
 Set-Content -Path $modelPath -Encoding UTF8 -Value "test model placeholder"
+$fallbackModelPath = Join-Path $modelDir "Fallback.gguf"
+Set-Content -Path $fallbackModelPath -Encoding UTF8 -Value "fallback model placeholder"
 
 $preferences = @{
-    schemaVersion = 1
+    schemaVersion = 2
     recentProjects = @()
     modelDirectories = @()
     modelStorageDir = $modelDir
-    defaultModelId = "model-1"
+    modelAssignments = @{
+        agentChatModelId = "model-1"
+        speechToTextModelId = $null
+    }
+    defaultModelId = $null
     models = @(
+        @{
+            modelId = "model-2"
+            name = "Fallback"
+            path = $fallbackModelPath
+            source = "manual"
+            runtime = "llama_cpp"
+            modelKind = "agent_llm"
+            pathKind = "file"
+            fileExists = $true
+            createdAt = "2026-05-11T00:00:00Z"
+            updatedAt = "2026-05-11T00:00:00Z"
+        },
         @{
             modelId = "model-1"
             name = "Qwen Test"
             path = $modelPath
             source = "manual"
-            runtime = "llama.cpp"
+            runtime = "llama_cpp"
+            modelKind = "agent_llm"
+            pathKind = "file"
             fileExists = $true
             createdAt = "2026-05-11T00:00:00Z"
             updatedAt = "2026-05-11T00:00:00Z"

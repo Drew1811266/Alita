@@ -10,7 +10,7 @@ use std::{
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::preferences::{
-    default_model_path, load_preferences_with_model_recovery, model_recovery_candidate_dirs,
+    agent_model_path, load_preferences_with_model_recovery, model_recovery_candidate_dirs,
     previous_preferences_path_for_current_path, save_preferences_to_path,
 };
 
@@ -289,7 +289,7 @@ pub fn default_model_path_for_app<R: Runtime>(
     if changed {
         save_preferences_to_path(&preferences_path, &preferences)?;
     }
-    Ok(default_model_path(&preferences))
+    Ok(agent_model_path(&preferences))
 }
 
 pub fn stop_llama_runtime<R: Runtime>(app: &AppHandle<R>) {

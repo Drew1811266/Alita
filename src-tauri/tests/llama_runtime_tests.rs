@@ -1,6 +1,11 @@
-use std::{env, path::PathBuf};
+use std::{env, path::PathBuf, sync::Mutex};
 
-use alita_lib::llama_runtime;
+use alita_lib::{
+    llama_runtime,
+    preferences::{default_model_path, AppPreferences, ModelAssignments, ModelEntry},
+};
+
+static ALITA_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn default_config_is_disabled_until_model_path_is_set() {
@@ -68,7 +73,38 @@ fn env_model_path_overrides_preference_model_path() {
 }
 
 #[test]
+fn default_model_path_uses_agent_assignment_without_legacy_default() {
+    let assigned_path = PathBuf::from("D:\\Models\\agent-assigned.gguf");
+    let preferences = AppPreferences {
+        models: vec![ModelEntry {
+            model_id: "agent-assigned".to_string(),
+            name: "Agent Assigned".to_string(),
+            path: assigned_path.to_string_lossy().into_owned(),
+            source: "manual".to_string(),
+            runtime: "llama_cpp".to_string(),
+            model_kind: "agent_llm".to_string(),
+            path_kind: "file".to_string(),
+            file_exists: true,
+            created_at: "2026-05-17T00:00:00.000Z".to_string(),
+            updated_at: "2026-05-17T00:00:00.000Z".to_string(),
+        }],
+        model_assignments: ModelAssignments {
+            agent_chat_model_id: Some("agent-assigned".to_string()),
+            speech_to_text_model_id: None,
+        },
+        default_model_id: None,
+        ..AppPreferences::default()
+    };
+
+    assert_eq!(default_model_path(&preferences), Some(assigned_path));
+}
+
+#[test]
 fn env_config_uses_alita_vars() {
+    let _env_guard = ALITA_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     env::remove_var("ALITA_LLAMA_MODEL_PATH");
     env::remove_var("ALITA_LLAMA_GPU_LAYERS");
 
@@ -87,6 +123,10 @@ fn env_config_uses_alita_vars() {
 
 #[test]
 fn env_config_ignores_non_alita_vars() {
+    let _env_guard = ALITA_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let legacy_model_path_env = ["BOO", "OOK_LLAMA_MODEL_PATH"].concat();
     let legacy_gpu_layers_env = ["BOO", "OOK_LLAMA_GPU_LAYERS"].concat();
     env::remove_var("ALITA_LLAMA_MODEL_PATH");

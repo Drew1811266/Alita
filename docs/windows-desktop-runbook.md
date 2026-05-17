@@ -65,7 +65,9 @@ npm run llama:install
 .\scripts\install-llama-cpp.ps1 -Backend cpu
 ```
 
-配置模型路径后，软件启动时会自动拉起 `llama-server.exe`：
+常规本地模型配置入口是 Preferences 里的 `模型库`：Agent 模型选择 GGUF 文件，语音转文字模型选择 Qwen3-ASR-1.7B 模型目录。开发时仍可用环境变量覆盖本机路径。
+
+配置 Agent 模型路径后，软件启动时会自动拉起 `llama-server.exe`：
 
 ```powershell
 $env:ALITA_LLAMA_MODEL_PATH = "D:\Models\your-model.gguf"
@@ -73,11 +75,11 @@ $env:ALITA_LLAMA_GPU_LAYERS = "all"
 npm run desktop:dev
 ```
 
-默认本地模型服务地址为 `http://127.0.0.1:8766`。默认 GPU 层数是 `all`，也可以把 `ALITA_LLAMA_GPU_LAYERS` 设置为 `auto` 或具体数字。如果没有设置 `ALITA_LLAMA_MODEL_PATH`，软件会跳过启动本地模型服务，Agent sidecar 和现有工作台功能仍然可以运行。
+默认本地模型服务地址为 `http://127.0.0.1:8766`。默认 GPU 层数是 `all`，也可以把 `ALITA_LLAMA_GPU_LAYERS` 设置为 `auto` 或具体数字。如果既没有在 `模型库` 分配 Agent 模型，也没有设置 `ALITA_LLAMA_MODEL_PATH`，软件会跳过启动本地模型服务，Agent sidecar 和现有工作台功能仍然可以运行。
 
 ## 本地 ASR 开发
 
-开发环境中，当 `ALITA_ASR_MODEL_PATH` 指向本机 Qwen3-ASR-1.7B 模型目录时，语音输入会启用。ASR 路径不会写入项目文件。
+开发环境中，当 `ALITA_ASR_MODEL_PATH` 指向本机 Qwen3-ASR-1.7B 模型目录时，语音输入会启用。正常使用时可以在 Preferences 的 `模型库` 中分配语音转文字模型；`ALITA_ASR_MODEL_PATH` 仅作为开发覆盖。ASR 路径不会写入项目文件。
 
 示例：
 
