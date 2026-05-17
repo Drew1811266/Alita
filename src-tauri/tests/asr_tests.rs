@@ -46,6 +46,16 @@ fn rejects_payloads_over_max_size() {
 }
 
 #[test]
+fn asr_rejects_oversized_encoded_payload_before_decoding() {
+    let encoded_max = ((MAX_ASR_AUDIO_BYTES + 2) / 3) * 4;
+    let encoded = format!("!{}", "A".repeat(encoded_max));
+
+    let error = decode_wav_base64(&encoded).unwrap_err();
+
+    assert!(error.contains("voice audio payload is too large"));
+}
+
+#[test]
 fn writes_temp_audio_file_under_temp_directory() {
     let temp_dir = tempfile::tempdir().unwrap();
 

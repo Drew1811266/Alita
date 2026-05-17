@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const MAX_ASR_AUDIO_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ASR_AUDIO_BASE64_BYTES: usize = ((MAX_ASR_AUDIO_BYTES + 2) / 3) * 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +17,13 @@ pub struct TranscribeVoiceAudioPayload {
 }
 
 pub fn decode_wav_base64(payload: &str) -> Result<Vec<u8>, String> {
+    if payload.len() > MAX_ASR_AUDIO_BASE64_BYTES {
+        return Err(format!(
+            "voice audio payload is too large; maximum is {} bytes",
+            MAX_ASR_AUDIO_BYTES
+        ));
+    }
+
     let bytes = general_purpose::STANDARD
         .decode(payload)
         .map_err(|error| format!("invalid voice audio payload: {error}"))?;

@@ -2,6 +2,13 @@
 #[allow(dead_code)]
 mod agent_client;
 
+use std::{
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    thread::{self, JoinHandle},
+    time::Duration,
+};
+
 use agent_client::{
     AgentAttachment, AgentMessageRequest, AsrStatusResponse, AsrTranscriptionRequest,
 };
@@ -66,4 +73,178 @@ fn deserializes_asr_status_response() {
 
     assert!(!status.available);
     assert_eq!(status.error_code.as_deref(), Some("asr_not_configured"));
+}
+
+#[test]
+fn get_asr_status_sends_auth_header_to_status_endpoint() {
+    let (base_url, server) = spawn_test_server(
+        r#"{"available":true,"configured":true,"modelPath":"C:\\Models\\asr","message":"voice model is configured"}"#,
+    );
+    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-1");
+
+    let status = tauri::async_runtime::block_on(client.get_asr_status())
+        .expect("status request should succeed");
+    let request = server.join().expect("server should capture request");
+
+    assert!(status.available);
+    assert_eq!(request.method, "GET");
+    assert_eq!(request.path, "/asr/status");
+    assert_eq!(
+        request.header(agent_client::sidecar_token_header()),
+        Some("token-1")
+    );
+}
+
+#[test]
+fn transcribe_asr_audio_sends_auth_header_and_json_body() {
+    let (base_url, server) = spawn_test_server(r#"{"text":"ok"}"#);
+    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-2");
+    let request = AsrTranscriptionRequest {
+        audio_path: "C:\\Temp\\alita-asr-input.wav".to_string(),
+        language: "zh".to_string(),
+    };
+
+    let response = tauri::async_runtime::block_on(client.transcribe_asr_audio(&request))
+        .expect("transcription request should succeed");
+    let captured = server.join().expect("server should capture request");
+    let body: serde_json::Value =
+        serde_json::from_str(&captured.body).expect("request body should be JSON");
+
+    assert_eq!(response.text, "ok");
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.path, "/asr/transcribe");
+    assert_eq!(
+        captured.header(agent_client::sidecar_token_header()),
+        Some("token-2")
+    );
+    assert_eq!(captured.header("content-type"), Some("application/json"));
+    assert_eq!(body["audioPath"], "C:\\Temp\\alita-asr-input.wav");
+    assert_eq!(body["language"], "zh");
+}
+
+#[derive(Debug)]
+struct CapturedRequest {
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+    body: String,
+}
+
+impl CapturedRequest {
+    fn header(&self, name: &str) -> Option<&str> {
+        let name = name.to_ascii_lowercase();
+        self.headers
+            .iter()
+            .find(|(header_name, _)| header_name == &name)
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+fn spawn_test_server(response_body: &'static str) -> (String, JoinHandle<CapturedRequest>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+    let address = listener
+        .local_addr()
+        .expect("test server should have address");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("server should accept request");
+        let request = read_http_request(&mut stream);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("server should write response");
+
+        request
+    });
+
+    (format!("http://{address}"), server)
+}
+
+fn read_http_request(stream: &mut TcpStream) -> CapturedRequest {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout should be set");
+
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let mut header_end = None;
+    let mut expected_len = None;
+
+    loop {
+        let read = stream
+            .read(&mut buffer)
+            .expect("server should read request");
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+
+        if header_end.is_none() {
+            header_end = find_header_end(&bytes);
+        }
+
+        if let Some(end) = header_end {
+            if expected_len.is_none() {
+                expected_len = Some(end + 4 + content_length(&bytes[..end]));
+            }
+            if bytes.len() >= expected_len.unwrap() {
+                break;
+            }
+        }
+    }
+
+    parse_http_request(bytes)
+}
+
+fn find_header_end(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn content_length(header_bytes: &[u8]) -> usize {
+    let headers = String::from_utf8_lossy(header_bytes);
+    headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.eq_ignore_ascii_case("content-length") {
+                value.trim().parse::<usize>().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0)
+}
+
+fn parse_http_request(bytes: Vec<u8>) -> CapturedRequest {
+    let header_end = find_header_end(&bytes).expect("request should include headers");
+    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+    let mut lines = headers.lines();
+    let request_line = lines.next().expect("request should include request line");
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts
+        .next()
+        .expect("request should include method")
+        .to_string();
+    let path = request_parts
+        .next()
+        .expect("request should include path")
+        .to_string();
+    let headers = lines
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect();
+    let body = String::from_utf8(bytes[(header_end + 4)..].to_vec())
+        .expect("request body should be UTF-8");
+
+    CapturedRequest {
+        method,
+        path,
+        headers,
+        body,
+    }
 }
