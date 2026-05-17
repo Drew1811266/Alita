@@ -1,21 +1,28 @@
 use alita_lib::preferences::{
-    add_manual_model, default_model_path, ensure_model_storage_dir, import_model_to_storage,
-    load_preferences_from_path, recover_model_preferences,
-    record_recent_project, save_preferences_to_path, scan_model_directory, set_default_model,
-    set_model_storage_dir, summarize_tool_manifests, tool_enabled, AppPreferences, ModelEntry,
+    add_manual_model, add_speech_to_text_model, agent_model_path, default_model_path,
+    ensure_model_storage_dir, import_model_to_storage, load_preferences_from_path,
+    record_recent_project, recover_model_preferences, save_preferences_to_path,
+    scan_model_directory, set_default_model, set_model_assignment, set_model_storage_dir,
+    speech_to_text_model_path, summarize_tool_manifests, tool_enabled, AppPreferences,
+    ModelAssignmentRole, ModelEntry,
 };
 use std::fs;
 
 #[test]
-fn default_preferences_have_schema_version_one() {
+fn default_preferences_have_schema_version_two() {
     let preferences = AppPreferences::default();
 
-    assert_eq!(preferences.schema_version, 1);
+    assert_eq!(preferences.schema_version, 2);
     assert!(preferences.recent_projects.is_empty());
     assert!(preferences.models.is_empty());
     assert!(preferences.model_directories.is_empty());
     assert!(preferences.model_storage_dir.is_empty());
     assert!(preferences.default_model_id.is_none());
+    assert!(preferences.model_assignments.agent_chat_model_id.is_none());
+    assert!(preferences
+        .model_assignments
+        .speech_to_text_model_id
+        .is_none());
 }
 
 #[test]
@@ -29,6 +36,89 @@ fn saves_and_loads_preferences() {
     let loaded = load_preferences_from_path(&preferences_path).unwrap();
 
     assert_eq!(loaded.model_directories, vec!["D:\\Models"]);
+}
+
+#[test]
+fn loads_version_one_preferences_as_version_two_model_library() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let preferences_path = temp_dir.path().join("preferences.json");
+    let model_path = temp_dir.path().join("agent.gguf");
+    fs::write(&model_path, "model").unwrap();
+    fs::write(
+        &preferences_path,
+        format!(
+            r#"{{
+              "schemaVersion": 1,
+              "recentProjects": [],
+              "modelDirectories": [],
+              "modelStorageDir": "",
+              "models": [{{
+                "modelId": "model-1",
+                "name": "agent",
+                "path": "{}",
+                "source": "manual",
+                "runtime": "llama_cpp",
+                "fileExists": true,
+                "createdAt": "2026-05-17T00:00:00.000Z",
+                "updatedAt": "2026-05-17T00:00:00.000Z"
+              }}],
+              "defaultModelId": "model-1",
+              "toolEnablement": {{}}
+            }}"#,
+            model_path.to_string_lossy().replace('\\', "\\\\")
+        ),
+    )
+    .unwrap();
+
+    let preferences = load_preferences_from_path(&preferences_path).unwrap();
+
+    assert_eq!(preferences.schema_version, 2);
+    assert_eq!(preferences.models[0].model_kind, "agent_llm");
+    assert_eq!(preferences.models[0].path_kind, "file");
+    assert_eq!(
+        preferences.model_assignments.agent_chat_model_id.as_deref(),
+        Some("model-1")
+    );
+    assert_eq!(agent_model_path(&preferences), Some(model_path));
+}
+
+#[test]
+fn adds_speech_to_text_model_directory_and_assigns_it() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let asr_dir = temp_dir.path().join("Qwen3-ASR-1.7B");
+    fs::create_dir_all(&asr_dir).unwrap();
+    let mut preferences = AppPreferences::default();
+
+    let model = add_speech_to_text_model(&mut preferences, &asr_dir).unwrap();
+    set_model_assignment(
+        &mut preferences,
+        ModelAssignmentRole::SpeechToText,
+        Some(&model.model_id),
+    )
+    .unwrap();
+
+    assert_eq!(model.model_kind, "speech_to_text");
+    assert_eq!(model.runtime, "qwen_asr");
+    assert_eq!(model.path_kind, "directory");
+    assert_eq!(speech_to_text_model_path(&preferences), Some(asr_dir));
+}
+
+#[test]
+fn rejects_assignment_to_wrong_model_kind() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let model_path = temp_dir.path().join("agent.gguf");
+    fs::write(&model_path, "model").unwrap();
+    let mut preferences = AppPreferences::default();
+    let model = add_manual_model(&mut preferences, &model_path).unwrap();
+
+    let error = set_model_assignment(
+        &mut preferences,
+        ModelAssignmentRole::SpeechToText,
+        Some(&model.model_id),
+    )
+    .unwrap_err();
+
+    assert!(error.contains("speech_to_text"));
 }
 
 #[test]
@@ -64,6 +154,8 @@ fn recovers_default_model_from_previous_project_directory() {
             path: previous_model_path.to_string_lossy().into_owned(),
             source: "imported".to_string(),
             runtime: "llama_cpp".to_string(),
+            model_kind: "agent_llm".to_string(),
+            path_kind: "file".to_string(),
             file_exists: true,
             created_at: "2026-05-10T00:00:00.000Z".to_string(),
             updated_at: "2026-05-10T00:00:00.000Z".to_string(),

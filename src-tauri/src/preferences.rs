@@ -8,7 +8,29 @@ use std::{
 };
 use uuid::Uuid;
 
-const PREFERENCES_SCHEMA_VERSION: u32 = 1;
+const PREFERENCES_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelAssignments {
+    pub agent_chat_model_id: Option<String>,
+    pub speech_to_text_model_id: Option<String>,
+}
+
+impl Default for ModelAssignments {
+    fn default() -> Self {
+        Self {
+            agent_chat_model_id: None,
+            speech_to_text_model_id: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelAssignmentRole {
+    AgentChat,
+    SpeechToText,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +42,8 @@ pub struct AppPreferences {
     pub model_storage_dir: String,
     pub models: Vec<ModelEntry>,
     pub default_model_id: Option<String>,
+    #[serde(default)]
+    pub model_assignments: ModelAssignments,
     pub tool_enablement: HashMap<String, bool>,
 }
 
@@ -32,6 +56,7 @@ impl Default for AppPreferences {
             model_storage_dir: String::new(),
             models: Vec::new(),
             default_model_id: None,
+            model_assignments: ModelAssignments::default(),
             tool_enablement: HashMap::new(),
         }
     }
@@ -45,9 +70,21 @@ pub struct ModelEntry {
     pub path: String,
     pub source: String,
     pub runtime: String,
+    #[serde(default = "default_agent_model_kind")]
+    pub model_kind: String,
+    #[serde(default = "default_file_path_kind")]
+    pub path_kind: String,
     pub file_exists: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+fn default_agent_model_kind() -> String {
+    "agent_llm".to_string()
+}
+
+fn default_file_path_kind() -> String {
+    "file".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,17 +115,45 @@ pub fn load_preferences_from_path(path: impl AsRef<Path>) -> Result<AppPreferenc
 
     let contents = fs::read_to_string(path)
         .map_err(|error| format!("failed to read preferences '{}': {error}", path.display()))?;
-    let preferences: AppPreferences = serde_json::from_str(&contents)
+    let value: serde_json::Value = serde_json::from_str(&contents)
         .map_err(|error| format!("failed to parse preferences '{}': {error}", path.display()))?;
+    let schema_version = value
+        .get("schemaVersion")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(1) as u32;
 
-    if preferences.schema_version != PREFERENCES_SCHEMA_VERSION {
-        return Err(format!(
-            "unsupported preferences schema version: {}",
-            preferences.schema_version
-        ));
+    let mut preferences: AppPreferences = match schema_version {
+        1 | 2 => serde_json::from_value(value).map_err(|error| {
+            format!("failed to parse preferences '{}': {error}", path.display())
+        })?,
+        version => return Err(format!("unsupported preferences schema version: {version}")),
+    };
+
+    if preferences.schema_version == 1 {
+        migrate_preferences_v1_to_v2(&mut preferences);
     }
-
+    normalize_preferences(&mut preferences);
     Ok(preferences)
+}
+
+fn migrate_preferences_v1_to_v2(preferences: &mut AppPreferences) {
+    preferences.schema_version = PREFERENCES_SCHEMA_VERSION;
+    if preferences.model_assignments.agent_chat_model_id.is_none() {
+        preferences.model_assignments.agent_chat_model_id = preferences.default_model_id.clone();
+    }
+    for model in &mut preferences.models {
+        model.model_kind = "agent_llm".to_string();
+        model.runtime = "llama_cpp".to_string();
+        model.path_kind = "file".to_string();
+    }
+}
+
+fn normalize_preferences(preferences: &mut AppPreferences) {
+    preferences.schema_version = PREFERENCES_SCHEMA_VERSION;
+    if preferences.model_assignments.agent_chat_model_id.is_none() {
+        preferences.model_assignments.agent_chat_model_id = preferences.default_model_id.clone();
+    }
+    preferences.default_model_id = preferences.model_assignments.agent_chat_model_id.clone();
 }
 
 pub fn load_preferences_with_model_recovery(
@@ -179,6 +244,27 @@ pub fn add_manual_model(
     add_or_update_model(preferences, path.as_ref(), "manual")
 }
 
+pub fn add_speech_to_text_model(
+    preferences: &mut AppPreferences,
+    path: impl AsRef<Path>,
+) -> Result<ModelEntry, String> {
+    let path = path.as_ref();
+    if !path.is_dir() {
+        return Err(format!(
+            "speech-to-text model directory is not accessible: {}",
+            path.display()
+        ));
+    }
+    add_or_update_typed_model(
+        preferences,
+        path,
+        "manual",
+        "speech_to_text",
+        "qwen_asr",
+        "directory",
+    )
+}
+
 pub fn recover_model_preferences(
     preferences: &mut AppPreferences,
     previous_preferences: &AppPreferences,
@@ -204,6 +290,7 @@ pub fn recover_model_preferences(
     }
 
     if let Some(model_id) = recovered_default_model_id {
+        preferences.model_assignments.agent_chat_model_id = Some(model_id.clone());
         preferences.default_model_id = Some(model_id);
     }
 
@@ -332,29 +419,98 @@ pub fn set_default_model(
     preferences: &mut AppPreferences,
     model_id: Option<&str>,
 ) -> Result<(), String> {
+    set_model_assignment(preferences, ModelAssignmentRole::AgentChat, model_id)
+}
+
+pub fn set_model_assignment(
+    preferences: &mut AppPreferences,
+    role: ModelAssignmentRole,
+    model_id: Option<&str>,
+) -> Result<(), String> {
     let Some(model_id) = model_id else {
-        preferences.default_model_id = None;
+        match role {
+            ModelAssignmentRole::AgentChat => {
+                preferences.model_assignments.agent_chat_model_id = None;
+                preferences.default_model_id = None;
+            }
+            ModelAssignmentRole::SpeechToText => {
+                preferences.model_assignments.speech_to_text_model_id = None;
+            }
+        }
         return Ok(());
     };
 
-    let exists = preferences
+    let expected_kind = match role {
+        ModelAssignmentRole::AgentChat => "agent_llm",
+        ModelAssignmentRole::SpeechToText => "speech_to_text",
+    };
+    let model = preferences
         .models
         .iter()
-        .any(|model| model.model_id == model_id);
-    if !exists {
-        return Err(format!("unknown model id: {model_id}"));
+        .find(|model| model.model_id == model_id)
+        .ok_or_else(|| format!("unknown model id: {model_id}"))?;
+    if model.model_kind != expected_kind {
+        return Err(format!(
+            "model '{model_id}' cannot be assigned to {expected_kind}"
+        ));
     }
 
-    preferences.default_model_id = Some(model_id.to_string());
+    match role {
+        ModelAssignmentRole::AgentChat => {
+            preferences.model_assignments.agent_chat_model_id = Some(model_id.to_string());
+            preferences.default_model_id = Some(model_id.to_string());
+        }
+        ModelAssignmentRole::SpeechToText => {
+            preferences.model_assignments.speech_to_text_model_id = Some(model_id.to_string());
+        }
+    }
     Ok(())
 }
 
 pub fn default_model_path(preferences: &AppPreferences) -> Option<PathBuf> {
-    let default_model_id = preferences.default_model_id.as_ref()?;
+    agent_model_path(preferences)
+}
+
+pub fn agent_model_path(preferences: &AppPreferences) -> Option<PathBuf> {
+    assigned_model_path(
+        preferences,
+        preferences
+            .model_assignments
+            .agent_chat_model_id
+            .as_deref()
+            .or(preferences.default_model_id.as_deref()),
+        "agent_llm",
+        "file",
+    )
+}
+
+pub fn speech_to_text_model_path(preferences: &AppPreferences) -> Option<PathBuf> {
+    assigned_model_path(
+        preferences,
+        preferences
+            .model_assignments
+            .speech_to_text_model_id
+            .as_deref(),
+        "speech_to_text",
+        "directory",
+    )
+}
+
+fn assigned_model_path(
+    preferences: &AppPreferences,
+    model_id: Option<&str>,
+    model_kind: &str,
+    path_kind: &str,
+) -> Option<PathBuf> {
+    let default_model_id = model_id?;
     preferences
         .models
         .iter()
-        .find(|model| &model.model_id == default_model_id)
+        .find(|model| {
+            model.model_id == default_model_id
+                && model.model_kind == model_kind
+                && model.path_kind == path_kind
+        })
         .map(|model| PathBuf::from(&model.path))
 }
 
@@ -552,33 +708,39 @@ pub fn record_recent_project(preferences: &mut AppPreferences, project_path: &st
     preferences.recent_projects.truncate(8);
 }
 
-fn add_or_update_model(
+fn add_or_update_typed_model(
     preferences: &mut AppPreferences,
     path: &Path,
     source: &str,
+    model_kind: &str,
+    runtime: &str,
+    path_kind: &str,
 ) -> Result<ModelEntry, String> {
     let path_text = path.to_string_lossy().into_owned();
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let name = path
         .file_stem()
+        .or_else(|| path.file_name())
         .and_then(|name| name.to_str())
         .unwrap_or("未命名模型")
         .to_string();
-    let file_exists = path.exists();
+    let file_exists = match path_kind {
+        "directory" => path.is_dir(),
+        _ => path.is_file(),
+    };
 
-    if let Some(existing) = preferences
-        .models
-        .iter_mut()
-        .find(|model| model.path == path_text)
-    {
+    if let Some(existing) = preferences.models.iter_mut().find(|model| {
+        model.path == path_text && model.model_kind == model_kind && model.runtime == runtime
+    }) {
         existing.name = name;
         existing.source = source.to_string();
+        existing.runtime = runtime.to_string();
+        existing.model_kind = model_kind.to_string();
+        existing.path_kind = path_kind.to_string();
         existing.file_exists = file_exists;
         existing.updated_at = now;
         let entry = existing.clone();
-        if preferences.default_model_id.is_none() {
-            preferences.default_model_id = Some(entry.model_id.clone());
-        }
+        assign_first_model_for_kind(preferences, &entry, model_kind);
         return Ok(entry);
     }
 
@@ -587,14 +749,44 @@ fn add_or_update_model(
         name,
         path: path_text,
         source: source.to_string(),
-        runtime: "llama_cpp".to_string(),
+        runtime: runtime.to_string(),
+        model_kind: model_kind.to_string(),
+        path_kind: path_kind.to_string(),
         file_exists,
         created_at: now.clone(),
         updated_at: now,
     };
-    if preferences.default_model_id.is_none() {
-        preferences.default_model_id = Some(entry.model_id.clone());
-    }
+    assign_first_model_for_kind(preferences, &entry, model_kind);
     preferences.models.push(entry.clone());
     Ok(entry)
+}
+
+fn assign_first_model_for_kind(
+    preferences: &mut AppPreferences,
+    entry: &ModelEntry,
+    model_kind: &str,
+) {
+    match model_kind {
+        "agent_llm" if preferences.model_assignments.agent_chat_model_id.is_none() => {
+            preferences.model_assignments.agent_chat_model_id = Some(entry.model_id.clone());
+            preferences.default_model_id = Some(entry.model_id.clone());
+        }
+        "speech_to_text"
+            if preferences
+                .model_assignments
+                .speech_to_text_model_id
+                .is_none() =>
+        {
+            preferences.model_assignments.speech_to_text_model_id = Some(entry.model_id.clone());
+        }
+        _ => {}
+    }
+}
+
+fn add_or_update_model(
+    preferences: &mut AppPreferences,
+    path: &Path,
+    source: &str,
+) -> Result<ModelEntry, String> {
+    add_or_update_typed_model(preferences, path, source, "agent_llm", "llama_cpp", "file")
 }
