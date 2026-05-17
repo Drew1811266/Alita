@@ -49,7 +49,7 @@ export function encodeWav(
   const pcmSamples =
     sampleRate === TARGET_SAMPLE_RATE
       ? samples
-      : resampleNearest(samples, sampleRate, TARGET_SAMPLE_RATE);
+      : resampleLinear(samples, sampleRate, TARGET_SAMPLE_RATE);
   const dataSize = pcmSamples.length * BYTES_PER_SAMPLE;
   const wav = new Uint8Array(WAV_HEADER_BYTES + dataSize);
   const view = new DataView(wav.buffer);
@@ -98,7 +98,7 @@ function padTimerPart(value: number): string {
   return value.toString().padStart(2, "0");
 }
 
-function resampleNearest(
+function resampleLinear(
   samples: Float32Array,
   sourceRate: number,
   targetRate: number,
@@ -118,11 +118,14 @@ function resampleNearest(
   const output = new Float32Array(outputLength);
 
   for (let index = 0; index < outputLength; index += 1) {
-    const sourceIndex = Math.min(
-      samples.length - 1,
-      Math.round((index * sourceRate) / targetRate),
-    );
-    output[index] = samples[sourceIndex];
+    const sourcePosition = (index * sourceRate) / targetRate;
+    const sourceIndex = Math.floor(sourcePosition);
+    const nextIndex = Math.min(sourceIndex + 1, samples.length - 1);
+    const fraction = sourcePosition - sourceIndex;
+    const start = samples[Math.min(sourceIndex, samples.length - 1)];
+    const end = samples[nextIndex];
+
+    output[index] = start + (end - start) * fraction;
   }
 
   return output;

@@ -43,6 +43,26 @@ describe("insertTranscriptIntoDraft", () => {
     ).toBe("请详细分析");
   });
 
+  it("normalizes reversed selection offsets before replacing", () => {
+    expect(
+      insertTranscriptIntoDraft({
+        currentDraft: "请快速处理",
+        transcript: "详细分析",
+        selection: { start: 5, end: 1 },
+      }),
+    ).toBe("请详细分析");
+  });
+
+  it("clamps negative and fractional selection offsets", () => {
+    expect(
+      insertTranscriptIntoDraft({
+        currentDraft: "请快速处理",
+        transcript: "慢慢",
+        selection: { start: -2.7, end: 2.9 },
+      }),
+    ).toBe("慢慢速处理");
+  });
+
   it("clamps stale selection offsets to the current draft", () => {
     expect(
       insertTranscriptIntoDraft({

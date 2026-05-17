@@ -14,11 +14,22 @@ afterEach(() => {
 });
 
 describe("getAsrStatus", () => {
-  it("returns unavailable status when the command fails", async () => {
+  it("returns unavailable status with the Error rejection message", async () => {
     invokeMock.mockRejectedValue(new Error("sidecar offline"));
 
     await expect(getAsrStatus()).resolves.toMatchObject({
       available: false,
+      message: "sidecar offline",
+      errorCode: "asr_status_unavailable",
+    });
+  });
+
+  it("returns unavailable status with the string rejection message", async () => {
+    invokeMock.mockRejectedValue("sidecar unavailable");
+
+    await expect(getAsrStatus()).resolves.toMatchObject({
+      available: false,
+      message: "sidecar unavailable",
       errorCode: "asr_status_unavailable",
     });
   });

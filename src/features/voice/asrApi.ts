@@ -22,8 +22,7 @@ export async function getAsrStatus(): Promise<AsrStatus> {
       available: false,
       configured: false,
       modelPath: null,
-      message:
-        error instanceof Error ? error.message : "ASR status is unavailable",
+      message: asrStatusErrorMessage(error),
       errorCode: "asr_status_unavailable",
     };
   }
@@ -35,4 +34,16 @@ export async function transcribeVoiceAudio(
   return await invoke<AsrTranscription>("transcribe_voice_audio", {
     payload: { wavBase64: bytesToBase64(wavBytes) },
   });
+}
+
+function asrStatusErrorMessage(error: unknown): string {
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return "ASR status is unavailable";
 }
