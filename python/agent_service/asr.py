@@ -30,6 +30,7 @@ class ASRStatus(BaseModel):
 
 class TranscriptionRequest(BaseModel):
     audioPath: str
+    modelPath: str | None = None
     language: str = Field(default="zh")
 
 
@@ -58,8 +59,9 @@ def configured_model_path() -> Path | None:
 
 def get_asr_status(
     dependency_available: Callable[[], bool] = qwen_asr_dependency_available,
+    model_path: Path | None = None,
 ) -> ASRStatus:
-    model_path = configured_model_path()
+    model_path = model_path or configured_model_path()
     if model_path is None:
         return ASRStatus(
             available=False,
@@ -193,7 +195,15 @@ class ASRService:
         if not self._lock.acquire(blocking=False):
             raise ASRError("asr_busy", "transcription is already running")
         try:
-            resolved_model_path = model_path or configured_model_path()
+            resolved_model_path = (
+                model_path
+                or (
+                    Path(request.modelPath).expanduser()
+                    if request.modelPath is not None
+                    else None
+                )
+                or configured_model_path()
+            )
             if resolved_model_path is None:
                 raise ASRError(
                     "asr_not_configured",

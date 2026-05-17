@@ -12,8 +12,8 @@ use crate::{
         load_preferences_with_model_recovery, model_recovery_candidate_dirs,
         previous_preferences_path_for_current_path, record_recent_project,
         save_preferences_to_path, scan_model_directory, set_default_model, set_model_assignment,
-        set_model_storage_dir, summarize_tool_manifests, AppPreferences, ModelAssignmentRole,
-        ToolSummary,
+        set_model_storage_dir, speech_to_text_model_path, summarize_tool_manifests, AppPreferences,
+        ModelAssignmentRole, ToolSummary,
     },
     project::{
         load_project_from_path, new_project, save_project_to_path, AlitaProject, ProjectOpenResult,
@@ -246,10 +246,25 @@ pub async fn submit_user_message(
 
 #[tauri::command]
 pub async fn get_asr_status(app: AppHandle) -> Result<AsrStatusResponse, String> {
+    let model_path = match configured_asr_model_path(&app)? {
+        Some(path) => path,
+        None => {
+            return Ok(AsrStatusResponse {
+                available: false,
+                configured: false,
+                model_path: None,
+                message: "voice model is not configured".to_string(),
+                error_code: Some("asr_not_configured".to_string()),
+            });
+        }
+    };
+    let model_path_text = model_path.to_string_lossy().to_string();
     let client = AgentClient::new(crate::sidecar::agent_base_url())
         .with_auth_token(crate::sidecar::sidecar_auth_token(&app)?);
 
-    client.get_asr_status().await
+    client
+        .get_asr_status_for_model(Some(model_path_text.as_str()))
+        .await
 }
 
 #[tauri::command]
@@ -257,6 +272,8 @@ pub async fn transcribe_voice_audio(
     app: AppHandle,
     payload: TranscribeVoiceAudioPayload,
 ) -> Result<AsrTranscriptionResponse, String> {
+    let model_path = configured_asr_model_path(&app)?
+        .ok_or_else(|| "voice model is not configured".to_string())?;
     let client = AgentClient::new(crate::sidecar::agent_base_url())
         .with_auth_token(crate::sidecar::sidecar_auth_token(&app)?);
     let audio_bytes = decode_wav_base64(&payload.wav_base64)?;
@@ -264,6 +281,7 @@ pub async fn transcribe_voice_audio(
     let request = AsrTranscriptionRequest {
         audio_path: temp_audio_path.to_string_lossy().to_string(),
         language: "zh".to_string(),
+        model_path: Some(model_path.to_string_lossy().to_string()),
     };
 
     let result = client.transcribe_asr_audio(&request).await;
@@ -525,6 +543,17 @@ fn load_preferences_for_app(app: &AppHandle) -> Result<(PathBuf, AppPreferences)
         save_preferences_to_path(&path, &preferences)?;
     }
     Ok((path, preferences))
+}
+
+fn configured_asr_model_path(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    if let Ok(value) = std::env::var("ALITA_ASR_MODEL_PATH") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(Some(PathBuf::from(trimmed)));
+        }
+    }
+    let (_, preferences) = load_preferences_for_app(app)?;
+    Ok(speech_to_text_model_path(&preferences))
 }
 
 fn packages_root() -> PathBuf {

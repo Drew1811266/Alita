@@ -52,12 +52,29 @@ fn serializes_asr_transcription_request() {
     let request = AsrTranscriptionRequest {
         audio_path: "C:\\Temp\\alita-asr-input.wav".to_string(),
         language: "zh".to_string(),
+        model_path: None,
     };
 
     let json = serde_json::to_value(request).expect("request should serialize");
 
     assert_eq!(json["audioPath"], "C:\\Temp\\alita-asr-input.wav");
     assert_eq!(json["language"], "zh");
+    assert!(json.get("modelPath").is_none());
+}
+
+#[test]
+fn serializes_asr_transcription_request_with_model_path() {
+    let request = AsrTranscriptionRequest {
+        audio_path: "C:\\Temp\\alita-asr-input.wav".to_string(),
+        language: "zh".to_string(),
+        model_path: Some("C:\\Models\\Qwen3-ASR-1.7B".to_string()),
+    };
+
+    let json = serde_json::to_value(request).expect("request should serialize");
+
+    assert_eq!(json["audioPath"], "C:\\Temp\\alita-asr-input.wav");
+    assert_eq!(json["language"], "zh");
+    assert_eq!(json["modelPath"], "C:\\Models\\Qwen3-ASR-1.7B");
 }
 
 #[test]
@@ -96,12 +113,38 @@ fn get_asr_status_sends_auth_header_to_status_endpoint() {
 }
 
 #[test]
+fn get_asr_status_for_model_sends_model_path_query_and_auth_header() {
+    let (base_url, server) = spawn_test_server(
+        r#"{"available":true,"configured":true,"modelPath":"C:\\Models\\Qwen3-ASR-1.7B","message":"voice model is configured"}"#,
+    );
+    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-model");
+
+    let status = tauri::async_runtime::block_on(
+        client.get_asr_status_for_model(Some("C:\\Models\\Qwen3-ASR-1.7B")),
+    )
+    .expect("status request should succeed");
+    let request = server.join().expect("server should capture request");
+
+    assert!(status.available);
+    assert_eq!(request.method, "GET");
+    assert_eq!(
+        request.path,
+        "/asr/status?modelPath=C%3A%5CModels%5CQwen3-ASR-1.7B"
+    );
+    assert_eq!(
+        request.header(agent_client::sidecar_token_header()),
+        Some("token-model")
+    );
+}
+
+#[test]
 fn transcribe_asr_audio_sends_auth_header_and_json_body() {
     let (base_url, server) = spawn_test_server(r#"{"text":"ok"}"#);
     let client = agent_client::AgentClient::new(base_url).with_auth_token("token-2");
     let request = AsrTranscriptionRequest {
         audio_path: "C:\\Temp\\alita-asr-input.wav".to_string(),
         language: "zh".to_string(),
+        model_path: Some("C:\\Models\\Qwen3-ASR-1.7B".to_string()),
     };
 
     let response = tauri::async_runtime::block_on(client.transcribe_asr_audio(&request))
@@ -120,6 +163,7 @@ fn transcribe_asr_audio_sends_auth_header_and_json_body() {
     assert_eq!(captured.header("content-type"), Some("application/json"));
     assert_eq!(body["audioPath"], "C:\\Temp\\alita-asr-input.wav");
     assert_eq!(body["language"], "zh");
+    assert_eq!(body["modelPath"], "C:\\Models\\Qwen3-ASR-1.7B");
 }
 
 #[derive(Debug)]

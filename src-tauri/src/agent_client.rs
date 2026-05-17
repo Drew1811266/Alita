@@ -37,6 +37,8 @@ pub struct AsrStatusResponse {
 pub struct AsrTranscriptionRequest {
     pub audio_path: String,
     pub language: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -95,8 +97,18 @@ impl AgentClient {
     }
 
     pub async fn get_asr_status(&self) -> Result<AsrStatusResponse, String> {
+        self.get_asr_status_for_model(None).await
+    }
+
+    pub async fn get_asr_status_for_model(
+        &self,
+        model_path: Option<&str>,
+    ) -> Result<AsrStatusResponse, String> {
         let url = format!("{}/asr/status", self.base_url.trim_end_matches('/'));
         let mut request_builder = self.http.get(url);
+        if let Some(model_path) = model_path {
+            request_builder = request_builder.query(&[("modelPath", model_path)]);
+        }
         if let Some(token) = &self.auth_token {
             request_builder = request_builder.header(sidecar_token_header(), token);
         }

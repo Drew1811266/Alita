@@ -116,6 +116,20 @@ def test_status_reports_available_model(monkeypatch, tmp_path):
     assert status.errorCode is None
 
 
+def test_status_accepts_explicit_model_path(monkeypatch, tmp_path):
+    monkeypatch.delenv(ALITA_ASR_MODEL_PATH_ENV, raising=False)
+    model_dir = tmp_path / "Qwen3-ASR-1.7B"
+    model_dir.mkdir()
+
+    status = get_asr_status(
+        model_path=model_dir,
+        dependency_available=lambda: True,
+    )
+
+    assert status.available is True
+    assert status.modelPath == str(model_dir)
+
+
 @pytest.mark.parametrize("language", ["zh", "zh-CN", "chinese"])
 def test_qwen_provider_loads_cpu_model_and_normalizes_chinese_language(
     monkeypatch, tmp_path, language
@@ -167,6 +181,31 @@ def test_transcribe_uses_provider_and_language(tmp_path):
     )
 
     assert result.text == "hello from audio"
+    assert provider.calls == [(audio_path, "zh")]
+
+
+def test_transcribe_uses_request_model_path(tmp_path):
+    audio_path = tmp_path / "input.wav"
+    audio_path.write_bytes(b"RIFF....WAVEfmt ")
+    model_dir = tmp_path / "Qwen3-ASR-1.7B"
+    model_dir.mkdir()
+    provider = FakeProvider(text="hello from request model")
+    provider_model_paths = []
+    service = ASRService(
+        provider_factory=lambda model_path: (
+            provider_model_paths.append(model_path) or provider
+        ),
+    )
+
+    result = service.transcribe(
+        TranscriptionRequest(
+            audioPath=str(audio_path),
+            modelPath=str(model_dir),
+        ),
+    )
+
+    assert result.text == "hello from request model"
+    assert provider_model_paths == [model_dir]
     assert provider.calls == [(audio_path, "zh")]
 
 
@@ -254,6 +293,31 @@ def test_asr_transcribe_endpoint_returns_transcript(monkeypatch):
     assert response.json() == {"text": "endpoint transcript"}
     assert service.requests == [
         TranscriptionRequest(audioPath="input.wav", language="zh")
+    ]
+
+
+def test_asr_transcribe_endpoint_preserves_model_path(monkeypatch):
+    monkeypatch.delenv(app_module.SIDECAR_TOKEN_ENV, raising=False)
+    service = FakeEndpointService(TranscriptionResponse(text="endpoint transcript"))
+    monkeypatch.setattr(app_module, "DEFAULT_ASR_SERVICE", service)
+    client = TestClient(app)
+
+    response = client.post(
+        "/asr/transcribe",
+        json={
+            "audioPath": "input.wav",
+            "language": "zh",
+            "modelPath": "C:\\Models\\Qwen3-ASR-1.7B",
+        },
+    )
+
+    assert response.status_code == 200
+    assert service.requests == [
+        TranscriptionRequest(
+            audioPath="input.wav",
+            language="zh",
+            modelPath="C:\\Models\\Qwen3-ASR-1.7B",
+        )
     ]
 
 

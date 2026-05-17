@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,8 +54,12 @@ def health() -> dict[str, str]:
 
 
 @app.get("/asr/status", response_model=ASRStatus)
-def asr_status(_auth: None = Depends(require_sidecar_token)) -> ASRStatus:
-    return get_asr_status()
+def asr_status(
+    modelPath: str | None = None,
+    _auth: None = Depends(require_sidecar_token),
+) -> ASRStatus:
+    path = Path(modelPath).expanduser() if modelPath is not None else None
+    return get_asr_status(model_path=path)
 
 
 @app.post("/asr/transcribe", response_model=TranscriptionResponse)
