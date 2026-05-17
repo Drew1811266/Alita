@@ -402,6 +402,49 @@ button:focus-visible {
   outline-offset: 2px;
 }
 
+.voiceTrack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #cbd5df;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.voiceLevelBars {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  height: 24px;
+}
+
+.voiceLevelBar {
+  width: 4px;
+  min-height: 8%;
+  border-radius: 999px;
+  background: #0f766e;
+}
+
+.voiceTimer {
+  color: #475569;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.voiceInputError {
+  margin: 8px 0 0;
+  color: #b91c1c;
+  font-size: 13px;
+  line-height: 18px;
+}
+
 .composerActions {
   display: flex;
   justify-content: flex-end;
@@ -1079,7 +1122,7 @@ button:focus-visible {
 
   .composerActions {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .primaryButton,

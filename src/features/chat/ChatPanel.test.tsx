@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   ChatPanel,
   createComposerKeyDownHandler,
+  type VoiceInputView,
   scrollMessageListToBottom,
 } from "./ChatPanel";
 import type { ChatAttachment, ChatMessage } from "../../shared/types";
@@ -50,7 +51,16 @@ const messages: ChatMessage[] = [
   },
 ];
 
-function renderChatPanel() {
+const idleVoiceInput: VoiceInputView = {
+  available: true,
+  status: "idle",
+  message: null,
+  elapsedSeconds: 0,
+  maxSeconds: 60,
+  levels: [],
+};
+
+function renderChatPanel(voiceInput: VoiceInputView = idleVoiceInput) {
   return renderToStaticMarkup(
     <ChatPanel
       messages={messages}
@@ -59,6 +69,9 @@ function renderChatPanel() {
       onDraftChange={() => undefined}
       onSend={() => undefined}
       onAddFile={() => undefined}
+      voiceInput={voiceInput}
+      onVoiceToggle={() => undefined}
+      onDraftSelectionChange={() => undefined}
     />,
   );
 }
@@ -80,14 +93,51 @@ describe("ChatPanel", () => {
     expect(markup).toContain("输入你的问题或说明要处理的文档任务");
   });
 
-  it("renders add-file and send buttons as visible Chinese actions", () => {
+  it("renders add-file, voice, and send buttons as visible Chinese actions", () => {
     const markup = renderChatPanel();
 
     expect(markup).toContain("添加文件");
     expect(markup).toContain("发送");
-    expect((markup.match(/type="button"/g) ?? []).length).toBe(2);
+    expect(markup).toContain("语音");
+    expect((markup.match(/type="button"/g) ?? []).length).toBe(3);
     expect(markup).toContain('aria-label="添加文件"');
+    expect(markup.indexOf('aria-label="添加文件"')).toBeLessThan(
+      markup.indexOf('aria-label="语音输入"'),
+    );
+    expect(markup.indexOf('aria-label="语音输入"')).toBeLessThan(
+      markup.indexOf('aria-label="发送消息"'),
+    );
     expect(markup).toContain('aria-label="发送消息"');
+  });
+
+  it("disables voice input when the voice model is unavailable", () => {
+    const markup = renderChatPanel({
+      available: false,
+      status: "unavailable",
+      message: "未配置语音模型",
+      elapsedSeconds: 0,
+      maxSeconds: 60,
+      levels: [],
+    });
+
+    expect(markup).toContain(
+      '<button aria-label="语音输入" class="secondaryButton voiceButton" disabled="" title="未配置语音模型" type="button">',
+    );
+    expect(markup).toContain("未配置语音模型");
+  });
+
+  it("renders the recording track while voice input is recording", () => {
+    const markup = renderChatPanel({
+      available: true,
+      status: "recording",
+      message: "录音中",
+      elapsedSeconds: 8,
+      maxSeconds: 60,
+      levels: [0.2, 0.9],
+    });
+
+    expect(markup).toContain("00:08 / 01:00");
+    expect(markup).toContain("voiceLevelBar");
   });
 
   it("sends the message on Enter without preventing Shift+Enter newlines", () => {

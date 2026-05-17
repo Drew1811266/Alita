@@ -1,6 +1,25 @@
 import { useEffect, useRef, type ChangeEvent } from "react";
 
 import type { ChatAttachment, ChatMessage } from "../../shared/types";
+import { AudioTrack } from "../voice/AudioTrack";
+import type { DraftSelection } from "../voice/draftInsertion";
+
+export type VoiceInputStatus =
+  | "checking"
+  | "unavailable"
+  | "idle"
+  | "recording"
+  | "transcribing"
+  | "failed";
+
+export type VoiceInputView = {
+  available: boolean;
+  status: VoiceInputStatus;
+  message: string | null;
+  elapsedSeconds: number;
+  maxSeconds: number;
+  levels: number[];
+};
 
 type ChatPanelProps = {
   messages: ChatMessage[];
@@ -9,6 +28,18 @@ type ChatPanelProps = {
   onDraftChange(value: string): void;
   onSend(): void;
   onAddFile(): void;
+  voiceInput?: VoiceInputView;
+  onVoiceToggle?(selection: DraftSelection | null): void;
+  onDraftSelectionChange?(selection: DraftSelection | null): void;
+};
+
+const idleVoiceInput: VoiceInputView = {
+  available: true,
+  status: "idle",
+  message: null,
+  elapsedSeconds: 0,
+  maxSeconds: 60,
+  levels: [],
 };
 
 const roleLabels: Record<ChatMessage["role"], string> = {
@@ -61,12 +92,33 @@ export function ChatPanel({
   onDraftChange,
   onSend,
   onAddFile,
+  voiceInput = idleVoiceInput,
+  onVoiceToggle = () => undefined,
+  onDraftSelectionChange = () => undefined,
 }: ChatPanelProps) {
   const handleDraftChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     onDraftChange(event.target.value);
   };
   const handleDraftKeyDown = createComposerKeyDownHandler(onSend);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const currentSelection = (): DraftSelection | null => {
+    const textarea = textareaRef.current;
+
+    if (!textarea) {
+      return null;
+    }
+
+    return {
+      start: textarea.selectionStart,
+      end: textarea.selectionEnd,
+    };
+  };
+
+  const reportDraftSelection = () => {
+    onDraftSelectionChange(currentSelection());
+  };
 
   useEffect(() => {
     scrollMessageListToBottom(messageListRef.current);
@@ -118,13 +170,29 @@ export function ChatPanel({
           消息内容
         </label>
         <textarea
+          ref={textareaRef}
           id="chat-draft"
           placeholder="输入你的问题或说明要处理的文档任务"
           value={draft}
           onChange={handleDraftChange}
+          onClick={reportDraftSelection}
+          onFocus={reportDraftSelection}
           onKeyDown={handleDraftKeyDown}
+          onKeyUp={reportDraftSelection}
+          onSelect={reportDraftSelection}
           rows={4}
         />
+
+        {voiceInput.status === "recording" ? (
+          <AudioTrack
+            elapsedSeconds={voiceInput.elapsedSeconds}
+            maxSeconds={voiceInput.maxSeconds}
+            levels={voiceInput.levels}
+          />
+        ) : null}
+        {voiceInput.status === "failed" && voiceInput.message ? (
+          <p className="voiceInputError">{voiceInput.message}</p>
+        ) : null}
 
         <div className="composerActions">
           <button
@@ -134,6 +202,20 @@ export function ChatPanel({
             type="button"
           >
             添加文件
+          </button>
+          <button
+            aria-label="语音输入"
+            className="secondaryButton voiceButton"
+            disabled={!voiceInput.available || voiceInput.status === "transcribing"}
+            onClick={() => onVoiceToggle(currentSelection())}
+            title={voiceInput.message ?? "语音输入"}
+            type="button"
+          >
+            {voiceInput.status === "recording"
+              ? "停止录音"
+              : voiceInput.status === "transcribing"
+                ? "转写中"
+                : "语音"}
           </button>
           <button
             aria-label="发送消息"
