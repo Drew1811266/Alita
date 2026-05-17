@@ -2,6 +2,8 @@ import type { VoiceInputView } from "../chat/ChatPanel";
 import type { AsrStatus } from "./asrApi";
 import { MAX_RECORDING_SECONDS } from "./audioCapture";
 
+const unavailableVoiceMessage = "未配置语音模型";
+
 export function createInitialVoiceInput(
   status: AsrStatus | null,
 ): VoiceInputView {
@@ -17,10 +19,15 @@ export function createInitialVoiceInput(
   }
 
   if (!status.available) {
+    const message = status.message.trim();
+
     return {
       available: false,
       status: "unavailable",
-      message: "未配置语音模型",
+      message:
+        status.errorCode === "asr_not_configured" || message.length === 0
+          ? unavailableVoiceMessage
+          : message,
       elapsedSeconds: 0,
       maxSeconds: MAX_RECORDING_SECONDS,
       levels: [],

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { buildLevelBuckets, encodeWav, secondsToTimerLabel } from "./audioCapture";
+import {
+  canStartVoiceRecording,
+  canStopVoiceRecording,
+} from "./voiceRecordingGuards";
 
 describe("encodeWav", () => {
   it("encodes mono 16-bit PCM WAV fields at the target sample rate", () => {
@@ -57,6 +61,76 @@ describe("secondsToTimerLabel", () => {
   it("formats elapsed seconds as mm:ss", () => {
     expect(secondsToTimerLabel(0)).toBe("00:00");
     expect(secondsToTimerLabel(65)).toBe("01:05");
+  });
+});
+
+describe("voice recording guards", () => {
+  it("blocks recording start while setup, recording, or stop is in progress", () => {
+    expect(
+      canStartVoiceRecording({
+        starting: true,
+        stopping: false,
+        hasActiveStream: false,
+      }),
+    ).toBe(false);
+    expect(
+      canStartVoiceRecording({
+        starting: false,
+        stopping: false,
+        hasActiveStream: true,
+      }),
+    ).toBe(false);
+    expect(
+      canStartVoiceRecording({
+        starting: false,
+        stopping: true,
+        hasActiveStream: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("allows recording start only when no lifecycle operation is active", () => {
+    expect(
+      canStartVoiceRecording({
+        starting: false,
+        stopping: false,
+        hasActiveStream: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("blocks duplicate or empty stops before transcription", () => {
+    expect(
+      canStopVoiceRecording({
+        stopping: true,
+        hasActiveStream: true,
+        chunkCount: 3,
+      }),
+    ).toBe(false);
+    expect(
+      canStopVoiceRecording({
+        stopping: false,
+        hasActiveStream: false,
+        chunkCount: 3,
+      }),
+    ).toBe(false);
+    expect(
+      canStopVoiceRecording({
+        stopping: false,
+        hasActiveStream: true,
+        chunkCount: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("allows stop only for one active recording with audio chunks", () => {
+    expect(
+      canStopVoiceRecording({
+        stopping: false,
+        hasActiveStream: true,
+        chunkCount: 1,
+      }),
+    ).toBe(true);
   });
 });
 

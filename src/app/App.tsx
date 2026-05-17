@@ -29,6 +29,10 @@ import {
   voiceTranscribing,
 } from "../features/voice/voiceSession";
 import {
+  canStartVoiceRecording,
+  canStopVoiceRecording,
+} from "../features/voice/voiceRecordingGuards";
+import {
   addModelFile,
   getPreferences,
   importModelFile,
@@ -118,6 +122,8 @@ export function App() {
   );
   const lastDraftSelectionRef = useRef<DraftSelection | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingStartingRef = useRef(false);
+  const recordingStoppingRef = useRef(false);
   const recordingChunksRef = useRef<Float32Array[]>([]);
   const recordingSampleRateRef = useRef(16_000);
   const recordingStartedAtRef = useRef(0);
@@ -445,8 +451,22 @@ export function App() {
   };
 
   const startVoiceRecording = async () => {
+    if (
+      !canStartVoiceRecording({
+        starting: recordingStartingRef.current,
+        stopping: recordingStoppingRef.current,
+        hasActiveStream: recordingStreamRef.current !== null,
+      })
+    ) {
+      return;
+    }
+
+    recordingStartingRef.current = true;
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+
       const audioContext = new AudioContext();
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
@@ -455,7 +475,6 @@ export function App() {
 
       monitorGain.gain.value = 0;
       analyser.fftSize = 64;
-      recordingStreamRef.current = stream;
       recordingChunksRef.current = [];
       recordingSampleRateRef.current = audioContext.sampleRate;
       recordingStartedAtRef.current = Date.now();
@@ -499,15 +518,49 @@ export function App() {
       setVoiceInput((current) =>
         voiceFailed(current, `麦克风不可用：${formatUnknownError(error)}`),
       );
+    } finally {
+      recordingStartingRef.current = false;
     }
   };
 
   const stopVoiceRecording = async (selection?: DraftSelection | null) => {
+    if (recordingStoppingRef.current) {
+      return;
+    }
+
+    if (recordingStreamRef.current === null) {
+      return;
+    }
+
+    recordingStoppingRef.current = true;
+
     const capturedSelection = selection ?? lastDraftSelectionRef.current;
     const chunks = [...recordingChunksRef.current];
     const sampleRate = recordingSampleRateRef.current;
 
+    if (
+      !canStopVoiceRecording({
+        stopping: false,
+        hasActiveStream: recordingStreamRef.current !== null,
+        chunkCount: chunks.length,
+      })
+    ) {
+      stopRecordingStream();
+      recordingChunksRef.current = [];
+      setVoiceInput((current) => ({
+        ...current,
+        available: true,
+        status: "idle",
+        message: "语音模型已就绪",
+        elapsedSeconds: 0,
+        levels: [],
+      }));
+      recordingStoppingRef.current = false;
+      return;
+    }
+
     stopRecordingStream();
+    recordingChunksRef.current = [];
     setVoiceInput((current) => voiceTranscribing(current));
 
     try {
@@ -535,6 +588,7 @@ export function App() {
       );
     } finally {
       recordingChunksRef.current = [];
+      recordingStoppingRef.current = false;
     }
   };
 

@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 
+import type { VoiceInputView } from "../chat/ChatPanel";
+import type { AsrStatus } from "./asrApi";
 import {
   createInitialVoiceInput,
   voiceFailed,
   voiceRecording,
   voiceTranscribing,
 } from "./voiceSession";
-import type { VoiceInputView } from "../chat/ChatPanel";
-import type { AsrStatus } from "./asrApi";
 
 const availableStatus: AsrStatus = {
   available: true,
@@ -21,7 +21,7 @@ const unavailableStatus: AsrStatus = {
   configured: false,
   modelPath: null,
   message: "ASR model path is not configured",
-  errorCode: "asr_model_missing",
+  errorCode: "asr_not_configured",
 };
 
 const idleVoiceInput: VoiceInputView = {
@@ -47,6 +47,44 @@ describe("voiceSession", () => {
       maxSeconds: 60,
       levels: [],
     });
+  });
+
+  it("keeps the unavailable fallback for unconfigured or empty ASR status messages", () => {
+    expect(
+      createInitialVoiceInput({
+        ...unavailableStatus,
+        errorCode: "asr_not_configured",
+        message: "ASR model path is not configured",
+      }).message,
+    ).toBe("未配置语音模型");
+    expect(
+      createInitialVoiceInput({
+        ...unavailableStatus,
+        errorCode: "asr_status_unavailable",
+        message: "",
+      }).message,
+    ).toBe("未配置语音模型");
+  });
+
+  it("preserves specific unavailable ASR status messages", () => {
+    expect(
+      createInitialVoiceInput({
+        available: false,
+        configured: true,
+        modelPath: "D:\\Models\\qwen-asr.gguf",
+        message: "llama.cpp runtime failed to load",
+        errorCode: "asr_status_unavailable",
+      }).message,
+    ).toBe("llama.cpp runtime failed to load");
+    expect(
+      createInitialVoiceInput({
+        available: false,
+        configured: true,
+        modelPath: "D:\\Models\\missing.gguf",
+        message: "ASR model file does not exist",
+        errorCode: "asr_model_missing",
+      }).message,
+    ).toBe("ASR model file does not exist");
   });
 
   it("creates checking voice input while ASR status is loading", () => {
