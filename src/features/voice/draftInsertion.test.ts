@@ -30,7 +30,7 @@ describe("insertTranscriptIntoDraft", () => {
         transcript: "详细",
         selection: { start: 2, end: 2 },
       }),
-    ).toBe("请详细  处理");
+    ).toBe("请 详细 处理");
   });
 
   it("replaces the captured selection", () => {

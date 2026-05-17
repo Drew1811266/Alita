@@ -31,11 +31,8 @@ export function insertTranscriptIntoDraft({
   const clampedEnd = clampOffset(selection.end, currentDraft.length);
   const start = Math.min(clampedStart, clampedEnd);
   const end = Math.max(clampedStart, clampedEnd);
-  const insertionStart =
-    start === end ? startOfWhitespaceGap(currentDraft, start) : start;
-  const insertionEnd = start === end ? insertionStart : end;
 
-  return `${currentDraft.slice(0, insertionStart)}${trimmedTranscript}${currentDraft.slice(insertionEnd)}`;
+  return `${currentDraft.slice(0, start)}${trimmedTranscript}${currentDraft.slice(end)}`;
 }
 
 function clampOffset(offset: number, max: number): number {
@@ -44,17 +41,4 @@ function clampOffset(offset: number, max: number): number {
   }
 
   return Math.min(Math.max(Math.trunc(offset), 0), max);
-}
-
-function startOfWhitespaceGap(value: string, offset: number): number {
-  if (!/\s/.test(value[offset - 1] ?? "") || !/\s/.test(value[offset] ?? "")) {
-    return offset;
-  }
-
-  let gapStart = offset;
-  while (gapStart > 0 && /\s/.test(value[gapStart - 1])) {
-    gapStart -= 1;
-  }
-
-  return gapStart;
 }
