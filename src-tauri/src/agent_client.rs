@@ -22,6 +22,28 @@ pub struct AgentEvent {
     pub payload: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AsrStatusResponse {
+    pub available: bool,
+    pub configured: bool,
+    pub model_path: Option<String>,
+    pub message: String,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AsrTranscriptionRequest {
+    pub audio_path: String,
+    pub language: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AsrTranscriptionResponse {
+    pub text: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentClient {
     base_url: String,
@@ -71,8 +93,63 @@ impl AgentClient {
             .await
             .map_err(|error| format!("invalid agent response: {error}"))
     }
+
+    pub async fn get_asr_status(&self) -> Result<AsrStatusResponse, String> {
+        let url = format!("{}/asr/status", self.base_url.trim_end_matches('/'));
+        let mut request_builder = self.http.get(url);
+        if let Some(token) = &self.auth_token {
+            request_builder = request_builder.header(sidecar_token_header(), token);
+        }
+
+        let response = request_builder
+            .send()
+            .await
+            .map_err(|error| format!("ASR status request failed: {error}"))?;
+
+        if !response.status().is_success() {
+            return Err(sidecar_error_message(response, "ASR status request").await);
+        }
+
+        response
+            .json::<AsrStatusResponse>()
+            .await
+            .map_err(|error| format!("invalid ASR status response: {error}"))
+    }
+
+    pub async fn transcribe_asr_audio(
+        &self,
+        request: &AsrTranscriptionRequest,
+    ) -> Result<AsrTranscriptionResponse, String> {
+        let url = format!("{}/asr/transcribe", self.base_url.trim_end_matches('/'));
+        let mut request_builder = self.http.post(url).json(request);
+        if let Some(token) = &self.auth_token {
+            request_builder = request_builder.header(sidecar_token_header(), token);
+        }
+
+        let response = request_builder
+            .send()
+            .await
+            .map_err(|error| format!("ASR transcription request failed: {error}"))?;
+
+        if !response.status().is_success() {
+            return Err(sidecar_error_message(response, "ASR transcription request").await);
+        }
+
+        response
+            .json::<AsrTranscriptionResponse>()
+            .await
+            .map_err(|error| format!("invalid ASR transcription response: {error}"))
+    }
 }
 
 pub fn sidecar_token_header() -> &'static str {
     "X-Alita-Sidecar-Token"
+}
+
+async fn sidecar_error_message(response: reqwest::Response, label: &str) -> String {
+    let status = response.status();
+    match response.text().await {
+        Ok(body) if !body.trim().is_empty() => format!("{label} returned {status}: {body}"),
+        _ => format!("{label} returned {status}"),
+    }
 }

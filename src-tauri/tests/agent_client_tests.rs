@@ -1,7 +1,10 @@
 #[path = "../src/agent_client.rs"]
+#[allow(dead_code)]
 mod agent_client;
 
-use agent_client::{AgentAttachment, AgentMessageRequest};
+use agent_client::{
+    AgentAttachment, AgentMessageRequest, AsrStatusResponse, AsrTranscriptionRequest,
+};
 
 #[test]
 fn serializes_agent_message_request() {
@@ -35,4 +38,32 @@ fn stores_sidecar_auth_token() {
         agent_client::sidecar_token_header(),
         "X-Alita-Sidecar-Token"
     );
+}
+
+#[test]
+fn serializes_asr_transcription_request() {
+    let request = AsrTranscriptionRequest {
+        audio_path: "C:\\Temp\\alita-asr-input.wav".to_string(),
+        language: "zh".to_string(),
+    };
+
+    let json = serde_json::to_value(request).expect("request should serialize");
+
+    assert_eq!(json["audioPath"], "C:\\Temp\\alita-asr-input.wav");
+    assert_eq!(json["language"], "zh");
+}
+
+#[test]
+fn deserializes_asr_status_response() {
+    let status: AsrStatusResponse = serde_json::from_value(serde_json::json!({
+        "available": false,
+        "configured": false,
+        "modelPath": null,
+        "message": "voice model is not configured",
+        "errorCode": "asr_not_configured"
+    }))
+    .unwrap();
+
+    assert!(!status.available);
+    assert_eq!(status.error_code.as_deref(), Some("asr_not_configured"));
 }

@@ -1,5 +1,12 @@
 use crate::{
-    agent_client::{AgentAttachment, AgentClient, AgentEvent, AgentMessageRequest},
+    agent_client::{
+        AgentAttachment, AgentClient, AgentEvent, AgentMessageRequest, AsrStatusResponse,
+        AsrTranscriptionRequest, AsrTranscriptionResponse,
+    },
+    asr::{
+        decode_wav_base64, remove_temp_audio_file, write_temp_audio_file,
+        TranscribeVoiceAudioPayload,
+    },
     preferences::{
         add_manual_model, import_model_to_storage, load_preferences_with_model_recovery,
         model_recovery_candidate_dirs, previous_preferences_path_for_current_path,
@@ -220,6 +227,34 @@ pub async fn submit_user_message(
     };
 
     client.send_message(&request).await
+}
+
+#[tauri::command]
+pub async fn get_asr_status(app: AppHandle) -> Result<AsrStatusResponse, String> {
+    let client = AgentClient::new(crate::sidecar::agent_base_url())
+        .with_auth_token(crate::sidecar::sidecar_auth_token(&app)?);
+
+    client.get_asr_status().await
+}
+
+#[tauri::command]
+pub async fn transcribe_voice_audio(
+    app: AppHandle,
+    payload: TranscribeVoiceAudioPayload,
+) -> Result<AsrTranscriptionResponse, String> {
+    let client = AgentClient::new(crate::sidecar::agent_base_url())
+        .with_auth_token(crate::sidecar::sidecar_auth_token(&app)?);
+    let audio_bytes = decode_wav_base64(&payload.audio_base64)?;
+    let temp_audio_path = write_temp_audio_file(std::env::temp_dir(), &audio_bytes)?;
+    let request = AsrTranscriptionRequest {
+        audio_path: temp_audio_path.to_string_lossy().to_string(),
+        language: "zh".to_string(),
+    };
+
+    let result = client.transcribe_asr_audio(&request).await;
+    remove_temp_audio_file(&temp_audio_path);
+
+    result
 }
 
 #[tauri::command]

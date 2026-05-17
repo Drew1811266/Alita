@@ -1,4 +1,5 @@
 pub mod agent_client;
+pub mod asr;
 pub mod commands;
 pub mod domain;
 pub mod llama_runtime;
@@ -60,6 +61,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::submit_user_message,
+            commands::get_asr_status,
+            commands::transcribe_voice_audio,
             commands::get_sidecar_auth_token,
             commands::get_attachment_metadata,
             commands::create_project,
