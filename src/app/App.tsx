@@ -741,9 +741,22 @@ export function App() {
     }
   };
 
+  const refreshVoiceInputAvailability = async () => {
+    setVoiceInput(createInitialVoiceInput(null));
+    const status = await getAsrStatus();
+    setVoiceInput(createInitialVoiceInput(status));
+  };
+
   const applyPreferencesView = (view: PreferencesView) => {
+    const shouldRefreshAsr = shouldRefreshAsrForPreferencesUpdate(
+      preferencesView,
+      view,
+    );
     setPreferencesView(view);
     setRecentProjects(view.preferences.recentProjects);
+    if (shouldRefreshAsr) {
+      void refreshVoiceInputAvailability();
+    }
   };
 
   const handleAddModel = async () => {
@@ -977,4 +990,17 @@ function formatUnknownError(error: unknown): string {
   }
 
   return String(error);
+}
+
+export function shouldRefreshAsrForPreferencesUpdate(
+  previousView: PreferencesView | null,
+  nextView: PreferencesView,
+): boolean {
+  return (
+    speechToTextAssignmentId(previousView) !== speechToTextAssignmentId(nextView)
+  );
+}
+
+function speechToTextAssignmentId(view: PreferencesView | null): string | null {
+  return view?.preferences.modelAssignments.speechToTextModelId ?? null;
 }
