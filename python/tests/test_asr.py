@@ -83,16 +83,32 @@ def test_status_reports_available_model(monkeypatch, tmp_path):
 def test_transcribe_uses_provider_and_language(tmp_path):
     audio_path = tmp_path / "input.wav"
     audio_path.write_bytes(b"RIFF....WAVEfmt ")
+    model_dir = tmp_path / "Qwen3-ASR-1.7B"
+    model_dir.mkdir()
     provider = FakeProvider(text="hello from audio")
     service = ASRService(provider_factory=lambda _model_path: provider)
 
     result = service.transcribe(
         TranscriptionRequest(audioPath=str(audio_path), language="zh"),
-        model_path=tmp_path / "Qwen3-ASR-1.7B",
+        model_path=model_dir,
     )
 
     assert result.text == "hello from audio"
     assert provider.calls == [(audio_path, "zh")]
+
+
+def test_transcribe_rejects_missing_model_path(tmp_path):
+    audio_path = tmp_path / "input.wav"
+    audio_path.write_bytes(b"RIFF....WAVEfmt ")
+    service = ASRService(provider_factory=lambda _model_path: FakeProvider())
+
+    with pytest.raises(ASRError) as error:
+        service.transcribe(
+            TranscriptionRequest(audioPath=str(audio_path)),
+            model_path=tmp_path / "missing-model",
+        )
+
+    assert error.value.code == "asr_model_missing"
 
 
 def test_transcribe_rejects_missing_audio_file(tmp_path):

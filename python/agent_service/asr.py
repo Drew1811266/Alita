@@ -159,14 +159,13 @@ class ASRService:
         if not self._lock.acquire(blocking=False):
             raise ASRError("asr_busy", "transcription is already running")
         try:
-            using_configured_model_path = model_path is None
             resolved_model_path = model_path or configured_model_path()
             if resolved_model_path is None:
                 raise ASRError(
                     "asr_not_configured",
                     "voice model is not configured",
                 )
-            if using_configured_model_path and not resolved_model_path.is_dir():
+            if not resolved_model_path.is_dir():
                 raise ASRError(
                     "asr_model_missing",
                     "voice model path does not exist",
