@@ -102,8 +102,9 @@ export function ChatPanel({
   const handleDraftKeyDown = createComposerKeyDownHandler(onSend);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const explicitDraftSelectionRef = useRef<DraftSelection | null>(null);
 
-  const currentSelection = (): DraftSelection | null => {
+  const readTextareaSelection = (): DraftSelection | null => {
     const textarea = textareaRef.current;
 
     if (!textarea) {
@@ -117,7 +118,10 @@ export function ChatPanel({
   };
 
   const reportDraftSelection = () => {
-    onDraftSelectionChange(currentSelection());
+    const selection = readTextareaSelection();
+
+    explicitDraftSelectionRef.current = selection;
+    onDraftSelectionChange(selection);
   };
 
   useEffect(() => {
@@ -207,7 +211,7 @@ export function ChatPanel({
             aria-label="语音输入"
             className="secondaryButton voiceButton"
             disabled={!voiceInput.available || voiceInput.status === "transcribing"}
-            onClick={() => onVoiceToggle(currentSelection())}
+            onClick={() => onVoiceToggle(explicitDraftSelectionRef.current)}
             title={voiceInput.message ?? "语音输入"}
             type="button"
           >

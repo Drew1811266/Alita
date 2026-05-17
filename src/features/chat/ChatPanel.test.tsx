@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { ReactElement, ReactNode } from "react";
 
 import {
   ChatPanel,
@@ -60,6 +61,19 @@ const idleVoiceInput: VoiceInputView = {
   levels: [],
 };
 
+type MockTextarea = {
+  selectionStart: number;
+  selectionEnd: number;
+};
+
+type ElementWithProps = ReactElement<{
+  "aria-label"?: string;
+  children?: ReactNode;
+  id?: string;
+  onClick?: () => void;
+  onSelect?: () => void;
+}>;
+
 function renderChatPanel(voiceInput: VoiceInputView = idleVoiceInput) {
   return renderToStaticMarkup(
     <ChatPanel
@@ -74,6 +88,90 @@ function renderChatPanel(voiceInput: VoiceInputView = idleVoiceInput) {
       onDraftSelectionChange={() => undefined}
     />,
   );
+}
+
+async function renderInteractiveChatPanel({
+  onDraftSelectionChange = () => undefined,
+  onVoiceToggle,
+  textarea,
+}: {
+  onDraftSelectionChange?: (selection: { start: number; end: number } | null) => void;
+  onVoiceToggle(selection: { start: number; end: number } | null): void;
+  textarea: MockTextarea;
+}) {
+  vi.resetModules();
+  let refCallCount = 0;
+
+  vi.doMock("react", async () => {
+    const actual = await vi.importActual<typeof import("react")>("react");
+
+    return {
+      ...actual,
+      useEffect: () => undefined,
+      useRef: () => {
+        refCallCount += 1;
+
+        return {
+          current: refCallCount === 2 ? textarea : null,
+        };
+      },
+    };
+  });
+
+  const { ChatPanel: InteractiveChatPanel } = await import("./ChatPanel");
+
+  const tree = InteractiveChatPanel({
+    messages,
+    pendingAttachments: [pendingAttachment],
+    draft: "请总结重点",
+    onDraftChange: () => undefined,
+    onSend: () => undefined,
+    onAddFile: () => undefined,
+    voiceInput: idleVoiceInput,
+    onVoiceToggle,
+    onDraftSelectionChange,
+  });
+
+  vi.doUnmock("react");
+  vi.resetModules();
+
+  return tree;
+}
+
+function findElementByProp(
+  node: ReactNode,
+  propName: string,
+  propValue: string,
+): ElementWithProps {
+  if (!node || typeof node !== "object") {
+    throw new Error(`Unable to find element with ${propName}=${propValue}`);
+  }
+
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      try {
+        return findElementByProp(child, propName, propValue);
+      } catch {
+        // Keep searching siblings.
+      }
+    }
+  }
+
+  if ("props" in node) {
+    const element = node as ElementWithProps;
+
+    if (element.props[propName as keyof typeof element.props] === propValue) {
+      return element;
+    }
+
+    const children = element.props.children as ReactNode;
+
+    if (children) {
+      return findElementByProp(children, propName, propValue);
+    }
+  }
+
+  throw new Error(`Unable to find element with ${propName}=${propValue}`);
 }
 
 describe("ChatPanel", () => {
@@ -138,6 +236,62 @@ describe("ChatPanel", () => {
 
     expect(markup).toContain("00:08 / 01:00");
     expect(markup).toContain("voiceLevelBar");
+  });
+
+  it("passes null to voice toggle before explicit textarea selection interaction", async () => {
+    const voiceToggleSelections: Array<{ start: number; end: number } | null> =
+      [];
+    const tree = await renderInteractiveChatPanel({
+      textarea: { selectionStart: 0, selectionEnd: 0 },
+      onVoiceToggle: (selection) => {
+        voiceToggleSelections.push(selection);
+      },
+    });
+
+    findElementByProp(tree, "aria-label", "语音输入").props.onClick?.();
+
+    expect(voiceToggleSelections).toEqual([null]);
+  });
+
+  it("passes the explicit textarea caret selection to voice toggle", async () => {
+    const voiceToggleSelections: Array<{ start: number; end: number } | null> =
+      [];
+    const textarea = { selectionStart: 4, selectionEnd: 4 };
+    const tree = await renderInteractiveChatPanel({
+      textarea,
+      onVoiceToggle: (selection) => {
+        voiceToggleSelections.push(selection);
+      },
+    });
+
+    findElementByProp(tree, "id", "chat-draft").props.onSelect?.();
+    findElementByProp(tree, "aria-label", "语音输入").props.onClick?.();
+
+    expect(voiceToggleSelections).toEqual([{ start: 4, end: 4 }]);
+  });
+
+  it("preserves and reports an explicit textarea selection range", async () => {
+    const draftSelections: Array<{ start: number; end: number } | null> = [];
+    const voiceToggleSelections: Array<{ start: number; end: number } | null> =
+      [];
+    const textarea = { selectionStart: 2, selectionEnd: 5 };
+    const tree = await renderInteractiveChatPanel({
+      textarea,
+      onDraftSelectionChange: (selection) => {
+        draftSelections.push(selection);
+      },
+      onVoiceToggle: (selection) => {
+        voiceToggleSelections.push(selection);
+      },
+    });
+
+    findElementByProp(tree, "id", "chat-draft").props.onSelect?.();
+    textarea.selectionStart = 0;
+    textarea.selectionEnd = 0;
+    findElementByProp(tree, "aria-label", "语音输入").props.onClick?.();
+
+    expect(draftSelections).toEqual([{ start: 2, end: 5 }]);
+    expect(voiceToggleSelections).toEqual([{ start: 2, end: 5 }]);
   });
 
   it("sends the message on Enter without preventing Shift+Enter newlines", () => {
