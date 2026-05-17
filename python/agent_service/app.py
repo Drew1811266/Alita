@@ -6,6 +6,14 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from agent_service.asr import (
+    ASRError,
+    ASRStatus,
+    DEFAULT_ASR_SERVICE,
+    TranscriptionRequest,
+    TranscriptionResponse,
+    get_asr_status,
+)
 from agent_service.execution import run_graph_events
 from agent_service.graph import run_agent, stream_agent_events
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY
@@ -42,6 +50,25 @@ def require_sidecar_token(
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/asr/status", response_model=ASRStatus)
+def asr_status(_auth: None = Depends(require_sidecar_token)) -> ASRStatus:
+    return get_asr_status()
+
+
+@app.post("/asr/transcribe", response_model=TranscriptionResponse)
+def asr_transcribe(
+    request: TranscriptionRequest,
+    _auth: None = Depends(require_sidecar_token),
+) -> TranscriptionResponse:
+    try:
+        return DEFAULT_ASR_SERVICE.transcribe(request)
+    except ASRError as error:
+        raise HTTPException(
+            status_code=409 if error.code == "asr_busy" else 400,
+            detail={"errorCode": error.code, "error": error.message},
+        ) from error
 
 
 @app.post("/agent/message", response_model=list[AgentEvent])

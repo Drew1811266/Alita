@@ -12,8 +12,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "httpx"]
 package = ["pyinstaller"]
+asr = ["qwen-asr"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
