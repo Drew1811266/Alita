@@ -10,6 +10,25 @@ import {
 import { pickChatAttachments } from "../features/chat/attachmentApi";
 import { ChatPanel } from "../features/chat/ChatPanel";
 import {
+  getAsrStatus,
+  transcribeVoiceAudio,
+} from "../features/voice/asrApi";
+import {
+  buildLevelBuckets,
+  encodeWav,
+  MAX_RECORDING_SECONDS,
+} from "../features/voice/audioCapture";
+import {
+  insertTranscriptIntoDraft,
+  type DraftSelection,
+} from "../features/voice/draftInsertion";
+import {
+  createInitialVoiceInput,
+  voiceFailed,
+  voiceRecording,
+  voiceTranscribing,
+} from "../features/voice/voiceSession";
+import {
   addModelFile,
   getPreferences,
   importModelFile,
@@ -94,6 +113,17 @@ export function App() {
   );
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [draft, setDraft] = useState("");
+  const [voiceInput, setVoiceInput] = useState(() =>
+    createInitialVoiceInput(null),
+  );
+  const lastDraftSelectionRef = useRef<DraftSelection | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingChunksRef = useRef<Float32Array[]>([]);
+  const recordingSampleRateRef = useRef(16_000);
+  const recordingStartedAtRef = useRef(0);
+  const recordingTimerRef = useRef<number | null>(null);
+  const recordingAudioContextRef = useRef<AudioContext | null>(null);
+  const recordingProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<
     ChatAttachment[]
   >([]);
@@ -123,10 +153,47 @@ export function App() {
   const [preferencesError, setPreferencesError] = useState<string | null>(null);
   const [recentProjects, setRecentProjects] = useState<string[]>([]);
 
+  const stopRecordingStream = () => {
+    if (recordingTimerRef.current !== null) {
+      window.clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+
+    recordingProcessorRef.current?.disconnect();
+    recordingProcessorRef.current = null;
+
+    const audioContext = recordingAudioContextRef.current;
+    recordingAudioContextRef.current = null;
+    void audioContext?.close();
+
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingStreamRef.current = null;
+  };
+
   useEffect(() => {
     getPreferences()
       .then((view) => setRecentProjects(view.preferences.recentProjects))
       .catch(() => setRecentProjects([]));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getAsrStatus().then((status) => {
+      if (!cancelled) {
+        setVoiceInput(createInitialVoiceInput(status));
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopRecordingStream();
+    };
   }, []);
 
   useEffect(() => {
@@ -371,6 +438,117 @@ export function App() {
     } catch (error) {
       setProjectError(String(error));
     }
+  };
+
+  const handleDraftSelectionChange = (selection: DraftSelection | null) => {
+    lastDraftSelectionRef.current = selection;
+  };
+
+  const startVoiceRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      const monitorGain = audioContext.createGain();
+
+      monitorGain.gain.value = 0;
+      analyser.fftSize = 64;
+      recordingStreamRef.current = stream;
+      recordingChunksRef.current = [];
+      recordingSampleRateRef.current = audioContext.sampleRate;
+      recordingStartedAtRef.current = Date.now();
+      recordingAudioContextRef.current = audioContext;
+      recordingProcessorRef.current = processor;
+
+      processor.onaudioprocess = (event) => {
+        const input = event.inputBuffer.getChannelData(0);
+        recordingChunksRef.current.push(new Float32Array(input));
+      };
+
+      source.connect(analyser);
+      source.connect(processor);
+      processor.connect(monitorGain);
+      monitorGain.connect(audioContext.destination);
+
+      setVoiceInput((current) => voiceRecording(current));
+
+      const levelData = new Uint8Array(analyser.frequencyBinCount);
+      recordingTimerRef.current = window.setInterval(() => {
+        analyser.getByteTimeDomainData(levelData);
+        const elapsedSeconds = Math.min(
+          MAX_RECORDING_SECONDS,
+          Math.floor((Date.now() - recordingStartedAtRef.current) / 1000),
+        );
+
+        setVoiceInput((current) =>
+          voiceRecording(
+            current,
+            buildLevelBuckets(levelData, 32),
+            elapsedSeconds,
+          ),
+        );
+
+        if (elapsedSeconds >= MAX_RECORDING_SECONDS) {
+          void stopVoiceRecording(lastDraftSelectionRef.current);
+        }
+      }, 250);
+    } catch (error) {
+      stopRecordingStream();
+      setVoiceInput((current) =>
+        voiceFailed(current, `麦克风不可用：${formatUnknownError(error)}`),
+      );
+    }
+  };
+
+  const stopVoiceRecording = async (selection?: DraftSelection | null) => {
+    const capturedSelection = selection ?? lastDraftSelectionRef.current;
+    const chunks = [...recordingChunksRef.current];
+    const sampleRate = recordingSampleRateRef.current;
+
+    stopRecordingStream();
+    setVoiceInput((current) => voiceTranscribing(current));
+
+    try {
+      const samples = concatenateFloat32Arrays(chunks);
+      const transcript = await transcribeVoiceAudio(encodeWav(samples, sampleRate));
+
+      setDraft((currentDraft) =>
+        insertTranscriptIntoDraft({
+          currentDraft,
+          transcript: transcript.text,
+          selection: capturedSelection,
+        }),
+      );
+      setVoiceInput((current) => ({
+        ...current,
+        available: true,
+        status: "idle",
+        message: "语音模型已就绪",
+        elapsedSeconds: 0,
+        levels: [],
+      }));
+    } catch (error) {
+      setVoiceInput((current) =>
+        voiceFailed(current, `语音转写失败：${formatUnknownError(error)}`),
+      );
+    } finally {
+      recordingChunksRef.current = [];
+    }
+  };
+
+  const handleVoiceToggle = async (selection: DraftSelection | null) => {
+    if (!voiceInput.available || voiceInput.status === "transcribing") {
+      return;
+    }
+
+    if (voiceInput.status === "recording") {
+      await stopVoiceRecording(selection);
+      return;
+    }
+
+    await startVoiceRecording();
   };
 
   const handleSend = async () => {
@@ -633,6 +811,9 @@ export function App() {
           onDraftChange={setDraft}
           onSend={handleSend}
           onAddFile={handleAddFile}
+          voiceInput={voiceInput}
+          onVoiceToggle={handleVoiceToggle}
+          onDraftSelectionChange={handleDraftSelectionChange}
         />
       </section>
       <section className="canvasColumn" aria-label="节点画布区域">
@@ -685,4 +866,25 @@ function lastRunHistoryEntry(
   runHistory: RunHistoryEntry[],
 ): RunHistoryEntry | undefined {
   return runHistory.length > 0 ? runHistory[runHistory.length - 1] : undefined;
+}
+
+function concatenateFloat32Arrays(chunks: Float32Array[]): Float32Array {
+  const totalLength = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const samples = new Float32Array(totalLength);
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    samples.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return samples;
+}
+
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
 }
