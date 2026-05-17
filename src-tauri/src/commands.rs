@@ -244,7 +244,7 @@ pub async fn transcribe_voice_audio(
 ) -> Result<AsrTranscriptionResponse, String> {
     let client = AgentClient::new(crate::sidecar::agent_base_url())
         .with_auth_token(crate::sidecar::sidecar_auth_token(&app)?);
-    let audio_bytes = decode_wav_base64(&payload.audio_base64)?;
+    let audio_bytes = decode_wav_base64(&payload.wav_base64)?;
     let temp_audio_path = write_temp_audio_file(std::env::temp_dir(), &audio_bytes)?;
     let request = AsrTranscriptionRequest {
         audio_path: temp_audio_path.to_string_lossy().to_string(),

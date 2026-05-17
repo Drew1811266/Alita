@@ -7,12 +7,12 @@ use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const MAX_ASR_AUDIO_BYTES: usize = 10 * 1024 * 1024;
+pub const MAX_ASR_AUDIO_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscribeVoiceAudioPayload {
-    pub audio_base64: String,
+    pub wav_base64: String,
 }
 
 pub fn decode_wav_base64(payload: &str) -> Result<Vec<u8>, String> {
@@ -30,9 +30,10 @@ pub fn decode_wav_base64(payload: &str) -> Result<Vec<u8>, String> {
 }
 
 pub fn write_temp_audio_file(temp_dir: impl AsRef<Path>, bytes: &[u8]) -> Result<PathBuf, String> {
-    let path = temp_dir
-        .as_ref()
-        .join(format!("alita-asr-{}.wav", Uuid::new_v4()));
+    let temp_dir = temp_dir.as_ref();
+    fs::create_dir_all(temp_dir)
+        .map_err(|error| format!("failed to create temporary audio directory: {error}"))?;
+    let path = temp_dir.join(format!("alita-asr-{}.wav", Uuid::new_v4()));
     fs::write(&path, bytes)
         .map_err(|error| format!("failed to write temporary audio file: {error}"))?;
     Ok(path)

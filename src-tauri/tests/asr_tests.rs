@@ -4,7 +4,29 @@ mod asr;
 
 use std::fs;
 
-use asr::{decode_wav_base64, remove_temp_audio_file, write_temp_audio_file, MAX_ASR_AUDIO_BYTES};
+use asr::{
+    decode_wav_base64, remove_temp_audio_file, write_temp_audio_file, TranscribeVoiceAudioPayload,
+    MAX_ASR_AUDIO_BYTES,
+};
+
+#[test]
+fn asr_max_audio_bytes_matches_spec() {
+    assert_eq!(MAX_ASR_AUDIO_BYTES, 4 * 1024 * 1024);
+}
+
+#[test]
+fn asr_payload_uses_wav_base64_json_field() {
+    let payload: TranscribeVoiceAudioPayload =
+        serde_json::from_value(serde_json::json!({ "wavBase64": "UklGRg==" }))
+            .expect("payload should deserialize");
+
+    assert_eq!(payload.wav_base64, "UklGRg==");
+
+    let json = serde_json::to_value(payload).expect("payload should serialize");
+
+    assert_eq!(json["wavBase64"], "UklGRg==");
+    assert!(json.get("audioBase64").is_none());
+}
 
 #[test]
 fn decodes_base64_audio_payload() {
@@ -35,6 +57,17 @@ fn writes_temp_audio_file_under_temp_directory() {
         .unwrap()
         .to_string_lossy()
         .starts_with("alita-asr-"));
+    assert_eq!(fs::read(path).unwrap(), b"RIFF....WAVE");
+}
+
+#[test]
+fn asr_temp_audio_write_creates_missing_directory() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let nested_temp_dir = temp_dir.path().join("missing").join("audio");
+
+    let path = write_temp_audio_file(&nested_temp_dir, b"RIFF....WAVE").unwrap();
+
+    assert!(path.starts_with(&nested_temp_dir));
     assert_eq!(fs::read(path).unwrap(), b"RIFF....WAVE");
 }
 
