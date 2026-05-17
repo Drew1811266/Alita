@@ -109,11 +109,10 @@ class QwenASRProvider:
             ) from error
 
         try:
-            pipeline_class = getattr(qwen_asr, "QwenASR")
-            return pipeline_class(
-                model_path=str(self.model_path),
-                backend="transformers",
-                device="cpu",
+            model_class = getattr(qwen_asr, "Qwen3ASRModel")
+            return model_class.from_pretrained(
+                str(self.model_path),
+                device_map="cpu",
             )
         except ASRError:
             raise
@@ -125,21 +124,56 @@ class QwenASRProvider:
 
     def transcribe(self, audio_path: Path, language: str) -> str:
         try:
-            result = self._pipeline.transcribe(str(audio_path), language=language)
+            result = self._pipeline.transcribe(
+                str(audio_path),
+                language=_normalize_qwen_language(language),
+            )
         except Exception as error:
             raise ASRError(
                 "asr_transcription_failed",
                 f"ASR transcription failed: {error}",
             ) from error
 
-        if isinstance(result, str):
-            return result.strip()
-        if isinstance(result, dict) and isinstance(result.get("text"), str):
-            return result["text"].strip()
+        return _extract_transcription_text(result)
+
+
+def _normalize_qwen_language(language: str) -> str:
+    value = language.strip()
+    if not value:
+        return "Chinese"
+    normalized = value.lower().replace("_", "-")
+    if normalized in {"zh", "zh-cn", "chinese"}:
+        return "Chinese"
+    return value
+
+
+def _extract_transcription_text(result) -> str:
+    if isinstance(result, list):
+        if not result:
+            raise ASRError(
+                "asr_transcription_failed",
+                "ASR runtime returned no transcription results",
+            )
+        result = result[0]
+
+    text: str | None = None
+    if isinstance(result, str):
+        text = result
+    elif isinstance(result, dict):
+        text_value = result.get("text")
+        if isinstance(text_value, str):
+            text = text_value
+    else:
+        text_value = getattr(result, "text", None)
+        if isinstance(text_value, str):
+            text = text_value
+
+    if text is None:
         raise ASRError(
             "asr_transcription_failed",
             "ASR runtime returned an unexpected response",
         )
+    return text.strip()
 
 
 @dataclass
