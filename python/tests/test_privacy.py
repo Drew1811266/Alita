@@ -68,6 +68,18 @@ def test_redacts_windows_path_with_spaced_filename() -> None:
     assert result.blocked is False
 
 
+def test_redacts_windows_directory_path_without_file_extension() -> None:
+    local_path = r"C:\Users\Drew\Projects\Alita"
+
+    result = sanitize_for_web_search(f"Search issues in {local_path} about LangGraph")
+
+    assert result.sanitizedText == "Search issues in [LOCAL_PATH] about LangGraph"
+    assert local_path not in result.sanitizedText
+    assert "Alita" not in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_redacts_model_paths_and_model_filenames() -> None:
     model_path = r"C:\models\qwen\qwen2.5-coder.gguf"
     model_name = "Qwen3-ASR-1.7B"
@@ -98,6 +110,22 @@ def test_redacts_model_path_with_spaced_filename() -> None:
     assert result.blocked is False
 
 
+def test_redacts_model_directory_path_without_model_file_extension() -> None:
+    model_path = r"C:\models\qwen"
+
+    result = sanitize_for_web_search(
+        f"Find setup notes for {model_path} and Qwen benchmarks"
+    )
+
+    assert result.sanitizedText == (
+        "Find setup notes for [MODEL_PATH] and [MODEL_PATH] benchmarks"
+    )
+    assert model_path not in result.sanitizedText
+    assert r"C:\models" not in result.sanitizedText
+    assert result.removedCategories == ["MODEL_PATH"]
+    assert result.blocked is False
+
+
 def test_redacts_multiline_file_like_pasted_content() -> None:
     pasted_content = """Here is the traceback:
 Traceback (most recent call last):
@@ -119,6 +147,24 @@ def route(state):
     assert "agent_service" not in result.sanitizedText
     assert "LangGraph KeyError troubleshooting" in result.sanitizedText
     assert set(result.removedCategories) == {"LOCAL_FILE_CONTENT"}
+    assert result.blocked is False
+
+
+def test_redacts_multiline_python_code_paste_after_public_intent() -> None:
+    pasted_content = """Search public Python import error
+import os
+from pathlib import Path
+print(Path.cwd())"""
+
+    result = sanitize_for_web_search(pasted_content)
+
+    assert result.sanitizedText == (
+        "Search public Python import error [LOCAL_FILE_CONTENT]"
+    )
+    assert "import os" not in result.sanitizedText
+    assert "from pathlib" not in result.sanitizedText
+    assert "print(" not in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_FILE_CONTENT"]
     assert result.blocked is False
 
 
