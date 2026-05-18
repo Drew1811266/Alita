@@ -557,6 +557,83 @@ def test_redacts_emails_and_obvious_tokens_without_leaking_reason() -> None:
     assert result.reason is None
 
 
+def test_redacts_common_secret_assignment_and_bearer_forms() -> None:
+    secret_value = "abcdefghijklmnopqrstuvwxyz1234567890"
+    inputs = [
+        f"Search auth docs api_key={secret_value}",
+        f"Search auth docs token={secret_value}",
+        f"Search auth docs password={secret_value}",
+        f"Search auth docs secret={secret_value}",
+        f"Search auth docs Authorization: Bearer {secret_value}",
+        f"Search auth docs bearer {secret_value}",
+    ]
+
+    for text in inputs:
+        result = sanitize_for_web_search(text)
+
+        assert "[SECRET]" in result.sanitizedText
+        assert secret_value not in result.sanitizedText
+        assert result.removedCategories == ["SECRET"]
+        assert result.blocked is False
+        assert result.reason is None
+
+
+def test_redacts_jwt_like_strings() -> None:
+    jwt_like = (
+        "eyJhbGciOiJIUzI1NiJ9."
+        "eyJzdWIiOiJkcmV3Iiwicm9sZSI6ImFkbWluIn0."
+        "abcdefghijklmnopqrstuvwxyz123456"
+    )
+
+    result = sanitize_for_web_search(f"Search JWT validation docs {jwt_like}")
+
+    assert result.sanitizedText == "Search JWT validation docs [SECRET]"
+    assert jwt_like not in result.sanitizedText
+    assert result.removedCategories == ["SECRET"]
+    assert result.blocked is False
+    assert result.reason is None
+
+
+def test_blocks_command_only_leftovers_after_path_redaction() -> None:
+    inputs = [
+        r"cd C:\Users\Drew\Projects\Alita",
+        r"cat C:\Users\Drew\Projects\Alita\README.md",
+        "rm -rf /home/drew/Secret Folder",
+    ]
+
+    for text in inputs:
+        result = sanitize_for_web_search(text)
+
+        assert result.blocked is True
+        assert result.reason == (
+            "Query contains too little non-sensitive content for web search."
+        )
+        assert "Users" not in result.sanitizedText
+        assert "home/drew" not in result.sanitizedText
+
+
+def test_preserves_public_intent_after_command_and_path_redaction() -> None:
+    path = r"C:\Users\Drew\Projects\Alita"
+
+    result = sanitize_for_web_search(f"cd {path} LangGraph docs")
+
+    assert result.sanitizedText == "cd [LOCAL_PATH] LangGraph docs"
+    assert result.blocked is False
+    assert result.reason is None
+
+
+def test_preserves_public_technical_term_matching_path_component() -> None:
+    path = r"C:\Users\Drew\Projects\LangGraph\app.py"
+
+    result = sanitize_for_web_search(f"Search {path} LangGraph docs")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] LangGraph docs"
+    assert path not in result.sanitizedText
+    assert "LangGraph docs" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_sanitizes_chinese_query_mixing_local_and_public_terms() -> None:
     path = r"C:\Users\Drew\Projects\Alita\python\agent_service\graph.py"
 

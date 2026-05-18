@@ -37,7 +37,11 @@ _MODEL_NAME_RE = re.compile(
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _SECRET_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9_]{20,}|"
-    r"ghu_[A-Za-z0-9_]{20,}|ghs_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
+    r"ghu_[A-Za-z0-9_]{20,}|ghs_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+    r"(?:api[_-]?key|token|password|secret)\s*[:=]\s*['\"]?[A-Za-z0-9._~+/=-]{20,}['\"]?|"
+    r"(?:Authorization\s*:\s*)?Bearer\s+[A-Za-z0-9._~+/=-]{20,}|"
+    r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b",
+    re.IGNORECASE,
 )
 _REDACTION_LABEL_RE = re.compile(
     r"\[(?:LOCAL_PATH|LOCAL_FILE_CONTENT|MODEL_PATH|SECRET|EMAIL)\]"
@@ -105,6 +109,26 @@ _LOCAL_TAIL_PREFIXES = {
     "secret",
     "test",
     "very",
+}
+_COMMAND_ONLY_TOKENS = {
+    "cat",
+    "cd",
+    "copy",
+    "cp",
+    "del",
+    "dir",
+    "echo",
+    "f",
+    "ls",
+    "mkdir",
+    "move",
+    "mv",
+    "r",
+    "rd",
+    "rf",
+    "rm",
+    "rmdir",
+    "type",
 }
 
 
@@ -373,7 +397,12 @@ def _extract_project_names(text: str) -> set[str]:
 def _redact_project_names(text: str, names: set[str], categories: list[str]) -> str:
     redacted = text
     for name in sorted(names, key=len, reverse=True):
-        redacted, count = re.subn(rf"\b{re.escape(name)}\b", _LOCAL_PATH_LABEL, redacted)
+        redacted, count = re.subn(
+            rf"\b((?:in|inside|within|from|for)\s+){re.escape(name)}(?=\s*[,;:])",
+            rf"\1{_LOCAL_PATH_LABEL}",
+            redacted,
+            flags=re.IGNORECASE,
+        )
         if count:
             _add_category(categories, "LOCAL_PATH")
     return redacted
@@ -391,11 +420,17 @@ def _block_reason(sanitized: str) -> str | None:
     meaningful_tokens = [
         token
         for token in _MEANINGFUL_TOKEN_RE.findall(without_labels)
-        if len(token) > 1 or re.search(r"[\u4e00-\u9fff]", token)
+        if _is_meaningful_query_token(token)
     ]
     if not meaningful_tokens:
         return "Query contains too little non-sensitive content for web search."
     return None
+
+
+def _is_meaningful_query_token(token: str) -> bool:
+    if len(token) <= 1 and not re.search(r"[\u4e00-\u9fff]", token):
+        return False
+    return token.lower() not in _COMMAND_ONLY_TOKENS
 
 
 def _add_category(categories: list[str], category: str) -> None:
