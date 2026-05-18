@@ -85,6 +85,20 @@ _LOCAL_TAIL_PREFIXES = {
     "test",
     "very",
 }
+_PUBLIC_QUERY_MARKERS = {
+    "benchmark",
+    "best",
+    "current",
+    "documentation",
+    "docs",
+    "langgraph",
+    "latest",
+    "official",
+    "practices",
+    "results",
+    "routing",
+    "usage",
+}
 
 
 def sanitize_for_web_search(text: str) -> PrivacyGuardResult:
@@ -232,6 +246,10 @@ def _extended_match_end(match: re.Match[str], text: str) -> int:
     if boundary_index is not None:
         return tokens[boundary_index - 1][1] if boundary_index > 0 else match.end()
 
+    prefix_tail_end = _local_prefix_tail_end(match, tokens)
+    if prefix_tail_end is not None:
+        return prefix_tail_end
+
     local_tail_index = _local_tail_noun_index(match, tokens)
     if local_tail_index is not None:
         return tokens[local_tail_index][1]
@@ -275,6 +293,21 @@ def _local_tail_noun_index(
         ):
             return index
     return None
+
+
+def _local_prefix_tail_end(
+    match: re.Match[str],
+    tokens: list[tuple[str, int]],
+) -> int | None:
+    if not _final_component_is_local_tail_prefix(match):
+        return None
+
+    tail_end: int | None = None
+    for word, end in tokens:
+        if word.lower() in _PUBLIC_QUERY_MARKERS:
+            break
+        tail_end = end
+    return tail_end
 
 
 def _final_component_is_local_tail_prefix(match: re.Match[str]) -> bool:

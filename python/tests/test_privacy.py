@@ -226,6 +226,31 @@ def test_redacts_lowercase_multiword_windows_directory_before_latest_usage_query
     assert result.blocked is False
 
 
+def test_redacts_local_prefix_tail_before_latest_usage_query() -> None:
+    local_path = r"C:\Users\Drew\secret archive"
+
+    result = sanitize_for_web_search(f"Search {local_path} latest official usage")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] latest official usage"
+    assert local_path not in result.sanitizedText
+    assert "archive" not in result.sanitizedText
+    assert "latest official usage" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
+def test_preserves_public_marker_after_local_prefix_directory_path() -> None:
+    local_path = r"C:\Users\Drew\secret"
+
+    result = sanitize_for_web_search(f"Search {local_path} latest official usage")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] latest official usage"
+    assert local_path not in result.sanitizedText
+    assert "latest official usage" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_redacts_model_paths_and_model_filenames() -> None:
     model_path = r"C:\models\qwen\qwen2.5-coder.gguf"
     model_name = "Qwen3-ASR-1.7B"
