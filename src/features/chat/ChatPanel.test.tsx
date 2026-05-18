@@ -53,6 +53,22 @@ const messages: ChatMessage[] = [
   },
 ];
 
+const sourcedAssistantMessage: ChatMessage = {
+  messageId: "assistant-sourced",
+  role: "assistant",
+  content: "Python 3.13 is the current feature release.",
+  attachments: [],
+  createdAt: "2026-05-09T08:03:00.000Z",
+  sources: [
+    {
+      ref: "S1",
+      title: "Python documentation",
+      url: "https://docs.python.org/3/",
+      accepted: true,
+    },
+  ],
+};
+
 const idleVoiceInput: VoiceInputView = {
   available: true,
   status: "idle",
@@ -257,6 +273,24 @@ describe("ChatPanel", () => {
     expect(markup).toContain("Research flow");
     expect(markup).toContain('aria-label="Choose Quick answer"');
     expect(markup).toContain('aria-label="Choose Research flow"');
+  });
+
+  it("renders accepted source links for sourced assistant messages", () => {
+    const markup = renderToStaticMarkup(
+      <ChatPanel
+        messages={[sourcedAssistantMessage]}
+        pendingAttachments={[]}
+        draft=""
+        onDraftChange={() => undefined}
+        onSend={() => undefined}
+        onAddFile={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Python documentation");
+    expect(markup).toContain("S1");
+    expect(markup).toContain('href="https://docs.python.org/3/"');
+    expect(markup).toContain('aria-label="Sources"');
   });
 
   it("invokes the selected research choice", async () => {

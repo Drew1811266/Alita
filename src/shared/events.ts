@@ -1,10 +1,12 @@
 import type {
   AgentNode,
   ChatMessage,
+  MessageSourceMetadata,
   NodeGraph,
   NodeRunRecord,
   RuntimeNotice,
   ScriptReviewState,
+  WebSourceReference,
 } from "./types";
 
 export type ResearchChoiceId = "quick_answer" | "research_flow";
@@ -17,27 +19,6 @@ export type ResearchChoicePayload = {
     label: string;
     description?: string;
   }>;
-};
-
-export type WebSourceReference = {
-  ref?: string;
-  title: string;
-  url: string;
-  snippet?: string;
-  sourceType?: string | null;
-  accepted?: boolean | null;
-  rejectionReason?: string | null;
-};
-
-export type MessageSourceMetadata = {
-  accepted?: WebSourceReference[];
-  rejected?: WebSourceReference[];
-  failure?: {
-    kind: string;
-    message: string;
-    blocked?: boolean;
-    removedCategories?: string[] | null;
-  } | null;
 };
 
 export type BackendEvent =

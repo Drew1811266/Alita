@@ -204,6 +204,20 @@ def run_graph_events(
     tool_registry: ToolRegistry | None = None,
     result_verifier: ResultVerifier | None = None,
 ) -> Iterator[AgentEvent]:
+    if _is_research_graph(request):
+        yield AgentEvent(
+            type="task.failed",
+            payload={
+                "taskId": request.task_id,
+                "runId": request.run_id,
+                **HarnessError(
+                    "research_execution_unavailable",
+                    "Research graph execution is not available yet.",
+                ).to_payload(),
+            },
+        )
+        return
+
     try:
         ordered_nodes = _topological_nodes(request)
         _validate_graph_tools(request, tool_registry or _default_tool_registry())
@@ -486,6 +500,13 @@ def _validate_graph_tools(request: RunGraphRequest, registry: ToolRegistry) -> N
             registry.get(node.toolRef)
         except KeyError as error:
             raise HarnessError("unsupported_tool", str(error)) from error
+
+
+def _is_research_graph(request: RunGraphRequest) -> bool:
+    graph_id = request.graph.graphId
+    return "research-graph" in graph_id or any(
+        node.nodeId.startswith("research-") for node in request.graph.nodes
+    )
 
 
 def _selected_nodes_for_mode(

@@ -383,6 +383,44 @@ button {
   white-space: nowrap;
 }
 
+.sourceList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 9px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sourceList li {
+  max-width: 100%;
+  padding: 4px 8px;
+  overflow: hidden;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  color: #1e3a8a;
+  background: #ffffff;
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sourceList a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.sourceList a:hover {
+  text-decoration: underline;
+}
+
+.sourceRef {
+  margin-right: 6px;
+  color: #475569;
+  font-weight: 700;
+}
+
 .composer {
   padding: 12px;
   border-top: 1px solid #d9e2ea;

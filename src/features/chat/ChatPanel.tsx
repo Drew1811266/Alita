@@ -164,6 +164,18 @@ export function ChatPanel({
                 ))}
               </ul>
             ) : null}
+            {message.sources && message.sources.length > 0 ? (
+              <ul className="sourceList" aria-label="Sources">
+                {message.sources.map((source, index) => (
+                  <li key={`${source.ref ?? index}-${source.url}`}>
+                    <span className="sourceRef">{source.ref ?? `S${index + 1}`}</span>
+                    <a href={source.url} rel="noreferrer" target="_blank">
+                      {source.title}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </article>
         ))}
       </div>

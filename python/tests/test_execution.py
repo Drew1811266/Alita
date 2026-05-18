@@ -142,6 +142,36 @@ def test_rejects_graph_with_unknown_tool_ref_before_running_nodes(tmp_path: Path
     assert "missing.tool" in events[-1].payload["error"]
 
 
+def test_rejects_research_graph_execution_before_running_nodes(tmp_path: Path) -> None:
+    request = RunGraphRequest(
+        task_id="task-research",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[],
+        graph={
+            "graphId": "task-research-graph",
+            "nodes": [
+                build_node(
+                    "research-parallel-search",
+                    "fixed_tool",
+                    [],
+                    tool_ref="web.search.parallel",
+                )
+            ],
+            "edges": [],
+        },
+    )
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+    event_types = [event.type for event in events]
+
+    assert "run.started" not in event_types
+    assert "node.running" not in event_types
+    assert len(events) == 1
+    assert events[0].type == "task.failed"
+    assert events[0].payload["errorCode"] == "research_execution_unavailable"
+    assert "Research graph execution is not available" in events[0].payload["error"]
+
+
 def test_graph_tool_validation_uses_configured_tool_packages_root(
     tmp_path: Path, monkeypatch
 ) -> None:

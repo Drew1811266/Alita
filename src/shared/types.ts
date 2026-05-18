@@ -85,11 +85,35 @@ export type ChatAttachment = {
   mimeType: string;
 };
 
+export type WebSourceReference = {
+  ref?: string;
+  title: string;
+  url: string;
+  snippet?: string;
+  sourceType?: string | null;
+  accepted?: boolean | null;
+  rejectionReason?: string | null;
+};
+
+export type MessageSourceMetadata = {
+  accepted?: WebSourceReference[];
+  rejected?: WebSourceReference[];
+  failure?: {
+    kind: string;
+    message: string;
+    blocked?: boolean;
+    removedCategories?: string[] | null;
+  } | null;
+};
+
 export type ChatMessage = {
   messageId: string;
   role: "user" | "assistant" | "system";
   content: string;
   attachments: ChatAttachment[];
+  sources?: WebSourceReference[];
+  rejectedSources?: WebSourceReference[];
+  sourceMetadata?: MessageSourceMetadata;
   createdAt: string;
 };
 

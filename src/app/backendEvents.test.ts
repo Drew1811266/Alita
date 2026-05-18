@@ -84,6 +84,74 @@ describe("reduceBackendEvents", () => {
     expect(result.dirty).toBe(true);
   });
 
+  it("preserves web source metadata on message.created messages", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: null,
+        dirty: false,
+      },
+      [
+        {
+          type: "message.created",
+          payload: {
+            message: assistantMessage,
+            sources: [
+              {
+                ref: "S1",
+                title: "Python documentation",
+                url: "https://docs.python.org/3/",
+                snippet: "Official Python docs.",
+                accepted: true,
+              },
+            ],
+            rejectedSources: [
+              {
+                ref: "R1",
+                title: "Low quality mirror",
+                url: "https://mirror.example/python",
+                accepted: false,
+                rejectionReason: "low_quality",
+              },
+            ],
+            sourceMetadata: {
+              accepted: [
+                {
+                  ref: "S1",
+                  title: "Python documentation",
+                  url: "https://docs.python.org/3/",
+                  accepted: true,
+                },
+              ],
+              rejected: [
+                {
+                  ref: "R1",
+                  title: "Low quality mirror",
+                  url: "https://mirror.example/python",
+                  accepted: false,
+                  rejectionReason: "low_quality",
+                },
+              ],
+            },
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages[0].sources).toEqual([
+      expect.objectContaining({
+        ref: "S1",
+        title: "Python documentation",
+        url: "https://docs.python.org/3/",
+      }),
+    ]);
+    expect(result.messages[0].rejectedSources).toHaveLength(1);
+    expect(result.messages[0].sourceMetadata?.rejected?.[0].title).toBe(
+      "Low quality mirror",
+    );
+  });
+
   it("keeps existing input and graph responses working", () => {
     const events: BackendEvent[] = [
       {

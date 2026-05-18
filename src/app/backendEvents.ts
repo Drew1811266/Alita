@@ -97,7 +97,21 @@ export function reduceBackendEvents(
     if (event.type === "message.created") {
       return {
         ...current,
-        messages: [...current.messages, event.payload.message],
+        messages: [
+          ...current.messages,
+          {
+            ...event.payload.message,
+            ...(event.payload.sources
+              ? { sources: event.payload.sources }
+              : {}),
+            ...(event.payload.rejectedSources
+              ? { rejectedSources: event.payload.rejectedSources }
+              : {}),
+            ...(event.payload.sourceMetadata
+              ? { sourceMetadata: event.payload.sourceMetadata }
+              : {}),
+          },
+        ],
         pendingResearchChoice: null,
         dirty: true,
       };
