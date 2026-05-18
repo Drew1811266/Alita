@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import re
 
@@ -24,8 +25,6 @@ _WINDOWS_PATH_RE = re.compile(
     r"[^\r\n\\/:*?\"<>|]*?\.[A-Za-z0-9][A-Za-z0-9_-]*"
     r"(?=$|[\s,;:!?)]|\.(?:$|\s))|"
     r"[^\s\r\n\\/:*?\"<>|.,;:!?)]*"
-    r"(?: (?!about\b|and\b|for\b|from\b|in\b|on\b|using\b|with\b)"
-    r"[^\s\r\n\\/:*?\"<>|.,;:!?)]*)?"
     r"(?=$|[\s,;:!?)]|\.(?:$|\s))"
     r"))"
 )
@@ -64,6 +63,7 @@ _COMMON_LOCAL_COMPONENTS = {
     "software",
     "users",
 }
+_SPACED_PATH_SUFFIXES = {"project", "model"}
 
 
 def sanitize_for_web_search(text: str) -> PrivacyGuardResult:
@@ -144,13 +144,13 @@ def _looks_like_file_content_line(line: str) -> bool:
 
 def _redact_model_paths(text: str, categories: list[str]) -> str:
     def replace_path(match: re.Match[str]) -> str:
-        value = match.group(0)
+        value = _extend_spaced_path_suffix(match, text)
         if _is_model_path(value):
             _add_category(categories, "MODEL_PATH")
             return _MODEL_PATH_LABEL
         return value
 
-    text = _WINDOWS_PATH_RE.sub(replace_path, text)
+    text = _replace_matches(_WINDOWS_PATH_RE, text, replace_path)
     text = _POSIX_PATH_RE.sub(replace_path, text)
     return _redact(_MODEL_NAME_RE, text, _MODEL_PATH_LABEL, "MODEL_PATH", categories)
 
@@ -166,7 +166,7 @@ def _redact_path_pattern(
     categories: list[str],
 ) -> str:
     def replace(match: re.Match[str]) -> str:
-        value = match.group(0)
+        value = _extend_spaced_path_suffix(match, text)
         punctuation = ""
         while value.endswith((".", ",", ";", ":", "!", "?")):
             punctuation = value[-1] + punctuation
@@ -174,7 +174,36 @@ def _redact_path_pattern(
         _add_category(categories, "LOCAL_PATH")
         return f"{_LOCAL_PATH_LABEL}{punctuation}"
 
+    if pattern is _WINDOWS_PATH_RE:
+        return _replace_matches(pattern, text, replace)
     return pattern.sub(replace, text)
+
+
+def _replace_matches(
+    pattern: re.Pattern[str],
+    text: str,
+    replace: Callable[[re.Match[str]], str],
+) -> str:
+    parts: list[str] = []
+    position = 0
+    for match in pattern.finditer(text):
+        end = _extended_match_end(match, text)
+        parts.append(text[position : match.start()])
+        parts.append(replace(match))
+        position = end
+    parts.append(text[position:])
+    return "".join(parts)
+
+
+def _extend_spaced_path_suffix(match: re.Match[str], text: str) -> str:
+    return text[match.start() : _extended_match_end(match, text)]
+
+
+def _extended_match_end(match: re.Match[str], text: str) -> int:
+    suffix = re.match(r" ([A-Za-z][A-Za-z0-9_-]*)", text[match.end() :])
+    if suffix and suffix.group(1).lower() in _SPACED_PATH_SUFFIXES:
+        return match.end() + len(suffix.group(0))
+    return match.end()
 
 
 def _is_model_path(value: str) -> bool:

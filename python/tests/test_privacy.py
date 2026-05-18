@@ -80,6 +80,18 @@ def test_redacts_windows_directory_path_without_file_extension() -> None:
     assert result.blocked is False
 
 
+def test_preserves_public_terms_after_windows_directory_path() -> None:
+    local_path = r"C:\Users\Drew\Projects\Alita"
+
+    result = sanitize_for_web_search(f"Search {local_path} LangGraph routing docs")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] LangGraph routing docs"
+    assert local_path not in result.sanitizedText
+    assert "LangGraph routing docs" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_redacts_windows_directory_path_with_spaced_final_segment() -> None:
     local_path = r"C:\Users\Drew\My Project"
 
