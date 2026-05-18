@@ -69,11 +69,15 @@ import {
 import { ProjectHome } from "../features/project/ProjectHome";
 import {
   cancelNodeGraphRun,
+  createTemporaryScriptPermissionPayload,
   runNodeGraphStream,
   type RunNodeGraphMode,
   type SubmitMessagePayload,
   submitUserMessage,
   submitUserMessageStream,
+  submitTemporaryScriptPermission,
+  type TemporaryScriptPermissionDecision,
+  type TemporaryScriptPermissionPayload,
 } from "../features/task/useTaskEvents";
 import { WorkbenchTopBar } from "../features/workbench/WorkbenchTopBar";
 import {
@@ -544,6 +548,52 @@ export function App() {
         ? { type: "from_node", nodeId, sourceRunId }
         : { type: "from_node", nodeId },
     );
+  };
+
+  const submitTemporaryScriptPermissionDecision = async (
+    nodeId: string,
+    decision: TemporaryScriptPermissionDecision,
+  ) => {
+    if (!activeProject) {
+      return;
+    }
+
+    const currentGraph = graphRef.current;
+    const node = currentGraph?.nodes.find(
+      (candidate) => candidate.nodeId === nodeId,
+    );
+    if (!node) {
+      return;
+    }
+
+    try {
+      setProjectError(null);
+      const events = await submitTemporaryScriptPermission(
+        buildTemporaryScriptPermissionSubmitPayload({
+          taskId: activeProject.projectId,
+          node,
+          decision,
+          ...(currentGraph ? { currentGraph } : {}),
+        }),
+      );
+      for (const event of events) {
+        applyBackendEvent(event);
+      }
+    } catch (error) {
+      setMessages((current) => [
+        ...current,
+        createMessage("assistant", `后台 Agent 暂不可用：${String(error)}`),
+      ]);
+      setDirty(true);
+    }
+  };
+
+  const handleApproveTemporaryScript = async (nodeId: string) => {
+    await submitTemporaryScriptPermissionDecision(nodeId, "approve");
+  };
+
+  const handleRejectTemporaryScript = async (nodeId: string) => {
+    await submitTemporaryScriptPermissionDecision(nodeId, "reject");
   };
 
   const handleStopGraph = async () => {
@@ -1124,6 +1174,8 @@ export function App() {
           onNodeSelect={handleNodeSelect}
           onOpenArtifact={handleOpenArtifact}
           onRevealArtifact={handleRevealArtifact}
+          onApproveTemporaryScript={handleApproveTemporaryScript}
+          onRejectTemporaryScript={handleRejectTemporaryScript}
         />
       </section>
       <section className="previewColumn" aria-label="文件预览区域">
@@ -1222,6 +1274,28 @@ export function buildResearchChoiceSubmitPayload({
     ...pendingChoice.submittedPayload,
     inquiryChoice: choiceId,
   };
+}
+
+export function buildTemporaryScriptPermissionSubmitPayload({
+  taskId,
+  node,
+  decision,
+  currentGraph,
+}: {
+  taskId: string;
+  node: AgentNode;
+  decision: TemporaryScriptPermissionDecision;
+  currentGraph?: NodeGraph;
+}): TemporaryScriptPermissionPayload {
+  return createTemporaryScriptPermissionPayload({
+    taskId,
+    nodeId: node.nodeId,
+    decision,
+    ...(decision === "approve" && node.scriptReview?.approvalFingerprint
+      ? { approvalFingerprint: node.scriptReview.approvalFingerprint }
+      : {}),
+    ...(currentGraph ? { currentGraph } : {}),
+  });
 }
 
 function speechToTextAssignmentId(view: PreferencesView | null): string | null {
