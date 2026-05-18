@@ -239,6 +239,32 @@ def test_redacts_local_prefix_tail_before_latest_usage_query() -> None:
     assert result.blocked is False
 
 
+def test_redacts_local_prefix_tail_before_troubleshooting_query() -> None:
+    local_path = r"C:\Users\Drew\secret archive"
+
+    result = sanitize_for_web_search(f"Search {local_path} troubleshooting guide")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] troubleshooting guide"
+    assert local_path not in result.sanitizedText
+    assert "archive" not in result.sanitizedText
+    assert "troubleshooting guide" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
+def test_redacts_local_prefix_tail_before_why_query() -> None:
+    local_path = r"C:\Users\Drew\secret archive"
+
+    result = sanitize_for_web_search(f"Search {local_path} why failing")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] why failing"
+    assert local_path not in result.sanitizedText
+    assert "archive" not in result.sanitizedText
+    assert "why failing" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_preserves_public_marker_after_local_prefix_directory_path() -> None:
     local_path = r"C:\Users\Drew\secret"
 
