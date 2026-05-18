@@ -72,6 +72,17 @@ _PATH_BOUNDARY_PREPOSITIONS = {
     "using",
     "with",
 }
+_PUBLIC_QUERY_TAIL_HINTS = {
+    "api",
+    "benchmark",
+    "benchmarks",
+    "docs",
+    "documentation",
+    "examples",
+    "guide",
+    "routing",
+    "tutorial",
+}
 
 
 def sanitize_for_web_search(text: str) -> PrivacyGuardResult:
@@ -208,16 +219,54 @@ def _extend_spaced_path_suffix(match: re.Match[str], text: str) -> str:
 
 
 def _extended_match_end(match: re.Match[str], text: str) -> int:
-    suffix = re.match(r" ([A-Za-z][A-Za-z0-9_-]*)", text[match.end() :])
-    if not suffix:
+    if not _is_extensionless_windows_directory_match(match):
         return match.end()
 
-    suffix_end = match.end() + len(suffix.group(0))
-    following = re.match(r"\s+([A-Za-z][A-Za-z0-9_-]*)", text[suffix_end:])
-    if following is None or following.group(1).lower() in _PATH_BOUNDARY_PREPOSITIONS:
-        return suffix_end
+    tokens = _following_words(text, match.end())
+    if not tokens:
+        return match.end()
 
-    return match.end()
+    boundary_index = _boundary_token_index(tokens)
+    if boundary_index is not None:
+        return tokens[boundary_index - 1][1] if boundary_index > 0 else match.end()
+
+    if _looks_like_public_query_tail(tokens):
+        return match.end()
+
+    return tokens[-1][1]
+
+
+def _is_extensionless_windows_directory_match(match: re.Match[str]) -> bool:
+    final_component = match.group(0).rstrip(".,;:!?").rsplit("\\", 1)[-1]
+    return "." not in final_component
+
+
+def _following_words(text: str, start: int) -> list[tuple[str, int]]:
+    words: list[tuple[str, int]] = []
+    position = start
+    while True:
+        match = re.match(r"\s+([A-Za-z][A-Za-z0-9_-]*)", text[position:])
+        if match is None:
+            return words
+        position += len(match.group(0))
+        words.append((match.group(1), position))
+
+
+def _boundary_token_index(tokens: list[tuple[str, int]]) -> int | None:
+    for index, (word, _end) in enumerate(tokens):
+        if word.lower() in _PATH_BOUNDARY_PREPOSITIONS:
+            return index
+    return None
+
+
+def _looks_like_public_query_tail(tokens: list[tuple[str, int]]) -> bool:
+    if len(tokens) < 2:
+        return False
+    if any(word.lower() in _PUBLIC_QUERY_TAIL_HINTS for word, _end in tokens[1:]):
+        return True
+    if tokens[0][0][:1].isupper() and tokens[1][0][:1].islower():
+        return True
+    return False
 
 
 def _is_model_path(value: str) -> bool:

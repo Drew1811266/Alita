@@ -130,6 +130,35 @@ def test_redacts_arbitrary_spaced_windows_directory_before_for_phrase() -> None:
     assert result.blocked is False
 
 
+def test_redacts_multiword_windows_directory_before_preposition() -> None:
+    local_path = r"C:\Users\Drew\Very Secret Folder"
+
+    result = sanitize_for_web_search(f"Search issues in {local_path} about LangGraph")
+
+    assert result.sanitizedText == "Search issues in [LOCAL_PATH] about LangGraph"
+    assert local_path not in result.sanitizedText
+    assert "Very" not in result.sanitizedText
+    assert "Secret" not in result.sanitizedText
+    assert "Folder" not in result.sanitizedText
+    assert "about LangGraph" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
+def test_redacts_multiword_windows_directory_at_end_of_query() -> None:
+    local_path = r"C:\Users\Drew\Very Secret Folder"
+
+    result = sanitize_for_web_search(f"Search issues in {local_path}")
+
+    assert result.sanitizedText == "Search issues in [LOCAL_PATH]"
+    assert local_path not in result.sanitizedText
+    assert "Very" not in result.sanitizedText
+    assert "Secret" not in result.sanitizedText
+    assert "Folder" not in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_redacts_model_paths_and_model_filenames() -> None:
     model_path = r"C:\models\qwen\qwen2.5-coder.gguf"
     model_name = "Qwen3-ASR-1.7B"
@@ -183,6 +212,20 @@ def test_redacts_model_directory_path_with_spaced_final_segment() -> None:
 
     assert result.sanitizedText == "Find setup notes for [MODEL_PATH]"
     assert model_path not in result.sanitizedText
+    assert "model" not in result.sanitizedText
+    assert result.removedCategories == ["MODEL_PATH"]
+    assert result.blocked is False
+
+
+def test_redacts_multiword_model_directory_before_preposition() -> None:
+    model_path = r"C:\models\very secret model"
+
+    result = sanitize_for_web_search(f"Find setup notes for {model_path} about Qwen")
+
+    assert result.sanitizedText == "Find setup notes for [MODEL_PATH] about [MODEL_PATH]"
+    assert model_path not in result.sanitizedText
+    assert "very" not in result.sanitizedText
+    assert "secret" not in result.sanitizedText
     assert "model" not in result.sanitizedText
     assert result.removedCategories == ["MODEL_PATH"]
     assert result.blocked is False
