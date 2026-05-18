@@ -21,6 +21,14 @@ from agent_service.model_client import (
     ModelRuntimeRequestFailed,
 )
 from agent_service.schemas import AgentEvent, UserMessage
+from agent_service.task_planner import (
+    analyze_task,
+    build_task_graph,
+    resolve_tool_gaps,
+    select_tools,
+)
+from agent_service.tool_execution import default_tool_packages_root
+from agent_service.tool_registry import ToolRegistry
 from agent_service.web_research import answer_simple_web_inquiry, build_research_graph
 from agent_service.web_search import SearchProvider
 
@@ -33,6 +41,7 @@ AgentIntent = Literal[
     "web_complex_research_flow",
     "missing_input",
     "document_task",
+    "task",
 ]
 InquiryChoice = Literal["quick_answer", "research_flow"]
 RESEARCH_CHOICE_PROMPT = (
@@ -117,6 +126,32 @@ def plan_node_graph(state: AgentState) -> AgentState:
     }
 
 
+def plan_task_graph(state: AgentState) -> AgentState:
+    message = state["message"]
+    task_plan = analyze_task(message.content, message.attachments)
+    task_plan.task_id = message.task_id
+    registry = ToolRegistry.from_packages_root(default_tool_packages_root())
+    task_plan.selected_tools = select_tools(
+        task_plan.requirements,
+        registry.enabled_tools(),
+    )
+    task_plan.tool_gaps = resolve_tool_gaps(
+        task_plan.requirements,
+        task_plan.selected_tools,
+    )
+    return {
+        **state,
+        "events": [
+            AgentEvent(
+                type="node_graph.created",
+                payload={
+                    "graph": build_task_graph(task_plan),
+                },
+            )
+        ],
+    }
+
+
 def choose_research_mode(state: AgentState) -> AgentState:
     return {
         **state,
@@ -179,6 +214,7 @@ def build_graph(
     )
     graph.add_node("request_required_inputs", request_required_inputs)
     graph.add_node("plan_node_graph", plan_node_graph)
+    graph.add_node("plan_task_graph", plan_task_graph)
     graph.add_node("choose_research_mode", choose_research_mode)
     graph.add_node("plan_research_graph", plan_research_graph)
     graph.add_node(
@@ -201,6 +237,7 @@ def build_graph(
             "web_complex_research_flow": "plan_research_graph",
             "missing_input": "request_required_inputs",
             "document_task": "plan_node_graph",
+            "task": "plan_task_graph",
         },
     )
     graph.add_edge("answer_with_model", END)
@@ -209,6 +246,7 @@ def build_graph(
     graph.add_edge("plan_research_graph", END)
     graph.add_edge("request_required_inputs", END)
     graph.add_edge("plan_node_graph", END)
+    graph.add_edge("plan_task_graph", END)
     return graph.compile()
 
 
@@ -354,6 +392,9 @@ def _compatible_intent(
 
     if decision.intent.kind == IntentKind.NEED_INPUT:
         return "missing_input"
+
+    if decision.intent.kind == IntentKind.TASK:
+        return "task"
 
     if decision.intent.kind == IntentKind.INQUIRY and decision.inquiry is not None:
         if decision.inquiry.mode == InquiryMode.LOCAL:

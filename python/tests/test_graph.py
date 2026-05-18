@@ -352,6 +352,29 @@ def test_attachment_document_task_route_decision_matches_document_graph_route() 
     assert events[0].type == "node_graph.created"
 
 
+def test_general_task_classification_creates_planner_graph_instead_of_answer() -> None:
+    client = FakeModelClient("this should not be used")
+
+    events = run_agent(
+        UserMessage(
+            task_id="task-general",
+            content="Can you create a Python script that counts rows in a CSV file?",
+        ),
+        model_client=client,
+    )
+
+    assert client.calls == []
+    assert [event.type for event in events] == ["node_graph.created"]
+    graph = events[0].payload["graph"]
+    assert graph["graphId"] == "task-general-graph"
+    assert [node["nodeId"] for node in graph["nodes"][:4]] == [
+        "task-analysis",
+        "capability-analysis",
+        "tool-selection",
+        "execution-order-planning",
+    ]
+
+
 def test_temporary_placeholder_node_gets_default_script_review_state() -> None:
     node = _node(
         node_id="temp-script",
