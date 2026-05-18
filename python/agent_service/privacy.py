@@ -63,7 +63,15 @@ _COMMON_LOCAL_COMPONENTS = {
     "software",
     "users",
 }
-_SPACED_PATH_SUFFIXES = {"project", "model"}
+_PATH_BOUNDARY_PREPOSITIONS = {
+    "about",
+    "for",
+    "from",
+    "in",
+    "on",
+    "using",
+    "with",
+}
 
 
 def sanitize_for_web_search(text: str) -> PrivacyGuardResult:
@@ -201,8 +209,14 @@ def _extend_spaced_path_suffix(match: re.Match[str], text: str) -> str:
 
 def _extended_match_end(match: re.Match[str], text: str) -> int:
     suffix = re.match(r" ([A-Za-z][A-Za-z0-9_-]*)", text[match.end() :])
-    if suffix and suffix.group(1).lower() in _SPACED_PATH_SUFFIXES:
-        return match.end() + len(suffix.group(0))
+    if not suffix:
+        return match.end()
+
+    suffix_end = match.end() + len(suffix.group(0))
+    following = re.match(r"\s+([A-Za-z][A-Za-z0-9_-]*)", text[suffix_end:])
+    if following is None or following.group(1).lower() in _PATH_BOUNDARY_PREPOSITIONS:
+        return suffix_end
+
     return match.end()
 
 

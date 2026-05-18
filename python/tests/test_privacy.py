@@ -104,6 +104,32 @@ def test_redacts_windows_directory_path_with_spaced_final_segment() -> None:
     assert result.blocked is False
 
 
+def test_redacts_arbitrary_spaced_windows_directory_before_preposition() -> None:
+    local_path = r"C:\Users\Drew\Secret Folder"
+
+    result = sanitize_for_web_search(f"Search issues in {local_path} about LangGraph")
+
+    assert result.sanitizedText == "Search issues in [LOCAL_PATH] about LangGraph"
+    assert local_path not in result.sanitizedText
+    assert "Folder" not in result.sanitizedText
+    assert "about LangGraph" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
+def test_redacts_arbitrary_spaced_windows_directory_before_for_phrase() -> None:
+    local_path = r"C:\Users\Drew\Private Repo"
+
+    result = sanitize_for_web_search(f"Search issues in {local_path} for LangGraph docs")
+
+    assert result.sanitizedText == "Search issues in [LOCAL_PATH] for LangGraph docs"
+    assert local_path not in result.sanitizedText
+    assert "Repo" not in result.sanitizedText
+    assert "for LangGraph docs" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_redacts_model_paths_and_model_filenames() -> None:
     model_path = r"C:\models\qwen\qwen2.5-coder.gguf"
     model_name = "Qwen3-ASR-1.7B"
