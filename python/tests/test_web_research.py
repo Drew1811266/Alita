@@ -172,5 +172,8 @@ def test_simple_web_inquiry_does_not_cite_rejected_sources() -> None:
     payload = event.payload
     assert payload["sources"] == []
     assert len(payload["rejectedSources"]) == 2
+    assert payload["sourceMetadata"]["answerStatus"] == "no-reliable-sources"
+    assert payload["sourceMetadata"]["rejected"] == payload["rejectedSources"]
+    assert payload["sourceMetadata"]["rejected"][0]["rejectionReason"] == "content_farm"
     assert "I could not find reliable web sources" in payload["message"]["content"]
     assert "Top10 Python releases" not in payload["message"]["content"]

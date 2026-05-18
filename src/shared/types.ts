@@ -96,6 +96,7 @@ export type WebSourceReference = {
 };
 
 export type MessageSourceMetadata = {
+  answerStatus?: "answered" | "no-reliable-sources";
   accepted?: WebSourceReference[];
   rejected?: WebSourceReference[];
   failure?: {

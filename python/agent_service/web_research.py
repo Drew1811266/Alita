@@ -187,6 +187,9 @@ def answer_simple_web_inquiry(
                 "accepted": accepted_sources,
                 "rejected": rejected_sources,
                 "failure": _failure_payload(response.failure),
+                "answerStatus": (
+                    "answered" if accepted_sources else "no-reliable-sources"
+                ),
             },
         },
     )
