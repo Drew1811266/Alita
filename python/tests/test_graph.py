@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from agent_service.graph import _node, run_agent, stream_agent_events
 from agent_service.model_client import ChatMessage
-from agent_service.schemas import Attachment, GraphNode, UserMessage
+from agent_service.schemas import Attachment, GraphNode, RunGraph, UserMessage
 
 
 class FakeModelClient:
@@ -167,6 +167,97 @@ def test_temporary_placeholder_node_gets_default_script_review_state() -> None:
     assert node["scriptReview"]["status"] == "not_reviewed"
     assert node["scriptReview"]["summary"] == "临时脚本节点当前仅可审查，尚不能执行。"
     assert isinstance(node["scriptReview"]["permissions"], list)
+
+
+def test_graph_node_parses_planning_temporary_script_estimates_and_runtime_notices() -> None:
+    graph = RunGraph(
+        graphId="routing-plan",
+        nodes=[
+            {
+                "nodeId": "plan-task",
+                "nodeType": "planning",
+                "displayName": "Plan task",
+                "status": "completed",
+                "summary": "Decides the execution shape.",
+                "createdBy": "agent",
+                "position": {"x": 0, "y": 0},
+                "estimate": {
+                    "durationMs": 250,
+                    "cpu": "low",
+                    "memory": "low",
+                    "network": "none",
+                },
+                "resourceUsage": {
+                    "cpu": "low",
+                    "memory": "low",
+                    "network": "none",
+                },
+            },
+            {
+                "nodeId": "script-gap-fill",
+                "nodeType": "temporary_script",
+                "displayName": "Temporary script",
+                "status": "needs_permission",
+                "summary": "Reviews a temporary script before execution.",
+                "createdBy": "agent",
+                "dependencies": ["plan-task"],
+                "position": {"x": 120, "y": 120},
+                "scriptReview": {
+                    "status": "not_reviewed",
+                    "summary": "Needs approval before running.",
+                    "permissions": ["read_workspace"],
+                    "riskLevel": "high",
+                    "requiresApproval": True,
+                    "codePreview": "print('preview')",
+                    "inputContract": {"path": "string"},
+                    "outputContract": {"result": "string"},
+                    "approvalFingerprint": None,
+                },
+                "estimate": {
+                    "durationMs": 1000,
+                    "cpu": "medium",
+                    "memory": "low",
+                    "network": "none",
+                },
+                "resourceUsage": {
+                    "cpu": "medium",
+                    "memory": "low",
+                    "network": "none",
+                },
+                "runtimeNotice": {
+                    "kind": "estimate_exceeded",
+                    "message": "Node exceeded its estimate.",
+                    "actualDurationMs": 1500,
+                },
+            },
+        ],
+        edges=[
+            {
+                "id": "plan-task-script-gap-fill",
+                "source": "plan-task",
+                "target": "script-gap-fill",
+            }
+        ],
+    )
+
+    assert graph.nodes[0].nodeType == "planning"
+    assert graph.nodes[0].estimate is not None
+    assert graph.nodes[0].estimate.durationMs == 250
+    assert graph.nodes[0].resourceUsage == {
+        "cpu": "low",
+        "memory": "low",
+        "network": "none",
+    }
+    script_node = graph.nodes[1]
+    assert script_node.nodeType == "temporary_script"
+    assert script_node.scriptReview is not None
+    assert script_node.scriptReview.riskLevel == "high"
+    assert script_node.scriptReview.requiresApproval is True
+    assert script_node.scriptReview.codePreview == "print('preview')"
+    assert script_node.scriptReview.inputContract == {"path": "string"}
+    assert script_node.scriptReview.outputContract == {"result": "string"}
+    assert script_node.runtimeNotice is not None
+    assert script_node.runtimeNotice.actualDurationMs == 1500
 
 
 def test_graph_node_rejects_invalid_status() -> None:

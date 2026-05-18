@@ -33,11 +33,37 @@ class ScriptReviewState(BaseModel):
     status: Literal["not_reviewed", "reviewing", "approved", "rejected"] = "not_reviewed"
     summary: str
     permissions: list[str] = Field(default_factory=list)
+    riskLevel: Literal["low", "medium", "high"] = "low"
+    requiresApproval: bool = False
+    codePreview: str | None = None
+    inputContract: dict[str, Any] = Field(default_factory=dict)
+    outputContract: dict[str, Any] = Field(default_factory=dict)
+    approvalFingerprint: str | None = None
+
+
+class NodeEstimate(BaseModel):
+    durationMs: int | None = None
+    cpu: str | None = None
+    memory: str | None = None
+    network: str | None = None
+
+
+class RuntimeNotice(BaseModel):
+    kind: str
+    message: str
+    actualDurationMs: int | None = None
 
 
 class GraphNode(BaseModel):
     nodeId: str
-    nodeType: Literal["fixed_tool", "model", "output", "temporary_placeholder"]
+    nodeType: Literal[
+        "fixed_tool",
+        "model",
+        "output",
+        "temporary_placeholder",
+        "planning",
+        "temporary_script",
+    ]
     displayName: str
     status: Literal[
         "waiting",
@@ -59,6 +85,9 @@ class GraphNode(BaseModel):
     artifactRefs: list[str] = Field(default_factory=list)
     retryCount: int = 0
     scriptReview: ScriptReviewState | None = None
+    estimate: NodeEstimate | None = None
+    resourceUsage: dict[str, Any] | None = None
+    runtimeNotice: RuntimeNotice | None = None
     position: dict[str, float]
 
 

@@ -1,4 +1,11 @@
-import type { AgentNode, ChatMessage, NodeGraph, NodeRunRecord } from "./types";
+import type {
+  AgentNode,
+  ChatMessage,
+  NodeGraph,
+  NodeRunRecord,
+  RuntimeNotice,
+  ScriptReviewState,
+} from "./types";
 
 export type BackendEvent =
   | {
@@ -108,6 +115,59 @@ export type BackendEvent =
       payload: {
         nodeId: string;
         permissions: string[];
+      };
+    }
+  | {
+      type: "research.completed";
+      payload: {
+        taskId: string;
+        reportArtifactId?: string;
+        summary?: string;
+        acceptedSources?: Array<{
+          title: string;
+          url: string;
+          snippet?: string;
+        }>;
+        rejectedSources?: Array<{
+          title: string;
+          url: string;
+          reason?: string;
+        }>;
+      };
+    }
+  | {
+      type: "research.choice_required";
+      payload: {
+        taskId: string;
+        prompt: string;
+        choices: Array<{
+          id: string;
+          label: string;
+          description?: string;
+        }>;
+      };
+    }
+  | {
+      type: "node.needs_permission";
+      payload: {
+        nodeId: string;
+        permissions: string[];
+        scriptReview?: ScriptReviewState;
+      };
+    }
+  | {
+      type: "node.runtime_notice";
+      payload: {
+        nodeId: string;
+        notice: RuntimeNotice;
+      };
+    }
+  | {
+      type: "graph.replanned";
+      payload: {
+        graph: NodeGraph;
+        previousGraphId?: string;
+        summary?: string;
       };
     }
   | {

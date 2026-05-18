@@ -20,6 +20,8 @@ pub enum NodeType {
     Model,
     Output,
     TemporaryPlaceholder,
+    Planning,
+    TemporaryScript,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

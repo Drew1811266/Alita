@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { SUPPORTED_NODE_TYPES } from "../../shared/types";
+import type { NodeGraph } from "../../shared/types";
 import { createDocumentGraph } from "./nodeLayout";
 
 function nodeById(graph: ReturnType<typeof createDocumentGraph>, nodeId: string) {
@@ -125,5 +127,84 @@ describe("createDocumentGraph", () => {
         expect(node.modelRef).toBeTruthy();
       }
     }
+  });
+
+  it("accepts planning and temporary script nodes in canvas graph data", () => {
+    const graph: NodeGraph = {
+      graphId: "routing-plan",
+      nodes: [
+        {
+          nodeId: "plan-task",
+          nodeType: "planning",
+          displayName: "Plan task",
+          status: "completed",
+          inputPorts: [],
+          outputPorts: [{ id: "decision", label: "Decision", dataType: "json" }],
+          dependencies: [],
+          summary: "Decides the execution shape.",
+          createdBy: "agent",
+          artifactRefs: [],
+          retryCount: 0,
+          estimate: {
+            durationMs: 250,
+            cpu: "low",
+            memory: "low",
+            network: "none",
+          },
+          resourceUsage: {
+            cpu: "low",
+            memory: "low",
+            network: "none",
+          },
+          position: { x: 0, y: 0 },
+        },
+        {
+          nodeId: "script-gap-fill",
+          nodeType: "temporary_script",
+          displayName: "Temporary script",
+          status: "needs_permission",
+          inputPorts: [{ id: "decision", label: "Decision", dataType: "json" }],
+          outputPorts: [{ id: "result", label: "Result", dataType: "json" }],
+          dependencies: ["plan-task"],
+          summary: "Reviews a temporary script before execution.",
+          createdBy: "agent",
+          artifactRefs: [],
+          retryCount: 0,
+          scriptReview: {
+            status: "not_reviewed",
+            summary: "Needs approval before running.",
+            permissions: ["read_workspace"],
+            riskLevel: "high",
+            requiresApproval: true,
+            codePreview: "print('preview')",
+            inputContract: { path: "string" },
+            outputContract: { result: "string" },
+          },
+          runtimeNotice: {
+            kind: "estimate_exceeded",
+            message: "Node exceeded its estimate.",
+            actualDurationMs: 1500,
+          },
+          position: { x: 120, y: 120 },
+        },
+      ],
+      edges: [
+        {
+          id: "plan-task-script-gap-fill",
+          source: "plan-task",
+          target: "script-gap-fill",
+        },
+      ],
+    };
+
+    expect(SUPPORTED_NODE_TYPES).toEqual(
+      expect.arrayContaining(["planning", "temporary_script"]),
+    );
+    expect(graph.nodes.map((node) => node.nodeType)).toEqual([
+      "planning",
+      "temporary_script",
+    ]);
+    expect(graph.nodes[1].scriptReview?.requiresApproval).toBe(true);
+    expect(graph.nodes[1].runtimeNotice?.actualDurationMs).toBe(1500);
   });
 });

@@ -8,6 +8,15 @@ fn node_status_serializes_as_snake_case() {
 }
 
 #[test]
+fn node_type_serializes_planning_and_temporary_script_as_snake_case() {
+    let planning = serde_json::to_string(&NodeType::Planning).unwrap();
+    let temporary_script = serde_json::to_string(&NodeType::TemporaryScript).unwrap();
+
+    assert_eq!(planning, "\"planning\"");
+    assert_eq!(temporary_script, "\"temporary_script\"");
+}
+
+#[test]
 fn agent_node_serializes_with_camel_case_fields_and_snake_case_enums() {
     let node = sample_agent_node();
     let serialized = serde_json::to_value(&node).unwrap();

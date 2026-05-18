@@ -8,11 +8,45 @@ export type NodeStatus =
   | "needs_permission"
   | "skipped";
 
-export type NodeType =
+export type KnownNodeType =
   | "fixed_tool"
   | "model"
   | "output"
-  | "temporary_placeholder";
+  | "temporary_placeholder"
+  | "planning"
+  | "temporary_script";
+
+export type NodeType = string;
+
+export const SUPPORTED_NODE_TYPES = [
+  "fixed_tool",
+  "model",
+  "output",
+  "temporary_placeholder",
+  "planning",
+  "temporary_script",
+] as const satisfies readonly NodeType[];
+
+export type NodeEstimate = {
+  durationMs?: number | null;
+  cpu?: string | null;
+  memory?: string | null;
+  network?: string | null;
+};
+
+export type ResourceUsage = {
+  durationMs?: number | null;
+  cpu?: string | null;
+  memory?: string | null;
+  network?: string | null;
+  [key: string]: string | number | boolean | null | undefined;
+};
+
+export type RuntimeNotice = {
+  kind: string;
+  message: string;
+  actualDurationMs?: number | null;
+};
 
 export type NodePort = {
   id: string;
@@ -36,6 +70,9 @@ export type AgentNode = {
   retryCount: number;
   lastRun?: NodeRunRecord;
   scriptReview?: ScriptReviewState;
+  estimate?: NodeEstimate | null;
+  resourceUsage?: ResourceUsage | null;
+  runtimeNotice?: RuntimeNotice | null;
   position: {
     x: number;
     y: number;
@@ -115,6 +152,12 @@ export type ScriptReviewState = {
   status: "not_reviewed" | "reviewing" | "approved" | "rejected";
   summary: string;
   permissions: string[];
+  riskLevel?: "low" | "medium" | "high";
+  requiresApproval?: boolean;
+  codePreview?: string | null;
+  inputContract?: Record<string, unknown>;
+  outputContract?: Record<string, unknown>;
+  approvalFingerprint?: string | null;
 };
 
 export type AlitaProject = {
