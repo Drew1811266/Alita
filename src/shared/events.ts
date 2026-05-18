@@ -139,6 +139,7 @@ export type BackendEvent =
       payload: {
         taskId: string;
         reportArtifactId?: string;
+        reportArtifactPath?: string;
         summary?: string;
         acceptedSources?: Array<{
           title: string;

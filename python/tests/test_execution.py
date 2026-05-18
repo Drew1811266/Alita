@@ -225,7 +225,9 @@ def test_research_graph_executes_nodes_and_writes_markdown_report(tmp_path: Path
     assert headings == sorted(headings)
     completed_event = next(event for event in events if event.type == "research.completed")
     assert completed_event.payload["taskId"] == "task-research"
-    assert completed_event.payload["reportArtifactId"] == str(artifact_path)
+    assert completed_event.payload["reportArtifactId"] == artifact_event.payload["artifactId"]
+    assert completed_event.payload["reportArtifactId"] == artifact_path.stem
+    assert completed_event.payload["reportArtifactPath"] == str(artifact_path)
     assert completed_event.payload["acceptedSources"]
     assert completed_event.payload["rejectedSources"]
     assert events[-1].type == "task.completed"
@@ -340,8 +342,9 @@ def test_emits_runtime_notice_when_node_exceeds_estimate(tmp_path: Path) -> None
 
     notice = next(event for event in events if event.type == "node.runtime_notice")
     assert notice.payload["nodeId"] == "document-input"
-    assert notice.payload["estimateDurationMs"] == 0
-    assert notice.payload["actualDurationMs"] >= 0
+    assert notice.payload["notice"]["kind"] == "duration_exceeded"
+    assert notice.payload["notice"]["actualDurationMs"] >= 0
+    assert "estimateDurationMs" not in notice.payload
 
 
 

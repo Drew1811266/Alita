@@ -646,9 +646,7 @@ def run_graph_events(
                     type="node.runtime_notice",
                     payload={
                         "nodeId": node.nodeId,
-                        "taskId": request.task_id,
-                        "runId": request.run_id,
-                        **runtime_notice,
+                        "notice": runtime_notice,
                     },
                 )
             yield AgentEvent(
@@ -670,12 +668,18 @@ def run_graph_events(
         if _is_research_graph(request):
             final_output = outputs.get("research-markdown-output")
             if final_output is not None:
+                report_artifact_path = str(final_output.values.get("artifact", ""))
                 yield AgentEvent(
                     type="research.completed",
                     payload={
                         "taskId": request.task_id,
                         "runId": request.run_id,
-                        "reportArtifactId": final_output.values.get("artifact", ""),
+                        "reportArtifactId": (
+                            Path(report_artifact_path).stem
+                            if report_artifact_path
+                            else ""
+                        ),
+                        "reportArtifactPath": report_artifact_path,
                         "summary": final_output.values.get("summary", ""),
                         "acceptedSources": final_output.values.get(
                             "acceptedSources", []
