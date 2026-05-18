@@ -26,6 +26,12 @@ const graph: NodeGraph = {
   edges: [],
 };
 
+const replannedGraph: NodeGraph = {
+  graphId: "task-1-graph-replanned",
+  nodes: [],
+  edges: [],
+};
+
 const graphWithNode: NodeGraph = {
   graphId: "task-1-graph",
   nodes: [
@@ -338,6 +344,92 @@ describe("reduceBackendEvents", () => {
 
     expect(result.pendingResearchChoice).toBeNull();
     expect(result.graph).toBe(graph);
+  });
+
+  it("updates the visible graph when graph.replanned is received", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+      },
+      [
+        {
+          type: "graph.replanned",
+          payload: {
+            graph: replannedGraph,
+            previousGraphId: graph.graphId,
+            summary: "Updated graph node from user feedback.",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.graph).toBe(replannedGraph);
+    expect(result.messages.map((message) => message.content)).toEqual([
+      existingMessage.content,
+      "Updated graph node from user feedback.",
+    ]);
+    expect(result.pendingGraphOverwriteChoice).toBeNull();
+    expect(result.dirty).toBe(true);
+  });
+
+  it("stores graph overwrite confirmation so a later submit can carry pendingChoice", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+      },
+      [
+        {
+          type: "graph.overwrite_confirmation_required",
+          payload: {
+            taskId: "task-1",
+            previousGraphId: graph.graphId,
+            summary: "This change will replace the current graph.",
+            pendingChoice: {
+              id: "pending-graph-overwrite",
+              kind: "local_modification",
+              message: "Change Extract Data",
+            },
+            choices: [
+              {
+                id: "confirm_overwrite",
+                label: "Overwrite graph",
+                description: "Replace the current graph.",
+              },
+              { id: "cancel", label: "Cancel" },
+            ],
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.pendingGraphOverwriteChoice).toEqual({
+      taskId: "task-1",
+      previousGraphId: graph.graphId,
+      summary: "This change will replace the current graph.",
+      pendingChoice: {
+        id: "pending-graph-overwrite",
+        kind: "local_modification",
+        message: "Change Extract Data",
+      },
+      choices: [
+        {
+          id: "confirm_overwrite",
+          label: "Overwrite graph",
+          description: "Replace the current graph.",
+        },
+        { id: "cancel", label: "Cancel" },
+      ],
+    });
+    expect(result.messages[1].content).toContain(
+      "This change will replace the current graph.",
+    );
+    expect(result.dirty).toBe(true);
   });
 
   it("applies streaming message lifecycle events", () => {

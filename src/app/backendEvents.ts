@@ -17,6 +17,7 @@ export type BackendEventState = {
   graph: NodeGraph | null;
   dirty: boolean;
   pendingResearchChoice?: PendingResearchChoice | null;
+  pendingGraphOverwriteChoice?: PendingGraphOverwriteChoice | null;
   activeRunId?: string | null;
   runHistory?: RunHistoryEntry[];
   artifacts?: ArtifactRef[];
@@ -32,6 +33,32 @@ export type ResearchChoiceSubmitPayload = {
 export type PendingResearchChoice = ResearchChoicePayload & {
   submittedPayload?: ResearchChoiceSubmitPayload;
 };
+
+export type PendingGraphOverwriteChoice = Extract<
+  BackendEvent,
+  { type: "graph.overwrite_confirmation_required" }
+>["payload"];
+
+export function toGraphOverwriteSubmitChoice(
+  pendingChoice: PendingGraphOverwriteChoice,
+  content: string,
+): Record<string, unknown> {
+  const normalized = content.trim().toLowerCase();
+  const selectedChoiceId =
+    normalized === "cancel" || normalized === "no"
+      ? "cancel"
+      : normalized === "confirm" ||
+          normalized === "yes" ||
+          normalized.includes("overwrite") ||
+          normalized.includes("proceed")
+        ? "confirm_overwrite"
+        : pendingChoice.pendingChoice["id"];
+
+  return {
+    ...pendingChoice.pendingChoice,
+    id: selectedChoiceId,
+  };
+}
 
 export function reduceBackendEvents(
   state: BackendEventState,
@@ -71,6 +98,7 @@ export function reduceBackendEvents(
         ...current,
         messages: [...current.messages, event.payload.message],
         pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
         dirty: true,
       };
     }
@@ -113,6 +141,7 @@ export function reduceBackendEvents(
           },
         ],
         pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
         dirty: true,
       };
     }
@@ -125,6 +154,7 @@ export function reduceBackendEvents(
           createAssistantMessage(event.payload.prompt),
         ],
         pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
         dirty: true,
       };
     }
@@ -153,6 +183,32 @@ export function reduceBackendEvents(
           createAssistantMessage("已生成右侧工具流程。"),
         ],
         pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "graph.replanned") {
+      return {
+        ...current,
+        graph: event.payload.graph,
+        messages: event.payload.summary
+          ? [...current.messages, createAssistantMessage(event.payload.summary)]
+          : current.messages,
+        pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "graph.overwrite_confirmation_required") {
+      return {
+        ...current,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(formatGraphOverwritePrompt(event.payload)),
+        ],
+        pendingGraphOverwriteChoice: event.payload,
         dirty: true,
       };
     }
@@ -342,6 +398,18 @@ export function reduceBackendEvents(
 
     return current;
   }, state);
+}
+
+function formatGraphOverwritePrompt(
+  payload: PendingGraphOverwriteChoice,
+): string {
+  const choices = payload.choices
+    .map((choice, index) => {
+      const description = choice.description ? ` - ${choice.description}` : "";
+      return `${index + 1}. ${choice.label}${description}`;
+    })
+    .join("\n");
+  return `${payload.summary}\n\n${choices}`;
 }
 
 function formatResearchChoicePrompt(

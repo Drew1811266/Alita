@@ -106,9 +106,10 @@ def apply_graph_feedback(
         model_feedback_hook=model_feedback_hook,
     )
 
+    if _needs_overwrite_confirmation(has_run_history, artifact_refs, pending_choice):
+        return _overwrite_confirmation_event(message, current_graph, decision)
+
     if decision.kind == GraphFeedbackKind.FULL_REPLAN:
-        if _needs_overwrite_confirmation(has_run_history, artifact_refs, pending_choice):
-            return _overwrite_confirmation_event(message, current_graph, decision)
         return _graph_replanned_event(
             _build_replanned_graph(message, current_graph),
             previous_graph_id=current_graph.graphId,
@@ -278,8 +279,30 @@ def _build_replanned_graph(message: UserMessage, previous_graph: RunGraph) -> Ru
     graph_payload = build_task_graph(task_plan)
     if graph_payload.get("graphId") == previous_graph.graphId:
         graph_payload["graphId"] = f"{previous_graph.graphId}-replanned-{uuid4().hex[:8]}"
-    graph_payload.setdefault("metadata", {})["previousGraphId"] = previous_graph.graphId
+    metadata = graph_payload.setdefault("metadata", {})
+    metadata["previousGraphId"] = previous_graph.graphId
+    prior_constraints = list(previous_graph.metadata.get("constraints", []))
+    if prior_constraints:
+        metadata["constraints"] = prior_constraints
+        _append_prior_constraints_to_planning_summary(graph_payload, prior_constraints)
     return RunGraph.model_validate(graph_payload)
+
+
+def _append_prior_constraints_to_planning_summary(
+    graph_payload: dict[str, Any],
+    prior_constraints: list[str],
+) -> None:
+    target = next(
+        (node for node in graph_payload.get("nodes", []) if node.get("nodeId") == "task-analysis"),
+        None,
+    )
+    if target is None:
+        return
+    for constraint in prior_constraints:
+        target["summary"] = _append_unique_note(
+            target.get("summary", ""),
+            f"Prior constraint: {constraint}",
+        )
 
 
 def _downstream_node_ids(graph: RunGraph, node_id: str) -> set[str]:

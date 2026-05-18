@@ -110,6 +110,40 @@ describe("runNodeGraphStream", () => {
     });
   });
 
+  it("posts pending graph overwrite choice from the submit payload", async () => {
+    const graph: NodeGraph = {
+      graphId: "graph-1",
+      nodes: [],
+      edges: [],
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await submitUserMessage({
+      taskId: "task-1",
+      content: "confirm",
+      attachments: [],
+      currentGraph: graph,
+      pendingChoice: {
+        id: "confirm_overwrite",
+        kind: "local_modification",
+        pendingChoiceId: "pending-graph-overwrite",
+      },
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      current_graph: graph,
+      pending_choice: {
+        id: "confirm_overwrite",
+        kind: "local_modification",
+        pendingChoiceId: "pending-graph-overwrite",
+      },
+    });
+  });
+
   it("posts the graph and attachments to the sidecar stream endpoint", async () => {
     const events: BackendEvent[] = [];
     const graph: NodeGraph = {

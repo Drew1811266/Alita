@@ -72,6 +72,12 @@ def _graph() -> RunGraph:
     )
 
 
+def _graph_with_constraints() -> RunGraph:
+    graph = _graph()
+    graph.metadata = {"constraints": ["Use verified sources only."]}
+    return graph
+
+
 def _script_graph() -> RunGraph:
     return RunGraph(
         graphId="script-graph",
@@ -218,6 +224,32 @@ def test_graph_with_run_history_asks_before_overwrite() -> None:
     assert [choice["id"] for choice in event.payload["choices"]] == ["confirm_overwrite", "cancel"]
 
 
+def test_local_modification_with_run_history_asks_before_overwrite() -> None:
+    graph = _graph()
+
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Change the Extract Data node to read JSON files."),
+        graph,
+        has_run_history=True,
+    )
+
+    assert event.type == "graph.overwrite_confirmation_required"
+    assert event.payload["pendingChoice"]["kind"] == "local_modification"
+
+
+def test_constraint_update_with_artifacts_asks_before_overwrite() -> None:
+    graph = _graph()
+
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Use only CSV sources and keep extraction before summary."),
+        graph,
+        artifact_refs=["artifact-1"],
+    )
+
+    assert event.type == "graph.overwrite_confirmation_required"
+    assert event.payload["pendingChoice"]["kind"] == "constraint_update"
+
+
 def test_confirmed_overwrite_emits_graph_replanned() -> None:
     graph = _graph()
 
@@ -229,6 +261,21 @@ def test_confirmed_overwrite_emits_graph_replanned() -> None:
     )
 
     assert event.type == "graph.replanned"
+
+
+def test_full_replan_preserves_prior_constraints_in_metadata_and_planning_summary() -> None:
+    graph = _graph_with_constraints()
+
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Restart with a plan to create a Python script that counts CSV rows."),
+        graph,
+    )
+
+    assert event.type == "graph.replanned"
+    updated = RunGraph.model_validate(event.payload["graph"])
+    assert updated.metadata["constraints"] == ["Use verified sources only."]
+    task_analysis = next(node for node in updated.nodes if node.nodeId == "task-analysis")
+    assert "Prior constraint: Use verified sources only." in task_analysis.summary
 
 
 def test_changed_high_risk_script_requires_reapproval() -> None:

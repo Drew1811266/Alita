@@ -76,7 +76,12 @@ import {
   submitUserMessageStream,
 } from "../features/task/useTaskEvents";
 import { WorkbenchTopBar } from "../features/workbench/WorkbenchTopBar";
-import { reduceBackendEvents, type PendingResearchChoice } from "./backendEvents";
+import {
+  reduceBackendEvents,
+  toGraphOverwriteSubmitChoice,
+  type PendingGraphOverwriteChoice,
+  type PendingResearchChoice,
+} from "./backendEvents";
 import type {
   AlitaProject,
   AgentNode,
@@ -173,6 +178,10 @@ export function App() {
   const [pendingResearchChoice, setPendingResearchChoice] =
     useState<PendingResearchChoice | null>(null);
   const pendingResearchChoiceRef = useRef<PendingResearchChoice | null>(null);
+  const [pendingGraphOverwriteChoice, setPendingGraphOverwriteChoice] =
+    useState<PendingGraphOverwriteChoice | null>(null);
+  const pendingGraphOverwriteChoiceRef =
+    useRef<PendingGraphOverwriteChoice | null>(null);
   const [selectedCanvasNodeId, setSelectedCanvasNodeId] = useState<
     string | null
   >(null);
@@ -242,6 +251,10 @@ export function App() {
   useEffect(() => {
     pendingResearchChoiceRef.current = pendingResearchChoice;
   }, [pendingResearchChoice]);
+
+  useEffect(() => {
+    pendingGraphOverwriteChoiceRef.current = pendingGraphOverwriteChoice;
+  }, [pendingGraphOverwriteChoice]);
 
   useEffect(() => {
     activeRunIdRef.current = activeRunId;
@@ -327,6 +340,8 @@ export function App() {
     activeRunIdRef.current = null;
     setPendingResearchChoice(null);
     pendingResearchChoiceRef.current = null;
+    setPendingGraphOverwriteChoice(null);
+    pendingGraphOverwriteChoiceRef.current = null;
     setGraphRunning(false);
     setGraphCancelling(false);
     setContextAttachments(
@@ -424,6 +439,7 @@ export function App() {
           graph: graphRef.current,
           dirty: false,
           pendingResearchChoice: pendingResearchChoiceRef.current,
+          pendingGraphOverwriteChoice: pendingGraphOverwriteChoiceRef.current,
           activeRunId: activeRunIdRef.current,
           runHistory: runHistoryRef.current,
           artifacts: artifactsRef.current,
@@ -436,11 +452,14 @@ export function App() {
       graphRef.current = result.graph;
       setGraph(result.graph);
       pendingResearchChoiceRef.current = result.pendingResearchChoice ?? null;
+      pendingGraphOverwriteChoiceRef.current =
+        result.pendingGraphOverwriteChoice ?? null;
       activeRunIdRef.current = result.activeRunId ?? null;
       runHistoryRef.current = result.runHistory ?? runHistoryRef.current;
       artifactsRef.current = result.artifacts ?? artifactsRef.current;
       setActiveRunId(activeRunIdRef.current);
       setPendingResearchChoice(pendingResearchChoiceRef.current);
+      setPendingGraphOverwriteChoice(pendingGraphOverwriteChoiceRef.current);
       setRunHistory(runHistoryRef.current);
       setArtifacts(artifactsRef.current);
       if (result.dirty) {
@@ -751,6 +770,7 @@ export function App() {
       return;
     }
 
+    const capturedGraphOverwriteChoice = pendingGraphOverwriteChoiceRef.current;
     const sentAttachments = [...pendingAttachments];
     const agentAttachments =
       sentAttachments.length > 0 ? sentAttachments : contextAttachments;
@@ -766,6 +786,8 @@ export function App() {
     setPendingAttachments([]);
     setPendingResearchChoice(null);
     pendingResearchChoiceRef.current = null;
+    setPendingGraphOverwriteChoice(null);
+    pendingGraphOverwriteChoiceRef.current = null;
     setDirty(true);
 
     try {
@@ -781,6 +803,14 @@ export function App() {
               artifactRefs: artifactsRef.current.map(
                 (artifact) => artifact.artifactId,
               ),
+              ...(capturedGraphOverwriteChoice
+                ? {
+                    pendingChoice: toGraphOverwriteSubmitChoice(
+                      capturedGraphOverwriteChoice,
+                      userMessage.content,
+                    ),
+                  }
+                : {}),
             }
           : {}),
       };
