@@ -265,6 +265,45 @@ def test_redacts_local_prefix_tail_before_why_query() -> None:
     assert result.blocked is False
 
 
+def test_redacts_local_prefix_tail_before_compare_query() -> None:
+    local_path = r"C:\Users\Drew\secret archive"
+
+    result = sanitize_for_web_search(f"Search {local_path} compare alternatives")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] compare alternatives"
+    assert local_path not in result.sanitizedText
+    assert "archive" not in result.sanitizedText
+    assert "compare alternatives" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
+def test_redacts_local_prefix_tail_before_install_query() -> None:
+    local_path = r"C:\Users\Drew\secret archive"
+
+    result = sanitize_for_web_search(f"Search {local_path} install steps")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] install steps"
+    assert local_path not in result.sanitizedText
+    assert "archive" not in result.sanitizedText
+    assert "install steps" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
+def test_redacts_local_prefix_tail_before_performance_query() -> None:
+    local_path = r"C:\Users\Drew\secret archive"
+
+    result = sanitize_for_web_search(f"Search {local_path} performance tuning")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] performance tuning"
+    assert local_path not in result.sanitizedText
+    assert "archive" not in result.sanitizedText
+    assert "performance tuning" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_preserves_public_marker_after_local_prefix_directory_path() -> None:
     local_path = r"C:\Users\Drew\secret"
 

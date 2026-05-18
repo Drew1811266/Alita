@@ -73,7 +73,20 @@ _PATH_BOUNDARY_PREPOSITIONS = {
     "using",
     "with",
 }
-_LOCAL_TAIL_NOUNS = {"folder", "model", "project", "repo", "workspace"}
+_LOCAL_TAIL_NOUNS = {
+    "archive",
+    "cache",
+    "directory",
+    "file",
+    "files",
+    "folder",
+    "model",
+    "notes",
+    "project",
+    "repo",
+    "vault",
+    "workspace",
+}
 _LOCAL_TAIL_PREFIXES = {
     "draft",
     "local",
@@ -84,32 +97,6 @@ _LOCAL_TAIL_PREFIXES = {
     "secret",
     "test",
     "very",
-}
-_PUBLIC_QUERY_MARKERS = {
-    "benchmark",
-    "best",
-    "current",
-    "cause",
-    "documentation",
-    "docs",
-    "error",
-    "examples",
-    "fix",
-    "guide",
-    "how",
-    "issue",
-    "langgraph",
-    "latest",
-    "official",
-    "practices",
-    "reference",
-    "results",
-    "routing",
-    "solution",
-    "troubleshooting",
-    "tutorial",
-    "usage",
-    "why",
 }
 
 
@@ -314,12 +301,20 @@ def _local_prefix_tail_end(
     if not _final_component_is_local_tail_prefix(match):
         return None
 
-    tail_end: int | None = None
+    consumed: list[tuple[str, int]] = []
     for word, end in tokens:
-        if word.lower() in _PUBLIC_QUERY_MARKERS:
-            break
-        tail_end = end
-    return tail_end
+        normalized = word.lower()
+        if normalized in _LOCAL_TAIL_PREFIXES:
+            consumed.append((word, end))
+            continue
+        if normalized in _LOCAL_TAIL_NOUNS:
+            return end
+        consumed.append((word, end))
+        break
+
+    if len(consumed) >= 2:
+        return consumed[-1][1]
+    return None
 
 
 def _final_component_is_local_tail_prefix(match: re.Match[str]) -> bool:
