@@ -38,8 +38,13 @@ _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _SECRET_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9_]{20,}|"
     r"ghu_[A-Za-z0-9_]{20,}|ghs_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b|"
+    r"\b[A-Za-z_][A-Za-z0-9_]*_URL\s*[:=]\s*['\"]?"
+    r"[A-Za-z][A-Za-z0-9+.-]*://[^\s:@/]+:[^\s@/]+@[^\s'\"]+['\"]?|"
+    r"\b(?:DATABASE_URL|REDIS_URL|POSTGRES_URL)\s*[:=]\s*['\"]?[^\s'\"]{8,}['\"]?|"
+    r"\b[A-Za-z_][A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASS|API_KEY|ACCESS_KEY|"
+    r"PRIVATE_KEY|KEY)[A-Za-z0-9_]*\s*[:=]\s*['\"]?[^\s'\"]{8,}['\"]?|"
     r"\b(?:[A-Za-z0-9]+_)*(?:api[_-]?key|token|password|secret)"
-    r"\s*[:=]\s*(['\"]?)[A-Za-z0-9._~+/=-]{20,}\1|"
+    r"\s*[:=]\s*['\"]?[A-Za-z0-9._~+/=-]{20,}['\"]?|"
     r"\b(?:Authorization\s*:\s*)?Bearer\s+[A-Za-z0-9._~+/=-]{20,}\b|"
     r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b",
     re.IGNORECASE,
@@ -121,10 +126,12 @@ _COMMAND_ONLY_TOKENS = {
     "echo",
     "f",
     "git",
+    "log",
     "ls",
     "mkdir",
     "move",
     "mv",
+    "python",
     "r",
     "rd",
     "rf",

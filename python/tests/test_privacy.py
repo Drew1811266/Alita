@@ -597,6 +597,25 @@ def test_redacts_env_var_style_credential_assignments() -> None:
         assert result.reason is None
 
 
+def test_redacts_sensitive_env_var_keys_containing_credential_terms() -> None:
+    secret_value = "abcdefghijklmnopqrstuvwxyz1234567890"
+    inputs = [
+        f"Search deploy docs AWS_SECRET_ACCESS_KEY={secret_value}",
+        f"Search deploy docs NEXT_PUBLIC_SUPABASE_ANON_KEY={secret_value}",
+        f"Search deploy docs DATABASE_URL=postgres://user:pass@localhost/db",
+    ]
+
+    for text in inputs:
+        result = sanitize_for_web_search(text)
+
+        assert "[SECRET]" in result.sanitizedText
+        assert secret_value not in result.sanitizedText
+        assert "postgres://user:pass@localhost/db" not in result.sanitizedText
+        assert result.removedCategories == ["SECRET"]
+        assert result.blocked is False
+        assert result.reason is None
+
+
 def test_redacts_quoted_secret_assignment_without_orphan_quotes() -> None:
     secret_value = "abcdefghijklmnopqrstuvwxyz1234567890"
 
@@ -657,6 +676,26 @@ def test_blocks_git_command_only_leftover_after_path_redaction() -> None:
     )
 
 
+def test_blocks_git_log_command_only_leftover_after_path_redaction() -> None:
+    result = sanitize_for_web_search(r"git -C C:\Users\Drew\Projects\Alita log")
+
+    assert result.sanitizedText == "git -C [LOCAL_PATH] log"
+    assert result.blocked is True
+    assert result.reason == (
+        "Query contains too little non-sensitive content for web search."
+    )
+
+
+def test_blocks_python_script_command_only_leftover_after_path_redaction() -> None:
+    result = sanitize_for_web_search(r"python C:\Users\Drew\Projects\Alita\script.py")
+
+    assert result.sanitizedText == "python [LOCAL_PATH]"
+    assert result.blocked is True
+    assert result.reason == (
+        "Query contains too little non-sensitive content for web search."
+    )
+
+
 def test_preserves_public_intent_after_command_and_path_redaction() -> None:
     path = r"C:\Users\Drew\Projects\Alita"
 
@@ -673,6 +712,16 @@ def test_preserves_public_intent_after_git_command_and_path_redaction() -> None:
     )
 
     assert result.sanitizedText == "git -C [LOCAL_PATH] LangGraph docs"
+    assert result.blocked is False
+    assert result.reason is None
+
+
+def test_preserves_public_intent_after_python_command_and_path_redaction() -> None:
+    result = sanitize_for_web_search(
+        r"python C:\Users\Drew\Projects\Alita\script.py LangGraph docs"
+    )
+
+    assert result.sanitizedText == "python [LOCAL_PATH] LangGraph docs"
     assert result.blocked is False
     assert result.reason is None
 
