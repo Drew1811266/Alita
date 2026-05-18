@@ -14,4 +14,12 @@ describe("app workbench layout CSS", () => {
       "grid-template-columns: repeat(3, minmax(0, 1fr));",
     );
   });
+
+  it("styles planning, permission, risk, and estimate canvas states", () => {
+    expect(appCss).toContain(".agentNode-planningQuiet");
+    expect(appCss).toContain(".agentNode-needsPermission");
+    expect(appCss).toContain(".agentNode-riskHigh");
+    expect(appCss).toContain(".agentNodeEstimateChips");
+    expect(appCss).toContain("grid-template-rows: auto auto 1fr auto;");
+  });
 });

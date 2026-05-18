@@ -6,6 +6,8 @@ type NodePopoverProps = {
   onRunFromNode?: (nodeId: string) => void;
   onOpenArtifact?: (path: string) => void;
   onRevealArtifact?: (path: string) => void;
+  onApproveTemporaryScript?: (nodeId: string) => void;
+  onRejectTemporaryScript?: (nodeId: string) => void;
 };
 
 const nodeTypeLabels: Record<NodeType, string> = {
@@ -200,6 +202,8 @@ export function NodePopover({
   onRunFromNode,
   onOpenArtifact,
   onRevealArtifact,
+  onApproveTemporaryScript,
+  onRejectTemporaryScript,
 }: NodePopoverProps) {
   const canRunFromNode =
     onRunFromNode &&
@@ -207,6 +211,12 @@ export function NodePopover({
     node.nodeType !== "planning" &&
     node.nodeType !== "temporary_script" &&
     !node.scriptReview;
+  const canReviewTemporaryScript =
+    node.nodeType === "temporary_script" &&
+    node.status === "needs_permission" &&
+    node.scriptReview?.requiresApproval === true &&
+    node.scriptReview.riskLevel === "high" &&
+    (onApproveTemporaryScript || onRejectTemporaryScript);
 
   return (
     <aside className="nodePopover" aria-label={`${node.displayName} 节点信息`}>
@@ -334,6 +344,28 @@ export function NodePopover({
                 <div>
                   <div>输出契约</div>
                   {renderContract(node.scriptReview.outputContract)}
+                </div>
+              ) : null}
+              {canReviewTemporaryScript ? (
+                <div className="nodePopoverPermissionActions">
+                  {onApproveTemporaryScript ? (
+                    <button
+                      className="nodePopoverInlineButton nodePopoverApproveButton"
+                      onClick={() => onApproveTemporaryScript(node.nodeId)}
+                      type="button"
+                    >
+                      批准
+                    </button>
+                  ) : null}
+                  {onRejectTemporaryScript ? (
+                    <button
+                      className="nodePopoverInlineButton nodePopoverRejectButton"
+                      onClick={() => onRejectTemporaryScript(node.nodeId)}
+                      type="button"
+                    >
+                      拒绝
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
               <div>临时脚本节点当前仅可审查，尚不能执行。</div>

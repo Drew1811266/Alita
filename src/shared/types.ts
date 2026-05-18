@@ -145,7 +145,7 @@ export type RunHistoryEntry = {
   runId: string;
   startedAt: string;
   completedAt?: string;
-  status: "completed" | "failed" | "cancelled";
+  status: "running" | "completed" | "failed" | "cancelled";
   summary: string;
   nodeRunIds?: string[];
   artifactRefs?: string[];

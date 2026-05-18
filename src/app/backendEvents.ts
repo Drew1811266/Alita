@@ -9,6 +9,7 @@ import type {
   ChatAttachment,
   ChatMessage,
   NodeGraph,
+  RuntimeNotice,
   RunHistoryEntry,
 } from "../shared/types";
 
@@ -20,6 +21,7 @@ export type BackendEventState = {
   pendingGraphOverwriteChoice?: PendingGraphOverwriteChoice | null;
   activeRunId?: string | null;
   runHistory?: RunHistoryEntry[];
+  pendingRuntimeNotices?: PendingRuntimeNotice[];
   artifacts?: ArtifactRef[];
 };
 
@@ -38,6 +40,12 @@ export type PendingGraphOverwriteChoice = Extract<
   BackendEvent,
   { type: "graph.overwrite_confirmation_required" }
 >["payload"];
+
+type PendingRuntimeNotice = {
+  runId: string;
+  nodeId: string;
+  notice: RuntimeNotice;
+};
 
 export function toGraphOverwriteSubmitChoice(
   pendingChoice: PendingGraphOverwriteChoice,
@@ -71,14 +79,30 @@ export function reduceBackendEvents(
       return {
         ...current,
         activeRunId: event.payload.runId,
+        runHistory: appendRunHistory(current, {
+          runId: event.payload.runId,
+          startedAt: event.payload.startedAt,
+          status: "running",
+          summary: "流程执行中。",
+          nodeRunIds: [],
+          artifactRefs: [],
+        }),
         dirty: true,
       };
     }
 
     if (event.type === "run.cancelled") {
+      const runtimeNotices = collectRuntimeNoticesForRun(
+        current,
+        event.payload.runId,
+      );
       return {
         ...current,
         activeRunId: null,
+        pendingRuntimeNotices: filterPendingRuntimeNotices(
+          current,
+          event.payload.runId,
+        ),
         runHistory: appendRunHistory(current, {
           runId: event.payload.runId,
           startedAt: event.payload.completedAt,
@@ -87,6 +111,7 @@ export function reduceBackendEvents(
           summary: "流程已停止。",
           nodeRunIds: [],
           artifactRefs: [],
+          ...(runtimeNotices.length > 0 ? { runtimeNotices } : {}),
         }),
         messages: [...current.messages, createAssistantMessage("流程已停止。")],
         dirty: true,
@@ -307,6 +332,11 @@ export function reduceBackendEvents(
 
       return {
         ...updated,
+        pendingRuntimeNotices: appendPendingRuntimeNotice(
+          updated,
+          event.payload.nodeId,
+          event.payload.notice,
+        ),
         runHistory: appendRuntimeNoticeToRunHistory(
           updated,
           event.payload.nodeId,
@@ -383,9 +413,15 @@ export function reduceBackendEvents(
 
     if (event.type === "task.completed") {
       const runId = event.payload.runId ?? current.activeRunId;
+      const runtimeNotices = runId
+        ? collectRuntimeNoticesForRun(current, runId)
+        : [];
       return {
         ...current,
         activeRunId: runId ? null : current.activeRunId,
+        pendingRuntimeNotices: runId
+          ? filterPendingRuntimeNotices(current, runId)
+          : current.pendingRuntimeNotices,
         runHistory: runId
           ? appendRunHistory(current, {
               runId,
@@ -395,6 +431,7 @@ export function reduceBackendEvents(
               summary: "流程执行完成。",
               nodeRunIds: [],
               artifactRefs: current.artifacts?.map((artifact) => artifact.path) ?? [],
+              ...(runtimeNotices.length > 0 ? { runtimeNotices } : {}),
             })
           : current.runHistory,
         messages: [...current.messages, createAssistantMessage("流程执行完成。")],
@@ -404,9 +441,15 @@ export function reduceBackendEvents(
 
     if (event.type === "task.failed") {
       const runId = event.payload.runId ?? current.activeRunId;
+      const runtimeNotices = runId
+        ? collectRuntimeNoticesForRun(current, runId)
+        : [];
       return {
         ...current,
         activeRunId: runId ? null : current.activeRunId,
+        pendingRuntimeNotices: runId
+          ? filterPendingRuntimeNotices(current, runId)
+          : current.pendingRuntimeNotices,
         runHistory: runId
           ? appendRunHistory(current, {
               runId,
@@ -416,6 +459,7 @@ export function reduceBackendEvents(
               summary: event.payload.error,
               nodeRunIds: [],
               artifactRefs: current.artifacts?.map((artifact) => artifact.path) ?? [],
+              ...(runtimeNotices.length > 0 ? { runtimeNotices } : {}),
             })
           : current.runHistory,
         messages: [
@@ -519,4 +563,50 @@ function appendRuntimeNoticeToRunHistory(
         }
       : entry,
   );
+}
+
+function appendPendingRuntimeNotice(
+  state: BackendEventState,
+  nodeId: string,
+  notice: RuntimeNotice,
+): PendingRuntimeNotice[] | undefined {
+  if (!state.activeRunId) {
+    return state.pendingRuntimeNotices;
+  }
+  if (
+    state.runHistory?.some((entry) => entry.runId === state.activeRunId)
+  ) {
+    return state.pendingRuntimeNotices;
+  }
+
+  return [
+    ...(state.pendingRuntimeNotices ?? []),
+    {
+      runId: state.activeRunId,
+      nodeId,
+      notice,
+    },
+  ];
+}
+
+function collectRuntimeNoticesForRun(
+  state: BackendEventState,
+  runId: string,
+): NonNullable<RunHistoryEntry["runtimeNotices"]> {
+  const historyNotices =
+    state.runHistory?.find((entry) => entry.runId === runId)?.runtimeNotices ??
+    [];
+  const pendingNotices =
+    state.pendingRuntimeNotices
+      ?.filter((entry) => entry.runId === runId)
+      .map(({ nodeId, notice }) => ({ nodeId, notice })) ?? [];
+
+  return [...historyNotices, ...pendingNotices];
+}
+
+function filterPendingRuntimeNotices(
+  state: BackendEventState,
+  runId: string,
+): PendingRuntimeNotice[] | undefined {
+  return state.pendingRuntimeNotices?.filter((entry) => entry.runId !== runId);
 }

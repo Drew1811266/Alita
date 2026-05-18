@@ -163,6 +163,25 @@ export async function cancelNodeGraphRun(
   return (await response.json()) as { cancelled: boolean };
 }
 
+export async function submitTemporaryScriptPermission(
+  payload: TemporaryScriptPermissionPayload,
+): Promise<BackendEvent[]> {
+  const response = await fetch(
+    `${SIDECAR_URL}/agent/temporary-script/permission`,
+    {
+      method: "POST",
+      headers: await sidecarJsonHeaders(),
+      body: JSON.stringify(toSidecarTemporaryScriptPermission(payload)),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(`Agent sidecar returned ${response.status}`);
+  }
+
+  return (await response.json()) as BackendEvent[];
+}
+
 export function createSseEventParser(onEvent: (event: BackendEvent) => void) {
   let buffer = "";
 
@@ -286,6 +305,23 @@ function toSidecarAttachment(attachment: ChatAttachment) {
     path: attachment.path,
     size_bytes: attachment.sizeBytes,
     mime_type: attachment.mimeType,
+  };
+}
+
+function toSidecarTemporaryScriptPermission(
+  payload: TemporaryScriptPermissionPayload,
+) {
+  return {
+    task_id: payload.taskId,
+    node_id: payload.nodeId,
+    decision: payload.decision,
+    ...(payload.approvalFingerprint !== undefined
+      ? { approval_fingerprint: payload.approvalFingerprint }
+      : {}),
+    ...(payload.reason !== undefined ? { reason: payload.reason } : {}),
+    ...(payload.currentGraph !== undefined
+      ? { current_graph: payload.currentGraph }
+      : {}),
   };
 }
 

@@ -648,6 +648,67 @@ describe("reduceBackendEvents", () => {
     ]);
   });
 
+  it("preserves runtime notices from run start through task completion", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: graphWithNode,
+        dirty: false,
+        activeRunId: null,
+        runHistory: [],
+      },
+      [
+        {
+          type: "run.started",
+          payload: {
+            runId: "run-1",
+            taskId: "task-1",
+            startedAt: "2026-05-10T00:00:00.000Z",
+          },
+        },
+        {
+          type: "node.runtime_notice",
+          payload: {
+            nodeId: "document-parse",
+            notice: {
+              kind: "duration_exceeded",
+              message: "Node exceeded estimated duration.",
+              actualDurationMs: 1200,
+            },
+          },
+        },
+        {
+          type: "task.completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-1",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.activeRunId).toBeNull();
+    expect(result.graph?.nodes[0].runtimeNotice).toMatchObject({
+      kind: "duration_exceeded",
+      actualDurationMs: 1200,
+    });
+    expect(result.runHistory?.[0]).toMatchObject({
+      runId: "run-1",
+      status: "completed",
+      runtimeNotices: [
+        {
+          nodeId: "document-parse",
+          notice: {
+            kind: "duration_exceeded",
+            message: "Node exceeded estimated duration.",
+            actualDurationMs: 1200,
+          },
+        },
+      ],
+    });
+  });
+
   it("adds research completion artifact and chat summary", () => {
     const acceptedSources = [
       {

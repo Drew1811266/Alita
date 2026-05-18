@@ -975,14 +975,37 @@ button:focus-visible {
 
 .agentNode {
   position: relative;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
   width: 236px;
-  min-height: 132px;
+  min-height: 154px;
   padding: 16px 14px 18px;
   border: 1px solid #cbd5df;
   border-radius: 8px;
   color: #111827;
   background: #ffffff;
   box-shadow: 0 1px 2px rgb(15 23 42 / 8%);
+}
+
+.agentNode-planningQuiet {
+  border-style: dashed;
+  border-color: #d7dee7;
+  color: #334155;
+  background: #f8fafc;
+  box-shadow: none;
+}
+
+.agentNode-needsPermission {
+  border-color: #f59e0b;
+  background: #fffbeb;
+  box-shadow: 0 0 0 2px rgb(245 158 11 / 14%);
+}
+
+.agentNode-riskHigh {
+  border-color: #dc2626;
+  box-shadow:
+    inset 3px 0 0 #dc2626,
+    0 0 0 2px rgb(220 38 38 / 10%);
 }
 
 .agentNode-selected {
@@ -1041,6 +1064,12 @@ button:focus-visible {
   background: #fef2f2;
 }
 
+.agentNodeStatus-needs_permission {
+  border-color: #fbbf24;
+  color: #92400e;
+  background: #fef3c7;
+}
+
 .agentNode h3 {
   margin: 12px 0 0;
   overflow-wrap: anywhere;
@@ -1057,6 +1086,29 @@ button:focus-visible {
   line-height: 1.45;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+}
+
+.agentNodeEstimateChips {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  min-height: 20px;
+  margin-top: 10px;
+}
+
+.agentNodeEstimateChips span {
+  min-width: 0;
+  padding: 2px 6px;
+  overflow: hidden;
+  border: 1px solid #d7dee7;
+  border-radius: 999px;
+  color: #475569;
+  background: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .agentNodeHandle {
@@ -1227,6 +1279,25 @@ button:focus-visible {
   font-weight: 700;
   line-height: 16px;
   cursor: pointer;
+}
+
+.nodePopoverPermissionActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.nodePopoverApproveButton {
+  border-color: #0f766e;
+  color: #0f766e;
+  background: #f0fdfa;
+}
+
+.nodePopoverRejectButton {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fef2f2;
 }
 
 .preferencesBackdrop {

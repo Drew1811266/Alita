@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { NodePopover } from "./NodePopover";
 import type { AgentNode } from "../../shared/types";
@@ -44,6 +44,33 @@ function renderPopover(node: AgentNode) {
   return renderToStaticMarkup(
     <NodePopover node={node} onClose={() => undefined} />,
   );
+}
+
+type ElementLike = {
+  props?: {
+    children?: unknown;
+    className?: string;
+    onClick?: () => void;
+  };
+};
+
+function findElementsByClass(element: unknown, className: string): ElementLike[] {
+  if (!element || typeof element !== "object") {
+    return [];
+  }
+
+  const candidate = element as ElementLike;
+  const matches =
+    typeof candidate.props?.className === "string" &&
+    candidate.props.className.split(/\s+/).includes(className)
+      ? [candidate]
+      : [];
+  const children = candidate.props?.children;
+  const nested = Array.isArray(children)
+    ? children.flatMap((child) => findElementsByClass(child, className))
+    : findElementsByClass(children, className);
+
+  return [...matches, ...nested];
 }
 
 describe("NodePopover", () => {
@@ -232,5 +259,68 @@ describe("NodePopover", () => {
     expect(markup).toContain("8s");
     expect(markup).toContain("640MB");
     expect(markup).toContain("Memory usage exceeded estimate.");
+  });
+
+  it("renders approve and reject controls for high-risk temporary scripts", () => {
+    const markup = renderToStaticMarkup(
+      <NodePopover
+        node={{
+          ...toolNode,
+          nodeId: "temporary-script",
+          nodeType: "temporary_script",
+          displayName: "Temporary script",
+          status: "needs_permission",
+          scriptReview: {
+            status: "reviewing",
+            summary: "Needs review before execution.",
+            permissions: ["read_project_files"],
+            riskLevel: "high",
+            requiresApproval: true,
+            approvalFingerprint: "sha256:abc123",
+          },
+        }}
+        onApproveTemporaryScript={() => undefined}
+        onClose={() => undefined}
+        onRejectTemporaryScript={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("nodePopoverPermissionActions");
+    expect(markup).toContain("nodePopoverApproveButton");
+    expect(markup).toContain("nodePopoverRejectButton");
+    expect(markup).toContain("批准");
+    expect(markup).toContain("拒绝");
+  });
+
+  it("calls temporary script approval and rejection callbacks", () => {
+    const approve = vi.fn();
+    const reject = vi.fn();
+    const node: AgentNode = {
+      ...toolNode,
+      nodeId: "temporary-script",
+      nodeType: "temporary_script",
+      displayName: "Temporary script",
+      status: "needs_permission",
+      scriptReview: {
+        status: "reviewing",
+        summary: "Needs review before execution.",
+        permissions: ["read_project_files"],
+        riskLevel: "high",
+        requiresApproval: true,
+      },
+    };
+
+    const rendered = NodePopover({
+      node,
+      onApproveTemporaryScript: approve,
+      onClose: () => undefined,
+      onRejectTemporaryScript: reject,
+    });
+
+    findElementsByClass(rendered, "nodePopoverApproveButton")[0].props?.onClick?.();
+    findElementsByClass(rendered, "nodePopoverRejectButton")[0].props?.onClick?.();
+
+    expect(approve).toHaveBeenCalledWith("temporary-script");
+    expect(reject).toHaveBeenCalledWith("temporary-script");
   });
 });

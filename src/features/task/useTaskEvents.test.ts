@@ -8,6 +8,7 @@ import {
   createSseEventParser,
   createTemporaryScriptPermissionPayload,
   runNodeGraphStream,
+  submitTemporaryScriptPermission,
   submitUserMessage,
 } from "./useTaskEvents";
 import type { BackendEvent } from "../../shared/events";
@@ -375,6 +376,63 @@ describe("frontend action payload helpers", () => {
       type: "temporary_script.permission",
       taskId: "task-1",
       nodeId: "temporary-script",
+      decision: "reject",
+      reason: "Needs narrower file access.",
+    });
+  });
+
+  it("posts temporary script approval decisions to the sidecar", async () => {
+    const graph: NodeGraph = { graphId: "graph-1", nodes: [], edges: [] };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await submitTemporaryScriptPermission(
+      createTemporaryScriptPermissionPayload({
+        taskId: "task-1",
+        nodeId: "temporary-script",
+        decision: "approve",
+        approvalFingerprint: "sha256:abc123",
+        currentGraph: graph,
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/agent/temporary-script/permission",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          task_id: "task-1",
+          node_id: "temporary-script",
+          decision: "approve",
+          approval_fingerprint: "sha256:abc123",
+          current_graph: graph,
+        }),
+      }),
+    );
+  });
+
+  it("posts temporary script rejection decisions to the sidecar", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await submitTemporaryScriptPermission(
+      createTemporaryScriptPermissionPayload({
+        taskId: "task-1",
+        nodeId: "temporary-script",
+        decision: "reject",
+        reason: "Needs narrower file access.",
+      }),
+    );
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      task_id: "task-1",
+      node_id: "temporary-script",
       decision: "reject",
       reason: "Needs narrower file access.",
     });

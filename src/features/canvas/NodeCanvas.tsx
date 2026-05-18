@@ -36,6 +36,8 @@ type NodeCanvasProps = {
   onNodeSelect?: (node: AgentNode | null) => void;
   onOpenArtifact?: (path: string) => void;
   onRevealArtifact?: (path: string) => void;
+  onApproveTemporaryScript?: (nodeId: string) => void;
+  onRejectTemporaryScript?: (nodeId: string) => void;
 };
 
 const nodeTypes: NodeTypes = {
@@ -121,6 +123,8 @@ export function NodeCanvas({
   onNodeSelect,
   onOpenArtifact,
   onRevealArtifact,
+  onApproveTemporaryScript,
+  onRejectTemporaryScript,
 }: NodeCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
@@ -247,6 +251,8 @@ export function NodeCanvas({
           onRunFromNode={onRunFromNode}
           onOpenArtifact={onOpenArtifact}
           onRevealArtifact={onRevealArtifact}
+          onApproveTemporaryScript={onApproveTemporaryScript}
+          onRejectTemporaryScript={onRejectTemporaryScript}
         />
       ) : null}
     </div>
