@@ -78,6 +78,12 @@ def _graph_with_constraints() -> RunGraph:
     return graph
 
 
+def _graph_with_network_constraint() -> RunGraph:
+    graph = _graph()
+    graph.metadata = {"constraints": ["Download the source data from the network."]}
+    return graph
+
+
 def _script_graph() -> RunGraph:
     return RunGraph(
         graphId="script-graph",
@@ -263,6 +269,31 @@ def test_confirmed_overwrite_emits_graph_replanned() -> None:
     assert event.type == "graph.replanned"
 
 
+def test_confirmed_overwrite_uses_original_pending_feedback() -> None:
+    graph = _graph()
+    confirmation = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Restart, the direction is wrong."),
+        graph,
+        has_run_history=True,
+    )
+    assert confirmation.type == "graph.overwrite_confirmation_required"
+
+    confirmed_choice = {
+        **confirmation.payload["pendingChoice"],
+        "id": "confirm_overwrite",
+    }
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="yes"),
+        graph,
+        has_run_history=True,
+        pending_choice=confirmed_choice,
+    )
+
+    assert event.type == "graph.replanned"
+    updated = RunGraph.model_validate(event.payload["graph"])
+    assert updated.graphId != graph.graphId
+
+
 def test_full_replan_preserves_prior_constraints_in_metadata_and_planning_summary() -> None:
     graph = _graph_with_constraints()
 
@@ -276,6 +307,22 @@ def test_full_replan_preserves_prior_constraints_in_metadata_and_planning_summar
     assert updated.metadata["constraints"] == ["Use verified sources only."]
     task_analysis = next(node for node in updated.nodes if node.nodeId == "task-analysis")
     assert "Prior constraint: Use verified sources only." in task_analysis.summary
+
+
+def test_full_replan_uses_prior_constraints_as_planning_input() -> None:
+    graph = _graph_with_network_constraint()
+
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Restart with a plan to count CSV rows."),
+        graph,
+    )
+
+    assert event.type == "graph.replanned"
+    updated = RunGraph.model_validate(event.payload["graph"])
+    capability_analysis = next(node for node in updated.nodes if node.nodeId == "capability-analysis")
+    tool_selection = next(node for node in updated.nodes if node.nodeId == "tool-selection")
+    assert "network.fetch" in capability_analysis.summary
+    assert "network.fetch" in tool_selection.summary
 
 
 def test_changed_high_risk_script_requires_reapproval() -> None:

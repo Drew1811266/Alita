@@ -99,41 +99,84 @@ def apply_graph_feedback(
     pending_choice: dict[str, Any] | None = None,
     model_feedback_hook: ModelFeedbackHook | None = None,
 ) -> AgentEvent:
-    decision = classify_graph_feedback(
-        message.content,
-        current_graph,
-        has_run_history,
-        model_feedback_hook=model_feedback_hook,
-    )
+    effective_message = _message_for_pending_choice(message, pending_choice)
+    decision = _decision_for_pending_choice(pending_choice, effective_message, current_graph)
+    if decision is None:
+        decision = classify_graph_feedback(
+            effective_message.content,
+            current_graph,
+            has_run_history,
+            model_feedback_hook=model_feedback_hook,
+        )
 
     if _needs_overwrite_confirmation(has_run_history, artifact_refs, pending_choice):
-        return _overwrite_confirmation_event(message, current_graph, decision)
+        return _overwrite_confirmation_event(effective_message, current_graph, decision)
 
     if decision.kind == GraphFeedbackKind.FULL_REPLAN:
         return _graph_replanned_event(
-            _build_replanned_graph(message, current_graph),
+            _build_replanned_graph(effective_message, current_graph),
             previous_graph_id=current_graph.graphId,
             summary="Replanned graph from user feedback.",
         )
 
     if decision.kind == GraphFeedbackKind.CONSTRAINT_UPDATE:
         return _graph_replanned_event(
-            _apply_constraint_update(message, current_graph),
+            _apply_constraint_update(effective_message, current_graph),
             previous_graph_id=current_graph.graphId,
             summary="Updated graph constraints.",
         )
 
     if decision.kind == GraphFeedbackKind.LOCAL_MODIFICATION and decision.node_id:
         return _graph_replanned_event(
-            _apply_local_modification(message.content, current_graph, decision.node_id),
+            _apply_local_modification(effective_message.content, current_graph, decision.node_id),
             previous_graph_id=current_graph.graphId,
             summary="Updated graph node from user feedback.",
         )
 
     return AgentEvent(
         type="node_graph.created",
-        payload={"graph": _build_replanned_graph(message, current_graph).model_dump()},
+        payload={"graph": _build_replanned_graph(effective_message, current_graph).model_dump()},
     )
+
+
+def _message_for_pending_choice(
+    message: UserMessage,
+    pending_choice: dict[str, Any] | None,
+) -> UserMessage:
+    if not _is_confirmed_pending_choice(pending_choice):
+        return message
+    pending_message = pending_choice.get("message") if pending_choice else None
+    if not isinstance(pending_message, str) or not pending_message.strip():
+        return message
+    return message.model_copy(update={"content": pending_message})
+
+
+def _decision_for_pending_choice(
+    pending_choice: dict[str, Any] | None,
+    message: UserMessage,
+    current_graph: RunGraph,
+) -> GraphFeedbackDecision | None:
+    if not _is_confirmed_pending_choice(pending_choice):
+        return None
+
+    kind_value = pending_choice.get("kind") if pending_choice else None
+    try:
+        kind = GraphFeedbackKind(kind_value)
+    except (TypeError, ValueError):
+        return classify_graph_feedback(message.content, current_graph)
+
+    classified = classify_graph_feedback(message.content, current_graph)
+    if kind == GraphFeedbackKind.LOCAL_MODIFICATION:
+        return GraphFeedbackDecision(
+            kind,
+            node_id=classified.node_id,
+            reason="confirmed pending overwrite",
+        )
+    return GraphFeedbackDecision(kind, reason="confirmed pending overwrite")
+
+
+def _is_confirmed_pending_choice(pending_choice: dict[str, Any] | None) -> bool:
+    return bool(pending_choice and pending_choice.get("id") == "confirm_overwrite")
 
 
 def _mentioned_node_ids(normalized_message: str, graph: RunGraph) -> list[str]:
@@ -271,7 +314,9 @@ def _apply_constraint_update(message: UserMessage, graph: RunGraph) -> RunGraph:
 
 
 def _build_replanned_graph(message: UserMessage, previous_graph: RunGraph) -> RunGraph:
-    task_plan = analyze_task(message.content, message.attachments)
+    prior_constraints = list(previous_graph.metadata.get("constraints", []))
+    planning_message = _message_with_prior_constraints(message.content, prior_constraints)
+    task_plan = analyze_task(planning_message, message.attachments)
     task_plan.task_id = message.task_id
     registry = ToolRegistry.from_packages_root(default_tool_packages_root())
     task_plan.selected_tools = select_tools(task_plan.requirements, registry.enabled_tools())
@@ -281,11 +326,17 @@ def _build_replanned_graph(message: UserMessage, previous_graph: RunGraph) -> Ru
         graph_payload["graphId"] = f"{previous_graph.graphId}-replanned-{uuid4().hex[:8]}"
     metadata = graph_payload.setdefault("metadata", {})
     metadata["previousGraphId"] = previous_graph.graphId
-    prior_constraints = list(previous_graph.metadata.get("constraints", []))
     if prior_constraints:
         metadata["constraints"] = prior_constraints
         _append_prior_constraints_to_planning_summary(graph_payload, prior_constraints)
     return RunGraph.model_validate(graph_payload)
+
+
+def _message_with_prior_constraints(message: str, prior_constraints: list[str]) -> str:
+    if not prior_constraints:
+        return message
+    constraints = "\n".join(f"- {constraint}" for constraint in prior_constraints)
+    return f"{message}\n\nExisting constraints to preserve:\n{constraints}"
 
 
 def _append_prior_constraints_to_planning_summary(
