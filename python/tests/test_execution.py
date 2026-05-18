@@ -3,12 +3,15 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from agent_service.intent import classify_route
 from agent_service.execution import NodeOutput, run_graph_events
 from agent_service.model_client import ChatMessage
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import RunRegistry
-from agent_service.schemas import RunGraphRequest
+from agent_service.schemas import RunGraphRequest, UserMessage
 from agent_service.tool_execution import ToolResult
+from agent_service.web_research import build_research_graph
+from agent_service.web_search import SearchFailure, SearchResponse, SearchResult
 
 
 class FakeNodeExecutor:
@@ -95,6 +98,22 @@ class FailingNodeExecutor:
         raise RuntimeError(f"boom from {node_id}")
 
 
+class SequencedSearchProvider:
+    def __init__(self, responses_by_query: dict[str, list[SearchResponse]]) -> None:
+        self.responses_by_query = {
+            query: list(responses)
+            for query, responses in responses_by_query.items()
+        }
+        self.queries: list[str] = []
+
+    def search(self, query: str) -> SearchResponse:
+        self.queries.append(query)
+        responses = self.responses_by_query.get(query)
+        if not responses:
+            raise AssertionError(f"unexpected search call: {query}")
+        return responses.pop(0)
+
+
 def test_rejects_graph_with_missing_dependency(tmp_path: Path) -> None:
     request = RunGraphRequest(
         task_id="task-1",
@@ -142,34 +161,188 @@ def test_rejects_graph_with_unknown_tool_ref_before_running_nodes(tmp_path: Path
     assert "missing.tool" in events[-1].payload["error"]
 
 
-def test_rejects_research_graph_execution_before_running_nodes(tmp_path: Path) -> None:
-    request = RunGraphRequest(
-        task_id="task-research",
-        project_path=str(tmp_path / "project.alita"),
-        attachments=[],
-        graph={
-            "graphId": "task-research-graph",
-            "nodes": [
-                build_node(
-                    "research-parallel-search",
-                    "fixed_tool",
-                    [],
-                    tool_ref="web.search.parallel",
+def test_research_graph_executes_nodes_and_writes_markdown_report(tmp_path: Path) -> None:
+    question = "Compare current Python packaging tools"
+    request = build_research_flow_request(tmp_path, question)
+    provider = SequencedSearchProvider(
+        {
+            question: [
+                SearchResponse(
+                    results=[
+                        SearchResult(
+                            title="Python packaging user guide",
+                            url="https://packaging.python.org/en/latest/",
+                            snippet="Official guide to Python packaging tools.",
+                        ),
+                        SearchResult(
+                            title="Top10 packaging tools",
+                            url="https://top10.example/python-packaging",
+                            snippet="Copied list with ads.",
+                        ),
+                    ]
                 )
             ],
-            "edges": [],
-        },
+            f"{question} official sources": [
+                SearchResponse(
+                    results=[
+                        SearchResult(
+                            title="Python docs",
+                            url="https://docs.python.org/3/",
+                            snippet="Python documentation and tooling references.",
+                        )
+                    ]
+                )
+            ],
+        }
+    )
+
+    events = list(run_graph_events(request, search_provider=provider))
+
+    running_node_ids = [
+        event.payload["nodeId"] for event in events if event.type == "node.running"
+    ]
+    assert running_node_ids == [
+        "research-intent-analysis",
+        "research-privacy-guard",
+        "research-query-plan",
+        "research-parallel-search",
+        "research-source-review",
+        "research-report-synthesis",
+        "research-markdown-output",
+    ]
+    artifact_event = next(event for event in events if event.type == "artifact.created")
+    artifact_path = Path(artifact_event.payload["path"])
+    assert artifact_path.is_file()
+    assert artifact_path.parent == tmp_path / "artifacts" / "research"
+    content = artifact_path.read_text(encoding="utf-8")
+    headings = [
+        content.index("## Summary"),
+        content.index("## Key Findings"),
+        content.index("## Source Review"),
+        content.index("## Open Questions"),
+        content.index("## References"),
+    ]
+    assert headings == sorted(headings)
+    completed_event = next(event for event in events if event.type == "research.completed")
+    assert completed_event.payload["taskId"] == "task-research"
+    assert completed_event.payload["reportArtifactId"] == str(artifact_path)
+    assert completed_event.payload["acceptedSources"]
+    assert completed_event.payload["rejectedSources"]
+    assert events[-1].type == "task.completed"
+
+
+def test_research_search_retries_failed_query_without_repeating_success(
+    tmp_path: Path,
+) -> None:
+    question = "Compare current LangGraph documentation"
+    retry_failure = SearchResponse(
+        results=[],
+        failure=SearchFailure(kind="timeout", message="Search request timed out."),
+    )
+    provider = SequencedSearchProvider(
+        {
+            question: [
+                SearchResponse(
+                    results=[
+                        SearchResult(
+                            title="LangGraph docs",
+                            url="https://langchain-ai.github.io/langgraph/",
+                            snippet="Official LangGraph documentation.",
+                        )
+                    ]
+                )
+            ],
+            f"{question} official sources": [
+                retry_failure,
+                retry_failure,
+                SearchResponse(
+                    results=[
+                        SearchResult(
+                            title="LangGraph repository",
+                            url="https://github.com/langchain-ai/langgraph",
+                            snippet="Primary project repository.",
+                        )
+                    ]
+                ),
+            ],
+        }
+    )
+    request = build_research_flow_request(tmp_path, question)
+
+    events = list(run_graph_events(request, search_provider=provider))
+
+    assert provider.queries == [
+        question,
+        f"{question} official sources",
+        f"{question} official sources",
+        f"{question} official sources",
+    ]
+    assert events[-1].type == "task.completed"
+
+
+def test_research_search_fails_after_retry_budget_is_exhausted(tmp_path: Path) -> None:
+    question = "Compare current LangGraph documentation"
+    retry_failure = SearchResponse(
+        results=[],
+        failure=SearchFailure(kind="timeout", message="Search request timed out."),
+    )
+    provider = SequencedSearchProvider(
+        {
+            question: [
+                SearchResponse(
+                    results=[
+                        SearchResult(
+                            title="LangGraph docs",
+                            url="https://langchain-ai.github.io/langgraph/",
+                            snippet="Official LangGraph documentation.",
+                        )
+                    ]
+                )
+            ],
+            f"{question} official sources": [
+                retry_failure,
+                retry_failure,
+                retry_failure,
+            ],
+        }
+    )
+    request = build_research_flow_request(tmp_path, question)
+
+    events = list(run_graph_events(request, search_provider=provider))
+
+    assert provider.queries == [
+        question,
+        f"{question} official sources",
+        f"{question} official sources",
+        f"{question} official sources",
+    ]
+    node_failed = next(event for event in events if event.type == "node.failed")
+    assert node_failed.payload["nodeId"] == "research-parallel-search"
+    assert node_failed.payload["errorCode"] == "web_search_failed"
+    assert events[-1].type == "task.failed"
+
+
+def test_emits_runtime_notice_when_node_exceeds_estimate(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "document-input",
+                "fixed_tool",
+                [],
+                tool_ref="document.receive_attachment",
+                estimate={"durationMs": 0},
+            )
+        ],
     )
 
     events = list(run_graph_events(request, executor=FakeNodeExecutor()))
-    event_types = [event.type for event in events]
 
-    assert "run.started" not in event_types
-    assert "node.running" not in event_types
-    assert len(events) == 1
-    assert events[0].type == "task.failed"
-    assert events[0].payload["errorCode"] == "research_execution_unavailable"
-    assert "Research graph execution is not available" in events[0].payload["error"]
+    notice = next(event for event in events if event.type == "node.runtime_notice")
+    assert notice.payload["nodeId"] == "document-input"
+    assert notice.payload["estimateDurationMs"] == 0
+    assert notice.payload["actualDurationMs"] >= 0
+
 
 
 def test_graph_tool_validation_uses_configured_tool_packages_root(
@@ -688,6 +861,15 @@ def build_document_flow_request_with_typst(
     )
 
 
+def build_research_flow_request(tmp_path: Path, question: str) -> RunGraphRequest:
+    message = UserMessage(task_id="task-research", content=question)
+    return RunGraphRequest(
+        task_id="task-research",
+        project_path=str(tmp_path / "project.alita"),
+        graph=build_research_graph(message, classify_route(message)),
+    )
+
+
 def build_node(
     node_id: str,
     node_type: str,
@@ -695,6 +877,7 @@ def build_node(
     *,
     tool_ref: str | None = None,
     model_ref: str | None = None,
+    estimate: dict | None = None,
 ) -> dict:
     node = {
         "nodeId": node_id,
@@ -714,4 +897,6 @@ def build_node(
         node["toolRef"] = tool_ref
     if model_ref:
         node["modelRef"] = model_ref
+    if estimate is not None:
+        node["estimate"] = estimate
     return node

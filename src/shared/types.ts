@@ -126,6 +126,7 @@ export type NodeGraph = {
     source: string;
     target: string;
   }>;
+  metadata?: Record<string, unknown>;
 };
 
 export type ProjectAttachmentRef = ChatAttachment & {

@@ -13,6 +13,7 @@ class ResultVerifier:
         "content-organize": "outline",
         "report-generate": "report",
         "file-export": "artifact",
+        "research-markdown-output": "artifact",
     }
 
     def verify(self, node_id: str, output: NodeOutput) -> None:
@@ -25,17 +26,17 @@ class ResultVerifier:
                     f"node {node_id} returned empty value: {required_value}",
                 )
 
-        if node_id == "file-export":
+        if node_id in {"file-export", "research-markdown-output"}:
             artifact_value = output.values["artifact"]
             if not output.artifacts:
                 raise HarnessError(
                     "missing_artifact",
-                    "file-export artifact is missing from artifact list",
+                    f"{node_id} artifact is missing from artifact list",
                 )
             if Path(artifact_value) not in {Path(artifact) for artifact in output.artifacts}:
                 raise HarnessError(
                     "missing_artifact",
-                    f"file-export artifact is not listed: {artifact_value}",
+                    f"{node_id} artifact is not listed: {artifact_value}",
                 )
 
         for artifact in output.artifacts:

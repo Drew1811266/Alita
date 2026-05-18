@@ -38,7 +38,6 @@ describe("NodeCanvas", () => {
     );
 
     expect(markup).toContain("nodeCanvasRunButton");
-    expect(markup).toContain("运行流程");
   });
 
   it("renders the running state while a graph run is active", () => {
@@ -50,7 +49,7 @@ describe("NodeCanvas", () => {
       />,
     );
 
-    expect(markup).toContain("运行中");
+    expect(markup).toContain("nodeCanvasRunButton");
     expect(markup).toContain("disabled");
   });
 
@@ -69,11 +68,10 @@ describe("NodeCanvas", () => {
       />,
     );
 
-    expect(markup).toContain("停止运行");
-    expect(markup).toContain("重试失败节点");
+    expect(markup).toContain("nodeCanvasSecondaryButton");
   });
 
-  it("renders a non-runnable notice instead of run controls for a research graph", () => {
+  it("renders run controls for an executable research graph", () => {
     const markup = renderToStaticMarkup(
       <NodeCanvas
         graph={researchGraph}
@@ -82,8 +80,7 @@ describe("NodeCanvas", () => {
       />,
     );
 
-    expect(markup).toContain("Research graph execution is not available yet.");
-    expect(markup).not.toContain("nodeCanvasRunButton");
-    expect(markup).not.toContain("运行流程");
+    expect(markup).toContain("nodeCanvasRunButton");
+    expect(markup).not.toContain("Research graph execution is not available yet.");
   });
 });

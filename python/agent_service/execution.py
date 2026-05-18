@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from time import perf_counter
+from typing import Any, Protocol
 from uuid import uuid4
 
 from agent_service.harness_errors import HarnessError, harness_error_payload
@@ -12,6 +13,7 @@ from agent_service.model_client import (
     LlamaCppModelClient,
 )
 from agent_service.node_output import NodeOutput
+from agent_service.privacy import sanitize_for_web_search
 from agent_service.result_verifier import ResultVerifier
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY, RunRegistry
@@ -22,6 +24,20 @@ from agent_service.tool_execution import (
     default_tool_packages_root,
 )
 from agent_service.tool_registry import ToolRegistry
+from agent_service.web_research import (
+    REPORT_SECTION_ORDER,
+    _infer_question_type,
+    _source_payload,
+)
+from agent_service.web_search import (
+    DuckDuckGoHtmlSearchProvider,
+    SearchFailure,
+    SearchProvider,
+    SearchResponse,
+    SearchResult,
+    classify_sources,
+    rank_sources,
+)
 from tools.document_tool import write_markdown
 
 
@@ -194,30 +210,220 @@ class DocumentFlowExecutor:
         return self.artifact_dir / "converted" / f"{index + 1:02d}-{safe_stem}.md"
 
 
+class ResearchFlowExecutor:
+    def __init__(
+        self,
+        request: RunGraphRequest,
+        *,
+        search_provider: SearchProvider | None = None,
+        max_search_attempts: int = 3,
+    ) -> None:
+        self.request = request
+        self.search_provider = search_provider or DuckDuckGoHtmlSearchProvider()
+        self.max_search_attempts = max(1, max_search_attempts)
+        self.project_dir = Path(request.project_path).parent
+        self.artifact_dir = self.project_dir / "artifacts" / "research"
+
+    def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+        if node_id == "research-intent-analysis":
+            question = self._question()
+            return NodeOutput(
+                values={
+                    "question": question,
+                    "mode": "research_flow",
+                    "kind": "research",
+                }
+            )
+
+        if node_id == "research-privacy-guard":
+            question = _input_value(inputs, "question") or self._question()
+            guard = sanitize_for_web_search(str(question))
+            if guard.blocked:
+                raise HarnessError(
+                    "privacy_blocked",
+                    guard.reason or "Research question was blocked by privacy guard.",
+                )
+            return NodeOutput(
+                values={
+                    "question": question,
+                    "sanitizedQuestion": guard.sanitizedText,
+                    "removedCategories": guard.removedCategories,
+                }
+            )
+
+        if node_id == "research-query-plan":
+            sanitized_question = str(_input_value(inputs, "sanitizedQuestion") or "")
+            if not sanitized_question.strip():
+                raise HarnessError("empty_node_output", "research query is empty")
+            queries = [
+                {"query": sanitized_question, "purpose": "primary"},
+                {
+                    "query": f"{sanitized_question} official sources",
+                    "purpose": "official_sources",
+                },
+            ]
+            return NodeOutput(
+                values={
+                    "sanitizedQuestion": sanitized_question,
+                    "queries": queries,
+                    "maxSearchAttempts": self.max_search_attempts,
+                }
+            )
+
+        if node_id == "research-parallel-search":
+            query_units = _input_value(inputs, "queries") or []
+            results: list[dict[str, Any]] = []
+            failures: list[dict[str, Any]] = []
+            for query_unit in query_units:
+                query = str(query_unit["query"])
+                purpose = str(query_unit.get("purpose", "research"))
+                response = self._search_with_retry(query)
+                if response.failure is not None:
+                    failure = response.failure
+                    failures.append(_search_failure_payload(query, failure))
+                    raise HarnessError(
+                        "web_search_failed",
+                        (
+                            f"search query failed after {self.max_search_attempts} "
+                            f"attempts: {query}: {failure.message}"
+                        ),
+                    )
+                results.extend(
+                    _search_result_payload(result, query=query, purpose=purpose)
+                    for result in response.results
+                )
+            return NodeOutput(
+                values={
+                    "sanitizedQuestion": str(
+                        _input_value(inputs, "sanitizedQuestion") or self._question()
+                    ),
+                    "queries": query_units,
+                    "results": results,
+                    "failures": failures,
+                }
+            )
+
+        if node_id == "research-source-review":
+            question = self._question()
+            question_type = _infer_question_type(question)
+            raw_results = _input_value(inputs, "results") or []
+            search_results = [
+                SearchResult(
+                    title=str(result.get("title", "")),
+                    url=str(result.get("url", "")),
+                    snippet=str(result.get("snippet", "")),
+                )
+                for result in raw_results
+            ]
+            classified = classify_sources(
+                question_type,
+                rank_sources(question_type, search_results),
+            )
+            sources = [
+                _source_payload(result, index + 1)
+                for index, result in enumerate(classified)
+            ]
+            accepted_sources = [source for source in sources if source["accepted"]]
+            rejected_sources = [source for source in sources if not source["accepted"]]
+            return NodeOutput(
+                values={
+                    "acceptedSources": accepted_sources,
+                    "rejectedSources": rejected_sources,
+                    "sourceCount": len(sources),
+                }
+            )
+
+        if node_id == "research-report-synthesis":
+            accepted_sources = list(_input_value(inputs, "acceptedSources") or [])
+            rejected_sources = list(_input_value(inputs, "rejectedSources") or [])
+            summary = self._summary(accepted_sources)
+            markdown = _synthesize_research_markdown(
+                self._question(),
+                summary,
+                accepted_sources,
+                rejected_sources,
+                self._section_order(),
+            )
+            return NodeOutput(
+                values={
+                    "markdown": markdown,
+                    "summary": summary,
+                    "acceptedSources": accepted_sources,
+                    "rejectedSources": rejected_sources,
+                    "sectionOrder": self._section_order(),
+                }
+            )
+
+        if node_id == "research-markdown-output":
+            markdown = str(_input_value(inputs, "markdown") or "")
+            output_path = self.artifact_dir / f"research-report-{uuid4().hex[:8]}.md"
+            exported = write_markdown(markdown, str(output_path))
+            return NodeOutput(
+                artifacts=[exported],
+                values={
+                    "artifact": exported,
+                    "markdown": markdown,
+                    "summary": _input_value(inputs, "summary") or "",
+                    "acceptedSources": _input_value(inputs, "acceptedSources") or [],
+                    "rejectedSources": _input_value(inputs, "rejectedSources") or [],
+                },
+            )
+
+        raise ValueError(f"Unsupported research node: {node_id}")
+
+    def _question(self) -> str:
+        question = self.request.graph.metadata.get("question", "")
+        if not isinstance(question, str) or not question.strip():
+            raise HarnessError(
+                "missing_research_question",
+                "Research graph metadata is missing the original question.",
+            )
+        return question.strip()
+
+    def _section_order(self) -> list[str]:
+        configured = self.request.graph.metadata.get("sectionOrder")
+        if isinstance(configured, list) and all(
+            isinstance(section, str) for section in configured
+        ):
+            return list(configured)
+        return list(REPORT_SECTION_ORDER)
+
+    def _summary(self, accepted_sources: list[dict[str, Any]]) -> str:
+        if not accepted_sources:
+            return f"No reliable sources were accepted for: {self._question()}"
+        return (
+            f"Research completed for: {self._question()}. "
+            f"{len(accepted_sources)} source(s) passed source review."
+        )
+
+    def _search_with_retry(self, query: str) -> SearchResponse:
+        latest_failure: SearchFailure | None = None
+        for _attempt in range(self.max_search_attempts):
+            try:
+                response = self.search_provider.search(query)
+            except Exception as error:
+                latest_failure = SearchFailure(
+                    kind="provider_error",
+                    message=str(error),
+                )
+                continue
+            if response.failure is None:
+                return response
+            latest_failure = response.failure
+        return SearchResponse(results=[], failure=latest_failure)
+
+
 def run_graph_events(
     request: RunGraphRequest,
     *,
     executor: NodeExecutor | None = None,
     model_client: ModelClient | None = None,
     tool_executor: ToolExecutor | None = None,
+    search_provider: SearchProvider | None = None,
     registry: RunRegistry | None = None,
     tool_registry: ToolRegistry | None = None,
     result_verifier: ResultVerifier | None = None,
 ) -> Iterator[AgentEvent]:
-    if _is_research_graph(request):
-        yield AgentEvent(
-            type="task.failed",
-            payload={
-                "taskId": request.task_id,
-                "runId": request.run_id,
-                **HarnessError(
-                    "research_execution_unavailable",
-                    "Research graph execution is not available yet.",
-                ).to_payload(),
-            },
-        )
-        return
-
     try:
         ordered_nodes = _topological_nodes(request)
         _validate_graph_tools(request, tool_registry or _default_tool_registry())
@@ -234,11 +440,16 @@ def run_graph_events(
         return
 
     selected_nodes = _selected_nodes_for_mode(request, ordered_nodes)
-    node_executor = executor or DocumentFlowExecutor(
-        request,
-        model_client=model_client,
-        tool_executor=tool_executor,
-    )
+    if executor is not None:
+        node_executor = executor
+    elif _is_research_graph(request):
+        node_executor = ResearchFlowExecutor(request, search_provider=search_provider)
+    else:
+        node_executor = DocumentFlowExecutor(
+            request,
+            model_client=model_client,
+            tool_executor=tool_executor,
+        )
     verifier = result_verifier or ResultVerifier()
     run_registry = registry or DEFAULT_RUN_REGISTRY
     cancel_token = run_registry.start(request.run_id)
@@ -354,6 +565,7 @@ def run_graph_events(
                 },
             )
             yield AgentEvent(type="node.running", payload={"nodeId": node.nodeId})
+            node_perf_started = perf_counter()
             try:
                 dependency_outputs = {
                     dependency: outputs[dependency]
@@ -411,6 +623,7 @@ def run_graph_events(
                 return
 
             completed_at = _now_iso()
+            actual_duration_ms = int((perf_counter() - node_perf_started) * 1000)
             outputs[node.nodeId] = output
             record = {
                 "nodeRunId": node_run_id,
@@ -427,6 +640,17 @@ def run_graph_events(
                 type="node.completed",
                 payload={"nodeId": node.nodeId, "artifactRefs": output.artifacts},
             )
+            runtime_notice = _runtime_notice_for_node(node, actual_duration_ms)
+            if runtime_notice is not None:
+                yield AgentEvent(
+                    type="node.runtime_notice",
+                    payload={
+                        "nodeId": node.nodeId,
+                        "taskId": request.task_id,
+                        "runId": request.run_id,
+                        **runtime_notice,
+                    },
+                )
             yield AgentEvent(
                 type="node.run_recorded",
                 payload={"record": _event_record(record)},
@@ -443,6 +667,24 @@ def run_graph_events(
                 )
 
         completed_at = _now_iso()
+        if _is_research_graph(request):
+            final_output = outputs.get("research-markdown-output")
+            if final_output is not None:
+                yield AgentEvent(
+                    type="research.completed",
+                    payload={
+                        "taskId": request.task_id,
+                        "runId": request.run_id,
+                        "reportArtifactId": final_output.values.get("artifact", ""),
+                        "summary": final_output.values.get("summary", ""),
+                        "acceptedSources": final_output.values.get(
+                            "acceptedSources", []
+                        ),
+                        "rejectedSources": final_output.values.get(
+                            "rejectedSources", []
+                        ),
+                    },
+                )
         journal.write_run(
             {
                 "runId": request.run_id,
@@ -496,6 +738,8 @@ def _validate_graph_tools(request: RunGraphRequest, registry: ToolRegistry) -> N
     for node in request.graph.nodes:
         if node.nodeType != "fixed_tool" or not node.toolRef:
             continue
+        if _is_research_graph(request) and node.toolRef == "web.search.parallel":
+            continue
         try:
             registry.get(node.toolRef)
         except KeyError as error:
@@ -503,6 +747,8 @@ def _validate_graph_tools(request: RunGraphRequest, registry: ToolRegistry) -> N
 
 
 def _is_research_graph(request: RunGraphRequest) -> bool:
+    if request.graph.metadata.get("kind") == "research":
+        return True
     graph_id = request.graph.graphId
     return "research-graph" in graph_id or any(
         node.nodeId.startswith("research-") for node in request.graph.nodes
@@ -587,7 +833,7 @@ def _source_outputs_for_mode(request: RunGraphRequest) -> dict[str, NodeOutput]:
             artifacts = []
         outputs[node_id] = NodeOutput(
             artifacts=[str(artifact) for artifact in artifacts],
-            values={str(key): str(value) for key, value in values.items()},
+            values={str(key): value for key, value in values.items()},
         )
     return outputs
 
@@ -595,8 +841,15 @@ def _source_outputs_for_mode(request: RunGraphRequest) -> dict[str, NodeOutput]:
 def _first_input_value(inputs: dict[str, NodeOutput], key: str) -> str:
     for output in inputs.values():
         if key in output.values:
-            return output.values[key]
+            return str(output.values[key])
     return ""
+
+
+def _input_value(inputs: dict[str, NodeOutput], key: str) -> Any:
+    for output in inputs.values():
+        if key in output.values:
+            return output.values[key]
+    return None
 
 
 def _unique_artifacts_from_inputs(inputs: dict[str, NodeOutput]) -> list[str]:
@@ -622,6 +875,117 @@ def _event_record(record: dict) -> dict:
         "artifactRefs": record.get("artifactRefs", []),
         "error": record.get("error"),
     }
+
+
+def _runtime_notice_for_node(node: GraphNode, actual_duration_ms: int) -> dict | None:
+    if node.estimate is None or node.estimate.durationMs is None:
+        return None
+    estimate_duration_ms = node.estimate.durationMs
+    exceeded = (
+        actual_duration_ms >= 0
+        if estimate_duration_ms <= 0
+        else actual_duration_ms > estimate_duration_ms
+    )
+    if not exceeded:
+        return None
+    return {
+        "kind": "duration_exceeded",
+        "message": (
+            f"Node exceeded estimated duration: "
+            f"{actual_duration_ms}ms actual vs {estimate_duration_ms}ms estimated."
+        ),
+        "actualDurationMs": actual_duration_ms,
+        "estimateDurationMs": estimate_duration_ms,
+    }
+
+
+def _search_result_payload(
+    result: SearchResult,
+    *,
+    query: str,
+    purpose: str,
+) -> dict[str, Any]:
+    return {
+        "title": result.title,
+        "url": result.url,
+        "snippet": result.snippet,
+        "query": query,
+        "purpose": purpose,
+    }
+
+
+def _search_failure_payload(query: str, failure: SearchFailure) -> dict[str, Any]:
+    return {
+        "query": query,
+        "kind": failure.kind,
+        "message": failure.message,
+        "blocked": failure.blocked,
+        "removedCategories": failure.removedCategories,
+    }
+
+
+def _synthesize_research_markdown(
+    question: str,
+    summary: str,
+    accepted_sources: list[dict[str, Any]],
+    rejected_sources: list[dict[str, Any]],
+    section_order: list[str],
+) -> str:
+    section_renderers = {
+        "summary": lambda: f"## Summary\n\n{summary}\n",
+        "key_findings": lambda: _key_findings_section(accepted_sources),
+        "source_review": lambda: _source_review_section(accepted_sources, rejected_sources),
+        "open_questions": lambda: (
+            "## Open Questions\n\n"
+            "- Validate whether newer source material appeared after this run.\n"
+        ),
+        "references": lambda: _references_section(accepted_sources),
+    }
+    sections = [
+        f"# Research Report\n\nQuestion: {question.strip()}\n",
+    ]
+    for section in section_order:
+        renderer = section_renderers.get(section)
+        if renderer is not None:
+            sections.append(renderer())
+    return "\n".join(sections).rstrip() + "\n"
+
+
+def _key_findings_section(accepted_sources: list[dict[str, Any]]) -> str:
+    lines = ["## Key Findings", ""]
+    if not accepted_sources:
+        lines.append("- No accepted sources were available for synthesis.")
+    else:
+        for source in accepted_sources:
+            lines.append(
+                f"- {source['title']}: {source.get('snippet') or 'No snippet available.'}"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _source_review_section(
+    accepted_sources: list[dict[str, Any]],
+    rejected_sources: list[dict[str, Any]],
+) -> str:
+    lines = ["## Source Review", ""]
+    lines.append(f"- Accepted sources: {len(accepted_sources)}")
+    lines.append(f"- Rejected sources: {len(rejected_sources)}")
+    for source in rejected_sources:
+        lines.append(
+            f"- Rejected {source['title']}: {source.get('rejectionReason') or 'not accepted'}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _references_section(accepted_sources: list[dict[str, Any]]) -> str:
+    lines = ["## References", ""]
+    if not accepted_sources:
+        lines.append("- No accepted references.")
+    else:
+        for source in accepted_sources:
+            ref = source.get("ref") or "-"
+            lines.append(f"- {ref} {source['title']} - {source['url']}")
+    return "\n".join(lines) + "\n"
 
 
 def _now_iso() -> str:

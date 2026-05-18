@@ -112,6 +112,7 @@ class RunGraph(BaseModel):
     graphId: str
     nodes: list[GraphNode]
     edges: list[GraphEdge]
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunMode(BaseModel):

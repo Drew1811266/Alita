@@ -107,7 +107,6 @@ export function NodeCanvas({
   onRevealArtifact,
 }: NodeCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const researchGraph = graph ? isResearchGraph(graph) : false;
 
   const nodes = useMemo<AgentFlowNode[]>(() => {
     if (!graph) {
@@ -172,12 +171,7 @@ export function NodeCanvas({
   return (
     <div className="nodeCanvas">
       <div className="nodeCanvasToolbar">
-        {researchGraph ? (
-          <div className="nodeCanvasNotice" role="status">
-            Research graph execution is not available yet.
-          </div>
-        ) : (
-          <>
+        <>
             <button
               className="nodeCanvasRunButton"
               disabled={running}
@@ -206,8 +200,7 @@ export function NodeCanvas({
                 重试失败节点
               </button>
             ) : null}
-          </>
-        )}
+        </>
       </div>
       <ReactFlow
         nodes={nodes}
@@ -235,7 +228,7 @@ export function NodeCanvas({
         <NodePopover
           node={selectedNode}
           onClose={clearSelectedNode}
-          onRunFromNode={researchGraph ? undefined : onRunFromNode}
+          onRunFromNode={onRunFromNode}
           onOpenArtifact={onOpenArtifact}
           onRevealArtifact={onRevealArtifact}
         />

@@ -72,6 +72,17 @@ def test_build_research_graph_contains_expected_nodes_and_single_visible_search_
     parsed = RunGraph(**graph)
     node_ids = [node.nodeId for node in parsed.nodes]
 
+    assert parsed.metadata == {
+        "kind": "research",
+        "question": "Compare current Python packaging tools and write a research summary",
+        "sectionOrder": [
+            "summary",
+            "key_findings",
+            "source_review",
+            "open_questions",
+            "references",
+        ],
+    }
     assert node_ids == [
         "research-intent-analysis",
         "research-privacy-guard",

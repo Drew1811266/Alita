@@ -158,7 +158,16 @@ def build_research_graph(
             estimate=_estimate(200, "low", "low", "none"),
         ),
     ]
-    return {"graphId": graph_id, "nodes": nodes, "edges": _edges(nodes)}
+    return {
+        "graphId": graph_id,
+        "nodes": nodes,
+        "edges": _edges(nodes),
+        "metadata": {
+            "kind": "research",
+            "question": message.content,
+            "sectionOrder": list(REPORT_SECTION_ORDER),
+        },
+    }
 
 
 def answer_simple_web_inquiry(
