@@ -13,6 +13,7 @@ from agent_service.graph import (
 from agent_service.intent import IntentKind, classify_route
 from agent_service.model_client import ChatMessage
 from agent_service.schemas import Attachment, GraphNode, RunGraph, UserMessage
+from agent_service.web_search import SearchResponse, SearchResult
 
 
 class FakeModelClient:
@@ -40,6 +41,16 @@ class FakeModelClient:
         self.calls.append(messages)
         yield "你好"
         yield "，本地模型"
+
+
+class FakeSearchProvider:
+    def __init__(self, response: SearchResponse) -> None:
+        self.response = response
+        self.queries: list[str] = []
+
+    def search(self, query: str) -> SearchResponse:
+        self.queries.append(query)
+        return self.response
 
 
 def test_plain_chat_returns_local_model_message() -> None:
@@ -97,7 +108,18 @@ def test_plain_chat_streams_local_model_message_deltas() -> None:
 
 def test_graph_state_preserves_structured_route_decision_for_inquiries() -> None:
     client = FakeModelClient("local answer")
-    app = build_graph(model_client=client)
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Python release",
+                    url="https://www.python.org/downloads/",
+                    snippet="Latest Python release.",
+                )
+            ]
+        )
+    )
+    app = build_graph(model_client=client, search_provider=provider)
 
     result = app.invoke(
         {
@@ -109,7 +131,7 @@ def test_graph_state_preserves_structured_route_decision_for_inquiries() -> None
         }
     )
 
-    assert result["intent"] == "chat"
+    assert result["intent"] == "web_simple_inquiry"
     assert result["route_decision"] == {
         "intent": {"kind": "inquiry"},
         "inquiry": {"mode": "web_simple", "requires_web": True},
@@ -117,6 +139,116 @@ def test_graph_state_preserves_structured_route_decision_for_inquiries() -> None
         "missing_inputs": [],
     }
     assert result["events"][0].type == "message.created"
+
+
+def test_web_simple_route_auto_searches_and_returns_sources_without_graph() -> None:
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Python docs",
+                    url="https://docs.python.org/3/",
+                    snippet="Latest Python release.",
+                ),
+                SearchResult(
+                    title="Top10 Python versions",
+                    url="https://top10.example/python",
+                    snippet="Copied-release-notes.",
+                ),
+            ]
+        )
+    )
+
+    events = run_agent(
+        UserMessage(task_id="simple-web", content="What is the latest Python release?"),
+        search_provider=provider,
+    )
+
+    assert provider.queries == ["What is the latest Python release?"]
+    assert [event.type for event in events] == ["message.created"]
+    assert events[0].payload["sources"][0]["ref"] == "[1]"
+    assert events[0].payload["sources"][0]["accepted"] is True
+    assert events[0].payload["rejectedSources"][0]["rejectionReason"] == "content_farm"
+
+
+def test_web_complex_default_returns_research_choice_required() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="complex-web",
+            content="Research and compare current Python packaging tools",
+        )
+    )
+
+    assert [event.type for event in events] == ["research.choice_required"]
+    assert events[0].payload["choices"] == [
+        {
+            "id": "quick_answer",
+            "label": "Quick answer",
+            "description": "Search the web now and return a concise sourced answer.",
+        },
+        {
+            "id": "research_flow",
+            "label": "Research flow",
+            "description": "Create a research graph for planning, source review, and report synthesis.",
+        },
+    ]
+
+
+def test_web_complex_quick_answer_choice_searches_and_answers() -> None:
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Python packaging guide",
+                    url="https://packaging.python.org/",
+                    snippet="Official Python packaging guidance.",
+                )
+            ]
+        )
+    )
+
+    events = run_agent(
+        UserMessage(
+            task_id="complex-web",
+            content="Research and compare current Python packaging tools",
+        ),
+        inquiry_choice="quick_answer",
+        search_provider=provider,
+    )
+
+    assert provider.queries == ["Research and compare current Python packaging tools"]
+    assert [event.type for event in events] == ["message.created"]
+    assert events[0].payload["sources"][0]["url"] == "https://packaging.python.org/"
+
+
+def test_web_complex_research_flow_choice_creates_research_graph() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="complex-web",
+            content="Research and compare current Python packaging tools",
+        ),
+        inquiry_choice="research_flow",
+    )
+
+    assert [event.type for event in events] == ["node_graph.created"]
+    graph = events[0].payload["graph"]
+    assert [node["nodeId"] for node in graph["nodes"]] == [
+        "research-intent-analysis",
+        "research-privacy-guard",
+        "research-query-plan",
+        "research-parallel-search",
+        "research-source-review",
+        "research-report-synthesis",
+        "research-markdown-output",
+    ]
+    assert len(
+        [
+            node
+            for node in graph["nodes"]
+            if node["nodeType"] == "fixed_tool"
+            and node.get("toolRef") == "web.search.parallel"
+        ]
+    ) == 1
 
 
 def test_missing_attachment_requests_input_for_document_task() -> None:

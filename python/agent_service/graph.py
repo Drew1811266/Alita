@@ -9,6 +9,7 @@ from langgraph.graph import END, StateGraph
 
 from agent_service.intent import (
     IntentKind,
+    InquiryMode,
     RouteDecision,
     classify_route,
     should_route_document_task,
@@ -20,9 +21,20 @@ from agent_service.model_client import (
     ModelRuntimeRequestFailed,
 )
 from agent_service.schemas import AgentEvent, UserMessage
+from agent_service.web_research import answer_simple_web_inquiry, build_research_graph
+from agent_service.web_search import SearchProvider
 
 
-AgentIntent = Literal["chat", "missing_input", "document_task"]
+AgentIntent = Literal[
+    "chat",
+    "local_inquiry",
+    "web_simple_inquiry",
+    "web_complex_choice",
+    "web_complex_research_flow",
+    "missing_input",
+    "document_task",
+]
+InquiryChoice = Literal["quick_answer", "research_flow"]
 
 
 class ModelClient(Protocol):
@@ -50,13 +62,18 @@ class AgentState(TypedDict, total=False):
     events: list[AgentEvent]
     intent: AgentIntent
     route_decision: dict
+    inquiry_choice: InquiryChoice
 
 
 def classify_intent(state: AgentState) -> AgentState:
     decision = classify_route(state["message"])
     return {
         **state,
-        "intent": _compatible_intent(state["message"], decision),
+        "intent": _compatible_intent(
+            state["message"],
+            decision,
+            inquiry_choice=state.get("inquiry_choice"),
+        ),
         "route_decision": decision.to_payload(),
     }
 
@@ -96,11 +113,72 @@ def plan_node_graph(state: AgentState) -> AgentState:
     }
 
 
-def build_graph(model_client: ModelClient | None = None):
+def choose_research_mode(state: AgentState) -> AgentState:
+    return {
+        **state,
+        "events": [
+            AgentEvent(
+                type="research.choice_required",
+                payload={
+                    "choices": [
+                        {
+                            "id": "quick_answer",
+                            "label": "Quick answer",
+                            "description": "Search the web now and return a concise sourced answer.",
+                        },
+                        {
+                            "id": "research_flow",
+                            "label": "Research flow",
+                            "description": "Create a research graph for planning, source review, and report synthesis.",
+                        },
+                    ]
+                },
+            )
+        ],
+    }
+
+
+def plan_research_graph(state: AgentState) -> AgentState:
+    return {
+        **state,
+        "events": [
+            AgentEvent(
+                type="node_graph.created",
+                payload={
+                    "graph": build_research_graph(
+                        state["message"],
+                        state.get("route_decision", {}),
+                    ),
+                },
+            )
+        ],
+    }
+
+
+def build_graph(
+    model_client: ModelClient | None = None,
+    *,
+    search_provider: SearchProvider | None = None,
+    inquiry_choice: InquiryChoice | None = None,
+):
     graph = StateGraph(AgentState)
-    graph.add_node("classify_intent", classify_intent)
+    graph.add_node(
+        "classify_intent",
+        lambda state: classify_intent(
+            {
+                **state,
+                "inquiry_choice": state.get("inquiry_choice") or inquiry_choice,
+            }
+        ),
+    )
     graph.add_node("request_required_inputs", request_required_inputs)
     graph.add_node("plan_node_graph", plan_node_graph)
+    graph.add_node("choose_research_mode", choose_research_mode)
+    graph.add_node("plan_research_graph", plan_research_graph)
+    graph.add_node(
+        "answer_with_web",
+        lambda state: answer_with_web(state, search_provider=search_provider),
+    )
     graph.add_node(
         "answer_with_model",
         lambda state: answer_with_model(state, model_client=model_client),
@@ -111,11 +189,18 @@ def build_graph(model_client: ModelClient | None = None):
         _route_intent,
         {
             "chat": "answer_with_model",
+            "local_inquiry": "answer_with_model",
+            "web_simple_inquiry": "answer_with_web",
+            "web_complex_choice": "choose_research_mode",
+            "web_complex_research_flow": "plan_research_graph",
             "missing_input": "request_required_inputs",
             "document_task": "plan_node_graph",
         },
     )
     graph.add_edge("answer_with_model", END)
+    graph.add_edge("answer_with_web", END)
+    graph.add_edge("choose_research_mode", END)
+    graph.add_edge("plan_research_graph", END)
     graph.add_edge("request_required_inputs", END)
     graph.add_edge("plan_node_graph", END)
     return graph.compile()
@@ -150,13 +235,38 @@ def answer_with_model(
     }
 
 
+def answer_with_web(
+    state: AgentState,
+    *,
+    search_provider: SearchProvider | None = None,
+) -> AgentState:
+    return {
+        **state,
+        "events": [
+            answer_simple_web_inquiry(
+                state["message"],
+                state.get("route_decision", {}),
+                search_provider=search_provider,
+            )
+        ],
+    }
+
+
 def run_agent(
     message: UserMessage,
     *,
     model_client: ModelClient | None = None,
+    search_provider: SearchProvider | None = None,
+    inquiry_choice: InquiryChoice | None = None,
 ) -> list[AgentEvent]:
-    app = build_graph(model_client=model_client)
-    result = app.invoke({"message": message, "events": []})
+    app = build_graph(
+        model_client=model_client,
+        search_provider=search_provider,
+        inquiry_choice=inquiry_choice,
+    )
+    result = app.invoke(
+        {"message": message, "events": [], "inquiry_choice": inquiry_choice}
+    )
     return result["events"]
 
 
@@ -164,11 +274,18 @@ def stream_agent_events(
     message: UserMessage,
     *,
     model_client: ModelClient | None = None,
+    search_provider: SearchProvider | None = None,
+    inquiry_choice: InquiryChoice | None = None,
 ) -> Iterator[AgentEvent]:
     decision = classify_route(message)
-    intent = _compatible_intent(message, decision)
-    if intent != "chat":
-        yield from run_agent(message, model_client=model_client)
+    intent = _compatible_intent(message, decision, inquiry_choice=inquiry_choice)
+    if intent not in {"chat", "local_inquiry"}:
+        yield from run_agent(
+            message,
+            model_client=model_client,
+            search_provider=search_provider,
+            inquiry_choice=inquiry_choice,
+        )
         return
 
     client = model_client or LlamaCppModelClient()
@@ -223,12 +340,26 @@ def _classify_message(message: UserMessage) -> AgentIntent:
 def _compatible_intent(
     message: UserMessage,
     decision: RouteDecision,
+    *,
+    inquiry_choice: InquiryChoice | None = None,
 ) -> AgentIntent:
     if should_route_document_task(message, decision):
         return "document_task"
 
     if decision.intent.kind == IntentKind.NEED_INPUT:
         return "missing_input"
+
+    if decision.intent.kind == IntentKind.INQUIRY and decision.inquiry is not None:
+        if decision.inquiry.mode == InquiryMode.LOCAL:
+            return "local_inquiry"
+        if decision.inquiry.mode == InquiryMode.WEB_SIMPLE:
+            return "web_simple_inquiry"
+        if decision.inquiry.mode == InquiryMode.WEB_COMPLEX:
+            if inquiry_choice == "quick_answer":
+                return "web_simple_inquiry"
+            if inquiry_choice == "research_flow":
+                return "web_complex_research_flow"
+            return "web_complex_choice"
 
     return "chat"
 
