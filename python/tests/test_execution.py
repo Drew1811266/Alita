@@ -341,6 +341,7 @@ def test_emits_runtime_notice_when_node_exceeds_estimate(tmp_path: Path) -> None
     events = list(run_graph_events(request, executor=FakeNodeExecutor()))
 
     notice = next(event for event in events if event.type == "node.runtime_notice")
+    assert set(notice.payload.keys()) == {"nodeId", "notice"}
     assert notice.payload["nodeId"] == "document-input"
     assert set(notice.payload["notice"].keys()) == {
         "kind",
