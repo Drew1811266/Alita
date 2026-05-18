@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ChangeEvent } from "react";
 
+import type { ResearchChoiceId, ResearchChoicePayload } from "../../shared/events";
 import type { ChatAttachment, ChatMessage } from "../../shared/types";
 import { AudioTrack } from "../voice/AudioTrack";
 import type { DraftSelection } from "../voice/draftInsertion";
@@ -21,13 +22,17 @@ export type VoiceInputView = {
   levels: number[];
 };
 
+export type PendingResearchChoice = ResearchChoicePayload;
+
 type ChatPanelProps = {
   messages: ChatMessage[];
   pendingAttachments: ChatAttachment[];
+  pendingResearchChoice?: PendingResearchChoice | null;
   draft: string;
   onDraftChange(value: string): void;
   onSend(): void;
   onAddFile(): void;
+  onResearchChoice?(choiceId: ResearchChoiceId): void;
   voiceInput?: VoiceInputView;
   onVoiceToggle?(selection: DraftSelection | null): void;
   onDraftSelectionChange?(selection: DraftSelection | null): void;
@@ -88,10 +93,12 @@ export function scrollMessageListToBottom(
 export function ChatPanel({
   messages,
   pendingAttachments,
+  pendingResearchChoice = null,
   draft,
   onDraftChange,
   onSend,
   onAddFile,
+  onResearchChoice = () => undefined,
   voiceInput = idleVoiceInput,
   onVoiceToggle = () => undefined,
   onDraftSelectionChange = () => undefined,
@@ -158,6 +165,22 @@ export function ChatPanel({
           </article>
         ))}
       </div>
+
+      {pendingResearchChoice ? (
+        <div className="researchChoiceBar" aria-label="Research choices">
+          {pendingResearchChoice.choices.map((choice) => (
+            <button
+              aria-label={`Choose ${choice.label}`}
+              className="secondaryButton researchChoiceButton"
+              key={choice.id}
+              onClick={() => onResearchChoice(choice.id)}
+              type="button"
+            >
+              {choice.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       <div className="composer" aria-label="消息编辑器">
         {pendingAttachments.length > 0 ? (

@@ -1,4 +1,4 @@
-import type { BackendEvent } from "../shared/events";
+import type { BackendEvent, ResearchChoicePayload } from "../shared/events";
 import type {
   AgentNode,
   ArtifactRef,
@@ -11,10 +11,13 @@ export type BackendEventState = {
   messages: ChatMessage[];
   graph: NodeGraph | null;
   dirty: boolean;
+  pendingResearchChoice?: PendingResearchChoice | null;
   activeRunId?: string | null;
   runHistory?: RunHistoryEntry[];
   artifacts?: ArtifactRef[];
 };
+
+export type PendingResearchChoice = ResearchChoicePayload;
 
 export function reduceBackendEvents(
   state: BackendEventState,
@@ -52,6 +55,7 @@ export function reduceBackendEvents(
       return {
         ...current,
         messages: [...current.messages, event.payload.message],
+        pendingResearchChoice: null,
         dirty: true,
       };
     }
@@ -79,6 +83,7 @@ export function reduceBackendEvents(
       return {
         ...current,
         messages: [...current.messages, event.payload.message],
+        pendingResearchChoice: null,
         dirty: true,
       };
     }
@@ -90,6 +95,7 @@ export function reduceBackendEvents(
           ...current.messages,
           createAssistantMessage(event.payload.prompt),
         ],
+        pendingResearchChoice: null,
         dirty: true,
       };
     }
@@ -101,6 +107,7 @@ export function reduceBackendEvents(
           ...current.messages,
           createAssistantMessage(formatResearchChoicePrompt(event.payload)),
         ],
+        pendingResearchChoice: event.payload,
         dirty: true,
       };
     }
@@ -113,6 +120,7 @@ export function reduceBackendEvents(
           ...current.messages,
           createAssistantMessage("已生成右侧工具流程。"),
         ],
+        pendingResearchChoice: null,
         dirty: true,
       };
     }

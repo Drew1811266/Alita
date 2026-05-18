@@ -175,14 +175,13 @@ def answer_simple_web_inquiry(
     sources = [_source_payload(result, index + 1) for index, result in enumerate(classified)]
     accepted_sources = [source for source in sources if source["accepted"]]
     rejected_sources = [source for source in sources if not source["accepted"]]
-    cited_sources = accepted_sources or sources[:3]
 
-    content = _synthesize_answer(message.content, cited_sources, response.failure)
+    content = _synthesize_answer(message.content, accepted_sources, response.failure)
     return AgentEvent(
         type="message.created",
         payload={
             "message": _assistant_message(content),
-            "sources": cited_sources,
+            "sources": accepted_sources,
             "rejectedSources": rejected_sources,
             "sourceMetadata": {
                 "accepted": accepted_sources,

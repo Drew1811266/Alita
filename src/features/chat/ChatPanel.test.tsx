@@ -5,6 +5,7 @@ import type { ReactElement, ReactNode } from "react";
 import {
   ChatPanel,
   createComposerKeyDownHandler,
+  type PendingResearchChoice,
   type VoiceInputView,
   scrollMessageListToBottom,
 } from "./ChatPanel";
@@ -61,6 +62,25 @@ const idleVoiceInput: VoiceInputView = {
   levels: [],
 };
 
+const pendingResearchChoice: PendingResearchChoice = {
+  taskId: "task-1",
+  prompt:
+    "This question can be answered quickly or turned into a research flow. Choose how to proceed.",
+  choices: [
+    {
+      id: "quick_answer",
+      label: "Quick answer",
+      description: "Search the web now and return a concise sourced answer.",
+    },
+    {
+      id: "research_flow",
+      label: "Research flow",
+      description:
+        "Create a research graph for planning, source review, and report synthesis.",
+    },
+  ],
+};
+
 type MockTextarea = {
   selectionStart: number;
   selectionEnd: number;
@@ -92,11 +112,15 @@ function renderChatPanel(voiceInput: VoiceInputView = idleVoiceInput) {
 
 async function renderInteractiveChatPanel({
   onDraftSelectionChange = () => undefined,
+  onResearchChoice = () => undefined,
   onVoiceToggle,
+  pendingResearchChoice,
   textarea,
 }: {
   onDraftSelectionChange?: (selection: { start: number; end: number } | null) => void;
+  onResearchChoice?: (choiceId: "quick_answer" | "research_flow") => void;
   onVoiceToggle(selection: { start: number; end: number } | null): void;
+  pendingResearchChoice?: PendingResearchChoice | null;
   textarea: MockTextarea;
 }) {
   vi.resetModules();
@@ -123,10 +147,12 @@ async function renderInteractiveChatPanel({
   const tree = InteractiveChatPanel({
     messages,
     pendingAttachments: [pendingAttachment],
+    pendingResearchChoice,
     draft: "请总结重点",
     onDraftChange: () => undefined,
     onSend: () => undefined,
     onAddFile: () => undefined,
+    onResearchChoice,
     voiceInput: idleVoiceInput,
     onVoiceToggle,
     onDraftSelectionChange,
@@ -206,6 +232,42 @@ describe("ChatPanel", () => {
       markup.indexOf('aria-label="发送消息"'),
     );
     expect(markup).toContain('aria-label="发送消息"');
+  });
+
+  it("renders pending research choices as actionable buttons", () => {
+    const markup = renderToStaticMarkup(
+      <ChatPanel
+        messages={messages}
+        pendingAttachments={[]}
+        pendingResearchChoice={pendingResearchChoice}
+        draft=""
+        onDraftChange={() => undefined}
+        onSend={() => undefined}
+        onAddFile={() => undefined}
+        onResearchChoice={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Quick answer");
+    expect(markup).toContain("Research flow");
+    expect(markup).toContain('aria-label="Choose Quick answer"');
+    expect(markup).toContain('aria-label="Choose Research flow"');
+  });
+
+  it("invokes the selected research choice", async () => {
+    const selectedChoices: string[] = [];
+    const tree = await renderInteractiveChatPanel({
+      textarea: { selectionStart: 0, selectionEnd: 0 },
+      pendingResearchChoice,
+      onVoiceToggle: () => undefined,
+      onResearchChoice: (choiceId) => {
+        selectedChoices.push(choiceId);
+      },
+    });
+
+    findElementByProp(tree, "aria-label", "Choose Research flow").props.onClick?.();
+
+    expect(selectedChoices).toEqual(["research_flow"]);
   });
 
   it("disables voice input when the voice model is unavailable", () => {

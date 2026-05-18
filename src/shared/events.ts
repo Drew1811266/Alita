@@ -7,6 +7,39 @@ import type {
   ScriptReviewState,
 } from "./types";
 
+export type ResearchChoiceId = "quick_answer" | "research_flow";
+
+export type ResearchChoicePayload = {
+  taskId: string;
+  prompt: string;
+  choices: Array<{
+    id: ResearchChoiceId;
+    label: string;
+    description?: string;
+  }>;
+};
+
+export type WebSourceReference = {
+  ref?: string;
+  title: string;
+  url: string;
+  snippet?: string;
+  sourceType?: string | null;
+  accepted?: boolean | null;
+  rejectionReason?: string | null;
+};
+
+export type MessageSourceMetadata = {
+  accepted?: WebSourceReference[];
+  rejected?: WebSourceReference[];
+  failure?: {
+    kind: string;
+    message: string;
+    blocked?: boolean;
+    removedCategories?: string[] | null;
+  } | null;
+};
+
 export type BackendEvent =
   | {
       type: "run.started";
@@ -47,6 +80,9 @@ export type BackendEvent =
       type: "message.created";
       payload: {
         message: ChatMessage;
+        sources?: WebSourceReference[];
+        rejectedSources?: WebSourceReference[];
+        sourceMetadata?: MessageSourceMetadata;
       };
     }
   | {
@@ -137,15 +173,7 @@ export type BackendEvent =
     }
   | {
       type: "research.choice_required";
-      payload: {
-        taskId: string;
-        prompt: string;
-        choices: Array<{
-          id: string;
-          label: string;
-          description?: string;
-        }>;
-      };
+      payload: ResearchChoicePayload;
     }
   | {
       type: "node.needs_permission";

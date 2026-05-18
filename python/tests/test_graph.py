@@ -204,7 +204,7 @@ def test_web_complex_quick_answer_choice_searches_and_answers() -> None:
             results=[
                 SearchResult(
                     title="Python packaging guide",
-                    url="https://packaging.python.org/",
+                    url="https://docs.python.org/3/",
                     snippet="Official Python packaging guidance.",
                 )
             ]
@@ -222,7 +222,7 @@ def test_web_complex_quick_answer_choice_searches_and_answers() -> None:
 
     assert provider.queries == ["Research and compare current Python packaging tools"]
     assert [event.type for event in events] == ["message.created"]
-    assert events[0].payload["sources"][0]["url"] == "https://packaging.python.org/"
+    assert events[0].payload["sources"][0]["url"] == "https://docs.python.org/3/"
 
 
 def test_web_complex_research_flow_choice_creates_research_graph() -> None:

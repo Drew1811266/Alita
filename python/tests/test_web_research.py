@@ -138,3 +138,39 @@ def test_simple_web_inquiry_searches_and_returns_concise_answer_with_source_meta
     assert payload["sources"][0]["ref"] == "[1]"
     assert len(payload["sources"][0]["snippet"]) <= 240
     assert payload["rejectedSources"][0]["rejectionReason"] == "content_farm"
+
+
+def test_simple_web_inquiry_does_not_cite_rejected_sources() -> None:
+    from agent_service.web_research import answer_simple_web_inquiry
+
+    provider = FakeSearchProvider(
+        [
+            SearchResponse(
+                results=[
+                    SearchResult(
+                        title="Top10 Python releases",
+                        url="https://top10.example/python",
+                        snippet="Copied release notes and ads.",
+                    ),
+                    SearchResult(
+                        title="Old Python notes",
+                        url="https://answers.example/python",
+                        snippet="Last updated 2017.",
+                    ),
+                ]
+            )
+        ]
+    )
+    message = UserMessage(task_id="simple-web", content="What is the latest Python release?")
+
+    event = answer_simple_web_inquiry(
+        message,
+        classify_route(message),
+        search_provider=provider,
+    )
+
+    payload = event.payload
+    assert payload["sources"] == []
+    assert len(payload["rejectedSources"]) == 2
+    assert "I could not find reliable web sources" in payload["message"]["content"]
+    assert "Top10 Python releases" not in payload["message"]["content"]

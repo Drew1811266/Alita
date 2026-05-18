@@ -160,7 +160,55 @@ describe("reduceBackendEvents", () => {
     );
     expect(result.messages[1].content).toContain("Quick answer");
     expect(result.messages[1].content).toContain("Research flow");
+    expect(result.pendingResearchChoice).toEqual({
+      taskId: "task-1",
+      prompt:
+        "This question can be answered quickly or turned into a research flow. Choose how to proceed.",
+      choices: [
+        {
+          id: "quick_answer",
+          label: "Quick answer",
+          description: "Search the web now and return a concise sourced answer.",
+        },
+        {
+          id: "research_flow",
+          label: "Research flow",
+          description:
+            "Create a research graph for planning, source review, and report synthesis.",
+        },
+      ],
+    });
     expect(result.dirty).toBe(true);
+  });
+
+  it("clears pending research choice when a response arrives", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph: null,
+        dirty: false,
+        pendingResearchChoice: {
+          taskId: "task-1",
+          prompt: "Choose how to proceed.",
+          choices: [
+            { id: "quick_answer", label: "Quick answer" },
+            { id: "research_flow", label: "Research flow" },
+          ],
+        },
+      },
+      [
+        {
+          type: "node_graph.created",
+          payload: {
+            graph,
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.pendingResearchChoice).toBeNull();
+    expect(result.graph).toBe(graph);
   });
 
   it("applies streaming message lifecycle events", () => {

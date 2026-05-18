@@ -14,6 +14,7 @@
     "frontend:dev": "vite",
     "frontend:build": "tsc && vite build",
     "frontend:test": "vitest run",
+    "frontend:typecheck": "tsc --noEmit",
     "frontend:lint": "tsc --noEmit"
   },
   "dependencies": {

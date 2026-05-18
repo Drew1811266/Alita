@@ -71,11 +71,12 @@ import {
   cancelNodeGraphRun,
   runNodeGraphStream,
   type RunNodeGraphMode,
+  type SubmitMessagePayload,
   submitUserMessage,
   submitUserMessageStream,
 } from "../features/task/useTaskEvents";
 import { WorkbenchTopBar } from "../features/workbench/WorkbenchTopBar";
-import { reduceBackendEvents } from "./backendEvents";
+import { reduceBackendEvents, type PendingResearchChoice } from "./backendEvents";
 import type {
   AlitaProject,
   AgentNode,
@@ -89,6 +90,7 @@ import type {
   RunHistoryEntry,
 } from "../shared/types";
 import type { BackendEvent } from "../shared/events";
+import type { ResearchChoiceId } from "../shared/events";
 
 const initialMessages: ChatMessage[] = [
   {
@@ -130,6 +132,7 @@ export function App() {
     null,
   );
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  const messagesRef = useRef<ChatMessage[]>(initialMessages);
   const [draft, setDraft] = useState("");
   const [voiceInput, setVoiceInput] = useState(() =>
     createInitialVoiceInput(null),
@@ -167,6 +170,9 @@ export function App() {
   const runHistoryRef = useRef<RunHistoryEntry[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactRef[]>([]);
   const artifactsRef = useRef<ArtifactRef[]>([]);
+  const [pendingResearchChoice, setPendingResearchChoice] =
+    useState<PendingResearchChoice | null>(null);
+  const pendingResearchChoiceRef = useRef<PendingResearchChoice | null>(null);
   const [selectedCanvasNodeId, setSelectedCanvasNodeId] = useState<
     string | null
   >(null);
@@ -228,6 +234,14 @@ export function App() {
   useEffect(() => {
     graphRef.current = graph;
   }, [graph]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    pendingResearchChoiceRef.current = pendingResearchChoice;
+  }, [pendingResearchChoice]);
 
   useEffect(() => {
     activeRunIdRef.current = activeRunId;
@@ -302,6 +316,7 @@ export function App() {
       result.project.messages.length > 0 ? result.project.messages : initialMessages;
     setActiveProject({ ...result.project, messages: projectMessages });
     setMessages(projectMessages);
+    messagesRef.current = projectMessages;
     setGraph(result.project.graph);
     setRunHistory(result.project.runHistory);
     runHistoryRef.current = result.project.runHistory;
@@ -310,6 +325,8 @@ export function App() {
     setSelectedCanvasNodeId(null);
     setActiveRunId(null);
     activeRunIdRef.current = null;
+    setPendingResearchChoice(null);
+    pendingResearchChoiceRef.current = null;
     setGraphRunning(false);
     setGraphCancelling(false);
     setContextAttachments(
@@ -403,6 +420,7 @@ export function App() {
           messages: current,
           graph: graphRef.current,
           dirty: false,
+          pendingResearchChoice: pendingResearchChoiceRef.current,
           activeRunId: activeRunIdRef.current,
           runHistory: runHistoryRef.current,
           artifacts: artifactsRef.current,
@@ -413,16 +431,19 @@ export function App() {
 
       graphRef.current = result.graph;
       setGraph(result.graph);
+      pendingResearchChoiceRef.current = result.pendingResearchChoice ?? null;
       activeRunIdRef.current = result.activeRunId ?? null;
       runHistoryRef.current = result.runHistory ?? runHistoryRef.current;
       artifactsRef.current = result.artifacts ?? artifactsRef.current;
       setActiveRunId(activeRunIdRef.current);
+      setPendingResearchChoice(pendingResearchChoiceRef.current);
       setRunHistory(runHistoryRef.current);
       setArtifacts(artifactsRef.current);
       if (result.dirty) {
         setDirty(true);
       }
 
+      messagesRef.current = result.messages;
       return result.messages;
     });
   };
@@ -697,6 +718,25 @@ export function App() {
     await startVoiceRecording();
   };
 
+  const submitAgentMessagePayload = async (payload: SubmitMessagePayload) => {
+    let receivedStreamEvent = false;
+    try {
+      await submitUserMessageStream(payload, (event) => {
+        receivedStreamEvent = true;
+        applyBackendEvent(event);
+      });
+    } catch (streamError) {
+      if (receivedStreamEvent) {
+        throw streamError;
+      }
+
+      const events = await submitUserMessage(payload);
+      for (const event of events) {
+        applyBackendEvent(event);
+      }
+    }
+  };
+
   const handleSend = async () => {
     if (!activeProject) {
       return;
@@ -717,8 +757,11 @@ export function App() {
     );
 
     setMessages((current) => [...current, userMessage]);
+    messagesRef.current = [...messagesRef.current, userMessage];
     setDraft("");
     setPendingAttachments([]);
+    setPendingResearchChoice(null);
+    pendingResearchChoiceRef.current = null;
     setDirty(true);
 
     try {
@@ -728,26 +771,42 @@ export function App() {
         attachments: agentAttachments,
       };
 
-      let receivedStreamEvent = false;
-      try {
-        await submitUserMessageStream(payload, (event) => {
-          receivedStreamEvent = true;
-          applyBackendEvent(event);
-        });
-      } catch (streamError) {
-        if (receivedStreamEvent) {
-          throw streamError;
-        }
-
-        const events = await submitUserMessage(payload);
-        for (const event of events) {
-          applyBackendEvent(event);
-        }
-      }
+      await submitAgentMessagePayload(payload);
 
       if (sentAttachments.length > 0) {
         setContextAttachments(sentAttachments);
       }
+    } catch (error) {
+      setMessages((current) => [
+        ...current,
+        createMessage("assistant", `后台 Agent 暂不可用：${String(error)}`),
+      ]);
+      setDirty(true);
+    }
+  };
+
+  const handleResearchChoice = async (choiceId: ResearchChoiceId) => {
+    if (!activeProject || !pendingResearchChoiceRef.current) {
+      return;
+    }
+
+    const payload = buildResearchChoiceSubmitPayload({
+      taskId: activeProject.projectId,
+      messages: messagesRef.current,
+      contextAttachments,
+      choiceId,
+    });
+
+    if (!payload) {
+      return;
+    }
+
+    setPendingResearchChoice(null);
+    pendingResearchChoiceRef.current = null;
+    setDirty(true);
+
+    try {
+      await submitAgentMessagePayload(payload);
     } catch (error) {
       setMessages((current) => [
         ...current,
@@ -999,10 +1058,12 @@ export function App() {
         <ChatPanel
           messages={messages}
           pendingAttachments={pendingAttachments}
+          pendingResearchChoice={pendingResearchChoice}
           draft={draft}
           onDraftChange={setDraft}
           onSend={handleSend}
           onAddFile={handleAddFile}
+          onResearchChoice={handleResearchChoice}
           voiceInput={voiceInput}
           onVoiceToggle={handleVoiceToggle}
           onDraftSelectionChange={handleDraftSelectionChange}
@@ -1102,6 +1163,36 @@ export function shouldRefreshAsrForPreferencesUpdate(
   return (
     speechToTextAssignmentId(previousView) !== speechToTextAssignmentId(nextView)
   );
+}
+
+export function buildResearchChoiceSubmitPayload({
+  taskId,
+  messages,
+  contextAttachments,
+  choiceId,
+}: {
+  taskId: string;
+  messages: ChatMessage[];
+  contextAttachments: ChatAttachment[];
+  choiceId: ResearchChoiceId;
+}): SubmitMessagePayload | null {
+  const lastUserMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user");
+
+  if (!lastUserMessage) {
+    return null;
+  }
+
+  return {
+    taskId,
+    content: lastUserMessage.content,
+    attachments:
+      lastUserMessage.attachments.length > 0
+        ? lastUserMessage.attachments
+        : contextAttachments,
+    inquiryChoice: choiceId,
+  };
 }
 
 function speechToTextAssignmentId(view: PreferencesView | null): string | null {
