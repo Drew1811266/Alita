@@ -64,6 +64,7 @@ _COMMON_LOCAL_COMPONENTS = {
     "users",
 }
 _PATH_BOUNDARY_PREPOSITIONS = {
+    "and",
     "about",
     "for",
     "from",
@@ -72,17 +73,7 @@ _PATH_BOUNDARY_PREPOSITIONS = {
     "using",
     "with",
 }
-_PUBLIC_QUERY_TAIL_HINTS = {
-    "api",
-    "benchmark",
-    "benchmarks",
-    "docs",
-    "documentation",
-    "examples",
-    "guide",
-    "routing",
-    "tutorial",
-}
+_LOCAL_TAIL_NOUNS = {"folder", "model", "project", "repo", "workspace"}
 
 
 def sanitize_for_web_search(text: str) -> PrivacyGuardResult:
@@ -230,10 +221,10 @@ def _extended_match_end(match: re.Match[str], text: str) -> int:
     if boundary_index is not None:
         return tokens[boundary_index - 1][1] if boundary_index > 0 else match.end()
 
-    if _looks_like_public_query_tail(tokens):
-        return match.end()
+    if _tokens_reach_query_end(tokens, text) and _looks_like_path_tail_at_end(tokens):
+        return tokens[-1][1]
 
-    return tokens[-1][1]
+    return match.end()
 
 
 def _is_extensionless_windows_directory_match(match: re.Match[str]) -> bool:
@@ -259,14 +250,15 @@ def _boundary_token_index(tokens: list[tuple[str, int]]) -> int | None:
     return None
 
 
-def _looks_like_public_query_tail(tokens: list[tuple[str, int]]) -> bool:
-    if len(tokens) < 2:
-        return False
-    if any(word.lower() in _PUBLIC_QUERY_TAIL_HINTS for word, _end in tokens[1:]):
+def _tokens_reach_query_end(tokens: list[tuple[str, int]], text: str) -> bool:
+    return not text[tokens[-1][1] :].strip()
+
+
+def _looks_like_path_tail_at_end(tokens: list[tuple[str, int]]) -> bool:
+    words = [word for word, _end in tokens]
+    if all(word[:1].isupper() for word in words):
         return True
-    if tokens[0][0][:1].isupper() and tokens[1][0][:1].islower():
-        return True
-    return False
+    return words[-1].lower() in _LOCAL_TAIL_NOUNS
 
 
 def _is_model_path(value: str) -> bool:

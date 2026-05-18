@@ -92,6 +92,18 @@ def test_preserves_public_terms_after_windows_directory_path() -> None:
     assert result.blocked is False
 
 
+def test_preserves_latest_usage_query_after_windows_directory_path() -> None:
+    local_path = r"C:\Users\Drew\Projects\Alita"
+
+    result = sanitize_for_web_search(f"Search {local_path} latest official usage")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] latest official usage"
+    assert local_path not in result.sanitizedText
+    assert "latest official usage" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_redacts_windows_directory_path_with_spaced_final_segment() -> None:
     local_path = r"C:\Users\Drew\My Project"
 
@@ -201,6 +213,18 @@ def test_redacts_model_directory_path_without_model_file_extension() -> None:
     )
     assert model_path not in result.sanitizedText
     assert r"C:\models" not in result.sanitizedText
+    assert result.removedCategories == ["MODEL_PATH"]
+    assert result.blocked is False
+
+
+def test_preserves_latest_usage_query_after_model_directory_path() -> None:
+    model_path = r"C:\models\qwen"
+
+    result = sanitize_for_web_search(f"Search {model_path} latest official usage")
+
+    assert result.sanitizedText == "Search [MODEL_PATH] latest official usage"
+    assert model_path not in result.sanitizedText
+    assert "latest official usage" in result.sanitizedText
     assert result.removedCategories == ["MODEL_PATH"]
     assert result.blocked is False
 
