@@ -436,6 +436,95 @@ describe("reduceBackendEvents", () => {
     expect(result.dirty).toBe(true);
   });
 
+  it("stores runtime notices on matching nodes", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: graphWithNode,
+        dirty: false,
+      },
+      [
+        {
+          type: "node.runtime_notice",
+          payload: {
+            nodeId: "document-parse",
+            notice: {
+              kind: "duration_exceeded",
+              message: "Node exceeded estimated duration.",
+              actualDurationMs: 1200,
+            },
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.graph?.nodes[0].runtimeNotice).toEqual({
+      kind: "duration_exceeded",
+      message: "Node exceeded estimated duration.",
+      actualDurationMs: 1200,
+    });
+    expect(result.dirty).toBe(true);
+  });
+
+  it("adds research completion artifact and chat summary", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: graphWithNode,
+        dirty: false,
+        artifacts: [],
+      },
+      [
+        {
+          type: "research.completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-1",
+            reportArtifactId: "research-report-abc123",
+            reportArtifactPath: "D:\\Project\\artifacts\\research\\research-report-abc123.md",
+            summary: "Research completed for Python packaging.",
+            acceptedSources: [
+              {
+                ref: "[1]",
+                title: "Python docs",
+                url: "https://docs.python.org/3/",
+                snippet: "Official docs.",
+                sourceType: "official_docs",
+                accepted: true,
+                rejectionReason: null,
+              },
+            ],
+            rejectedSources: [
+              {
+                ref: "[2]",
+                title: "Top10 Python",
+                url: "https://top10.example/python",
+                accepted: false,
+                rejectionReason: "content_farm",
+              },
+            ],
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages[0].content).toContain(
+      "Research completed for Python packaging.",
+    );
+    expect(result.messages[0].content).toContain(
+      "D:\\Project\\artifacts\\research\\research-report-abc123.md",
+    );
+    expect(result.artifacts).toEqual([
+      expect.objectContaining({
+        artifactId: "research-report-abc123",
+        path: "D:\\Project\\artifacts\\research\\research-report-abc123.md",
+      }),
+    ]);
+    expect(result.dirty).toBe(true);
+  });
+
   it("records the active run when run.started is received", () => {
     const result = reduceBackendEvents(
       {

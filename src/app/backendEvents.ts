@@ -211,6 +211,12 @@ export function reduceBackendEvents(
       });
     }
 
+    if (event.type === "node.runtime_notice") {
+      return updateNode(current, event.payload.nodeId, {
+        runtimeNotice: event.payload.notice,
+      });
+    }
+
     if (event.type === "artifact.created") {
       const artifact: ArtifactRef = {
         artifactId: event.payload.artifactId,
@@ -225,6 +231,42 @@ export function reduceBackendEvents(
         messages: [
           ...current.messages,
           createAssistantMessage(`已生成产物：${event.payload.path}`),
+        ],
+        dirty: true,
+      };
+    }
+
+    if (event.type === "research.completed") {
+      const artifact =
+        event.payload.reportArtifactId && event.payload.reportArtifactPath
+          ? {
+              artifactId: event.payload.reportArtifactId,
+              path: event.payload.reportArtifactPath,
+              sourceNodeId: "research-markdown-output",
+              createdAt: new Date(0).toISOString(),
+            }
+          : null;
+      const summary = event.payload.summary || "Research completed.";
+      const reportLine = event.payload.reportArtifactPath
+        ? `\n${event.payload.reportArtifactPath}`
+        : "";
+      const existingArtifacts = current.artifacts ?? [];
+      const artifacts =
+        artifact &&
+        !existingArtifacts.some(
+          (existing) =>
+            existing.artifactId === artifact.artifactId ||
+            existing.path === artifact.path,
+        )
+          ? [...existingArtifacts, artifact]
+          : current.artifacts;
+
+      return {
+        ...current,
+        artifacts,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(`${summary}${reportLine}`),
         ],
         dirty: true,
       };

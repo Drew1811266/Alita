@@ -20,7 +20,7 @@ class ResultVerifier:
         required_value = self._REQUIRED_VALUES.get(node_id)
         if required_value is not None:
             value = output.values.get(required_value, "")
-            if not value.strip():
+            if not isinstance(value, str) or not value.strip():
                 raise HarnessError(
                     "empty_node_output",
                     f"node {node_id} returned empty value: {required_value}",

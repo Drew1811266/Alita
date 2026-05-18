@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -26,8 +27,8 @@ from agent_service.tool_execution import (
 from agent_service.tool_registry import ToolRegistry
 from agent_service.web_research import (
     REPORT_SECTION_ORDER,
-    _infer_question_type,
-    _source_payload,
+    infer_question_type,
+    source_payload,
 )
 from agent_service.web_search import (
     DuckDuckGoHtmlSearchProvider,
@@ -55,6 +56,11 @@ class ModelClient(Protocol):
         max_tokens: int = 1024,
     ) -> str:
         ...
+
+
+@dataclass(frozen=True)
+class PartialNodeOutputError(HarnessError):
+    output: NodeOutput = field(default_factory=NodeOutput)
 
 
 class EmptyNodeExecutor:
@@ -272,26 +278,61 @@ class ResearchFlowExecutor:
 
         if node_id == "research-parallel-search":
             query_units = _input_value(inputs, "queries") or []
-            results: list[dict[str, Any]] = []
-            failures: list[dict[str, Any]] = []
+            results: list[dict[str, Any]] = list(_input_value(inputs, "results") or [])
+            failures: list[dict[str, Any]] = list(_input_value(inputs, "failures") or [])
+            successful_queries = {
+                str(result.get("query", ""))
+                for result in results
+                if result.get("query")
+            }
+            successful_queries.update(
+                str(query)
+                for query in (_input_value(inputs, "completedQueries") or [])
+                if query
+            )
             for query_unit in query_units:
                 query = str(query_unit["query"])
                 purpose = str(query_unit.get("purpose", "research"))
+                if query in successful_queries:
+                    continue
                 response = self._search_with_retry(query)
                 if response.failure is not None:
                     failure = response.failure
-                    failures.append(_search_failure_payload(query, failure))
-                    raise HarnessError(
+                    next_failures = [
+                        existing
+                        for existing in failures
+                        if existing.get("query") != query
+                    ]
+                    next_failures.append(_search_failure_payload(query, failure))
+                    raise PartialNodeOutputError(
                         "web_search_failed",
                         (
                             f"search query failed after {self.max_search_attempts} "
                             f"attempts: {query}: {failure.message}"
+                        ),
+                        NodeOutput(
+                            values={
+                                "sanitizedQuestion": str(
+                                    _input_value(inputs, "sanitizedQuestion")
+                                    or self._question()
+                                ),
+                                "queries": query_units,
+                                "results": results,
+                                "failures": next_failures,
+                                "completedQueries": sorted(successful_queries),
+                            }
                         ),
                     )
                 results.extend(
                     _search_result_payload(result, query=query, purpose=purpose)
                     for result in response.results
                 )
+                failures = [
+                    existing
+                    for existing in failures
+                    if existing.get("query") != query
+                ]
+                successful_queries.add(query)
             return NodeOutput(
                 values={
                     "sanitizedQuestion": str(
@@ -300,12 +341,13 @@ class ResearchFlowExecutor:
                     "queries": query_units,
                     "results": results,
                     "failures": failures,
+                    "completedQueries": sorted(successful_queries),
                 }
             )
 
         if node_id == "research-source-review":
             question = self._question()
-            question_type = _infer_question_type(question)
+            question_type = infer_question_type(question)
             raw_results = _input_value(inputs, "results") or []
             search_results = [
                 SearchResult(
@@ -320,7 +362,7 @@ class ResearchFlowExecutor:
                 rank_sources(question_type, search_results),
             )
             sources = [
-                _source_payload(result, index + 1)
+                source_payload(result, index + 1)
                 for index, result in enumerate(classified)
             ]
             accepted_sources = [source for source in sources if source["accepted"]]
@@ -572,11 +614,18 @@ def run_graph_events(
                     for dependency in node.dependencies
                     if dependency in outputs
                 }
+                if node.nodeId in outputs:
+                    dependency_outputs[node.nodeId] = outputs[node.nodeId]
                 output = node_executor.run(node.nodeId, dependency_outputs)
                 verifier.verify(node.nodeId, output)
             except Exception as error:
                 completed_at = _now_iso()
                 payload = harness_error_payload(error)
+                partial_output = (
+                    error.output
+                    if isinstance(error, PartialNodeOutputError)
+                    else NodeOutput()
+                )
                 record = {
                     "nodeRunId": node_run_id,
                     "runId": request.run_id,
@@ -584,9 +633,9 @@ def run_graph_events(
                     "status": "failed",
                     "startedAt": node_started_at,
                     "completedAt": completed_at,
-                    "artifactRefs": [],
+                    "artifactRefs": partial_output.artifacts,
                     "error": str(error),
-                    "values": {},
+                    "values": partial_output.values,
                 }
                 journal.write_node(node.nodeId, record)
                 journal.write_run(

@@ -324,6 +324,81 @@ def test_research_search_fails_after_retry_budget_is_exhausted(tmp_path: Path) -
     assert events[-1].type == "task.failed"
 
 
+def test_failed_only_research_retry_reuses_successful_query_units(
+    tmp_path: Path,
+) -> None:
+    question = "Compare current LangGraph documentation"
+    retry_failure = SearchResponse(
+        results=[],
+        failure=SearchFailure(kind="timeout", message="Search request timed out."),
+    )
+    provider = SequencedSearchProvider(
+        {
+            question: [
+                SearchResponse(
+                    results=[
+                        SearchResult(
+                            title="LangGraph docs",
+                            url="https://langchain-ai.github.io/langgraph/",
+                            snippet="Official LangGraph documentation.",
+                        )
+                    ]
+                )
+            ],
+            f"{question} official sources": [
+                retry_failure,
+                retry_failure,
+                retry_failure,
+                SearchResponse(
+                    results=[
+                        SearchResult(
+                            title="LangGraph repository",
+                            url="https://github.com/langchain-ai/langgraph",
+                            snippet="Primary project repository.",
+                        )
+                    ]
+                ),
+            ],
+        }
+    )
+    first_request = build_research_flow_request(
+        tmp_path,
+        question,
+        run_id="run-research-first",
+    )
+
+    first_events = list(run_graph_events(first_request, search_provider=provider))
+
+    assert first_events[-1].type == "task.failed"
+    retry_request = build_research_flow_request(
+        tmp_path,
+        question,
+        run_id="run-research-retry",
+    )
+    retry_request.mode.type = "failed_only"
+    retry_request.mode.source_run_id = "run-research-first"
+
+    retry_events = list(run_graph_events(retry_request, search_provider=provider))
+
+    assert provider.queries == [
+        question,
+        f"{question} official sources",
+        f"{question} official sources",
+        f"{question} official sources",
+        f"{question} official sources",
+    ]
+    running = [
+        event.payload["nodeId"] for event in retry_events if event.type == "node.running"
+    ]
+    assert running == [
+        "research-parallel-search",
+        "research-source-review",
+        "research-report-synthesis",
+        "research-markdown-output",
+    ]
+    assert retry_events[-1].type == "task.completed"
+
+
 def test_emits_runtime_notice_when_node_exceeds_estimate(tmp_path: Path) -> None:
     request = build_request(
         tmp_path,
@@ -869,11 +944,17 @@ def build_document_flow_request_with_typst(
     )
 
 
-def build_research_flow_request(tmp_path: Path, question: str) -> RunGraphRequest:
+def build_research_flow_request(
+    tmp_path: Path,
+    question: str,
+    *,
+    run_id: str = "run-research-flow",
+) -> RunGraphRequest:
     message = UserMessage(task_id="task-research", content=question)
     return RunGraphRequest(
         task_id="task-research",
         project_path=str(tmp_path / "project.alita"),
+        run_id=run_id,
         graph=build_research_graph(message, classify_route(message)),
     )
 

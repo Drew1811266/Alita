@@ -138,19 +138,12 @@ export type BackendEvent =
       type: "research.completed";
       payload: {
         taskId: string;
+        runId?: string;
         reportArtifactId?: string;
         reportArtifactPath?: string;
         summary?: string;
-        acceptedSources?: Array<{
-          title: string;
-          url: string;
-          snippet?: string;
-        }>;
-        rejectedSources?: Array<{
-          title: string;
-          url: string;
-          reason?: string;
-        }>;
+        acceptedSources?: WebSourceReference[];
+        rejectedSources?: WebSourceReference[];
       };
     }
   | {

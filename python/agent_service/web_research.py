@@ -179,9 +179,9 @@ def answer_simple_web_inquiry(
     del route_decision
     provider = search_provider or DuckDuckGoHtmlSearchProvider()
     response = provider.search(message.content.strip())
-    question_type = _infer_question_type(message.content)
+    question_type = infer_question_type(message.content)
     classified = classify_sources(question_type, rank_sources(question_type, response.results))
-    sources = [_source_payload(result, index + 1) for index, result in enumerate(classified)]
+    sources = [source_payload(result, index + 1) for index, result in enumerate(classified)]
     accepted_sources = [source for source in sources if source["accepted"]]
     rejected_sources = [source for source in sources if not source["accepted"]]
 
@@ -222,7 +222,7 @@ def _synthesize_answer(
     return "\n".join(lines)
 
 
-def _source_payload(result: SearchResult, index: int) -> dict[str, Any]:
+def source_payload(result: SearchResult, index: int) -> dict[str, Any]:
     return {
         "ref": f"[{index}]",
         "title": result.title,
@@ -232,6 +232,9 @@ def _source_payload(result: SearchResult, index: int) -> dict[str, Any]:
         "accepted": bool(result.accepted),
         "rejectionReason": result.rejectionReason,
     }
+
+
+_source_payload = source_payload
 
 
 def _truncate_snippet(snippet: str) -> str:
@@ -252,7 +255,7 @@ def _failure_payload(failure: SearchFailure | None) -> dict[str, Any] | None:
     }
 
 
-def _infer_question_type(content: str) -> str:
+def infer_question_type(content: str) -> str:
     normalized = content.lower()
     if any(marker in normalized for marker in ("law", "policy", "regulation")):
         return "policy"
@@ -263,6 +266,9 @@ def _infer_question_type(content: str) -> str:
     if any(marker in normalized for marker in ("price", "buy", "product", "spec")):
         return "product"
     return "software"
+
+
+_infer_question_type = infer_question_type
 
 
 def _assistant_message(content: str) -> dict[str, Any]:

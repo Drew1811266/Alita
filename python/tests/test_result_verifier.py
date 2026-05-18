@@ -73,3 +73,14 @@ def test_rejects_empty_content_organize_outline() -> None:
 
     assert exc_info.value.code == "empty_node_output"
     assert str(exc_info.value) == "node content-organize returned empty value: outline"
+
+
+def test_rejects_non_string_required_value_with_stable_error() -> None:
+    with pytest.raises(HarnessError) as exc_info:
+        ResultVerifier().verify(
+            "content-organize",
+            NodeOutput(values={"outline": 42}),
+        )
+
+    assert exc_info.value.code == "empty_node_output"
+    assert str(exc_info.value) == "node content-organize returned empty value: outline"
