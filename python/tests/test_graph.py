@@ -128,6 +128,15 @@ def test_missing_attachment_requests_input_for_document_task() -> None:
     assert events[0].payload["missing"] == ["document_file"]
 
 
+def test_empty_message_requests_message_input_not_document_file() -> None:
+    events = run_agent(UserMessage(task_id="empty-message", content=""))
+
+    assert len(events) == 1
+    assert events[0].type == "input.required"
+    assert events[0].payload["missing"] == ["message"]
+    assert "document_file" not in events[0].payload["missing"]
+
+
 def test_attachment_generates_node_graph_for_document_task() -> None:
     events = run_agent(
         UserMessage(

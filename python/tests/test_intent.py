@@ -110,7 +110,41 @@ def test_classifies_empty_or_missing_document_input_as_need_input(content: str) 
 
     assert decision.intent.kind == IntentKind.NEED_INPUT
     assert decision.inquiry is None
-    assert decision.missing_inputs == ["document_file"]
+    if content:
+        assert decision.missing_inputs == ["document_file"]
+    else:
+        assert decision.missing_inputs == ["message"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "How do I update Python?",
+        "How do I fix this error?",
+    ],
+)
+def test_classifies_how_to_questions_with_task_verbs_as_local_inquiry(
+    content: str,
+) -> None:
+    decision = classify_route(UserMessage(task_id="how-to", content=content))
+
+    assert decision.intent.kind == IntentKind.INQUIRY
+    assert decision.inquiry is not None
+    assert decision.inquiry.mode == InquiryMode.LOCAL
+    assert decision.inquiry.requires_web is False
+    assert decision.missing_inputs == []
+
+
+def test_classifies_how_to_question_with_current_marker_as_simple_web_inquiry() -> None:
+    decision = classify_route(
+        UserMessage(task_id="how-to-web", content="How do I update to the latest Python?")
+    )
+
+    assert decision.intent.kind == IntentKind.INQUIRY
+    assert decision.inquiry is not None
+    assert decision.inquiry.mode == InquiryMode.WEB_SIMPLE
+    assert decision.inquiry.requires_web is True
+    assert decision.missing_inputs == []
 
 
 def test_route_payload_does_not_leak_local_paths_into_external_query_fields() -> None:

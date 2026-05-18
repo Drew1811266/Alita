@@ -63,7 +63,7 @@ def classify_route(message: UserMessage) -> RouteDecision:
     if not content:
         if has_attachments:
             return _route(IntentKind.TASK, "attached document task")
-        return _route(IntentKind.NEED_INPUT, "empty input needs user content", ["document_file"])
+        return _route(IntentKind.NEED_INPUT, "empty input needs user content", ["message"])
 
     has_document_reference = _contains_any(content, _DOCUMENT_REFERENCES)
     has_document_action = _contains_any(content, _DOCUMENT_ACTIONS)
@@ -77,9 +77,6 @@ def classify_route(message: UserMessage) -> RouteDecision:
             "document task is missing a document attachment",
             ["document_file"],
         )
-
-    if _contains_any(content, _TASK_ACTIONS):
-        return _route(IntentKind.TASK, "user requested creation, modification, or execution")
 
     if _contains_any(content, _QUESTION_MARKERS):
         if _contains_any(content, _COMPLEX_WEB_MARKERS):
@@ -99,6 +96,9 @@ def classify_route(message: UserMessage) -> RouteDecision:
             "question can be answered from local context or the model",
             inquiry=InquiryDecision(InquiryMode.LOCAL, False),
         )
+
+    if _contains_any(content, _TASK_ACTIONS):
+        return _route(IntentKind.TASK, "user requested creation, modification, or execution")
 
     if _contains_any(content, _COMPLEX_WEB_MARKERS):
         return _route(

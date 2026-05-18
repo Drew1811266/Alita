@@ -62,14 +62,20 @@ def classify_intent(state: AgentState) -> AgentState:
 
 
 def request_required_inputs(state: AgentState) -> AgentState:
+    missing_inputs = state.get("route_decision", {}).get("missing_inputs", [])
+    if "document_file" in missing_inputs:
+        prompt = "请把需要处理的文件添加到聊天框里。"
+    else:
+        prompt = "请先输入你想让我处理的问题或任务。"
+
     return {
         **state,
         "events": [
             AgentEvent(
                 type="input.required",
                 payload={
-                    "prompt": "请把需要处理的文件添加到聊天框里。",
-                    "missing": ["document_file"],
+                    "prompt": prompt,
+                    "missing": missing_inputs or ["message"],
                 },
             )
         ],
