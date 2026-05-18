@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import tempfile
 from pathlib import Path
 
@@ -184,19 +186,129 @@ def test_run_graph_events_executes_generic_planner_graph_from_run_agent(
     running_node_ids = [
         event.payload["nodeId"] for event in events if event.type == "node.running"
     ]
-    assert running_node_ids[0] == "task-analysis"
+    planning_node_ids = [
+        node["nodeId"]
+        for node in graph_event.payload["graph"]["nodes"]
+        if node["nodeType"] == "planning"
+    ]
+    assert planning_node_ids
+    assert all(
+        node["status"] == "completed"
+        for node in graph_event.payload["graph"]["nodes"]
+        if node["nodeType"] == "planning"
+    )
+    assert running_node_ids == ["temporary-script-file-inspect", "task-output"]
+    assert not set(planning_node_ids) & set(running_node_ids)
     assert "node.failed" not in event_types
     assert "task.failed" not in event_types
     assert events[-1].type == "task.completed"
-    recorded_task_analysis = [
-        record
+    recorded_node_ids = {
+        record["nodeId"]
         for record in RunJournal(
             project_path=request.project_path,
             run_id=request.run_id,
         ).read_nodes()
-        if record["nodeId"] == "task-analysis"
-    ][0]
-    assert recorded_task_analysis["values"]["mode"] == "planned_task"
+    }
+    assert not set(planning_node_ids) & recorded_node_ids
+    assert {"temporary-script-file-inspect", "task-output"} <= recorded_node_ids
+
+
+def test_planner_graph_skips_completed_planning_nodes_and_runs_executable_nodes(
+    tmp_path: Path,
+) -> None:
+    request = build_planner_request(
+        tmp_path,
+        script_review=script_review(risk_level="low", requires_approval=False),
+    )
+
+    events = list(run_graph_events(request))
+
+    running_node_ids = [
+        event.payload["nodeId"] for event in events if event.type == "node.running"
+    ]
+    assert running_node_ids == ["temp-script", "task-output"]
+    assert events[-1].type == "task.completed"
+
+
+def test_high_risk_temporary_script_blocks_before_any_node_runs(
+    tmp_path: Path,
+) -> None:
+    request = build_planner_request(
+        tmp_path,
+        script_review=script_review(risk_level="high", requires_approval=True),
+    )
+
+    events = list(run_graph_events(request))
+
+    assert "node.running" not in [event.type for event in events]
+    permission_event = next(
+        event for event in events if event.type == "node.needs_permission"
+    )
+    assert permission_event.payload["nodeId"] == "temp-script"
+    assert permission_event.payload["scriptReview"]["status"] == "not_reviewed"
+    assert permission_event.payload["scriptReview"]["riskLevel"] == "high"
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "permission_required"
+
+
+def test_low_risk_temporary_script_runs_through_planned_executor(
+    tmp_path: Path,
+) -> None:
+    request = build_planner_request(
+        tmp_path,
+        script_review=script_review(risk_level="low", requires_approval=False),
+    )
+
+    events = list(run_graph_events(request))
+
+    assert [
+        event.payload["nodeId"] for event in events if event.type == "node.running"
+    ] == ["temp-script", "task-output"]
+    script_record = RunJournal(
+        project_path=request.project_path,
+        run_id=request.run_id,
+    ).read_node("temp-script")
+    assert script_record["status"] == "completed"
+    assert script_record["values"]["scriptStatus"] == "preview_only"
+    assert script_record["values"]["riskLevel"] == "low"
+
+
+def test_approved_high_risk_temporary_script_with_matching_fingerprint_runs(
+    tmp_path: Path,
+) -> None:
+    review = script_review(risk_level="high", requires_approval=True)
+    review["status"] = "approved"
+    review["approvalFingerprint"] = script_review_fingerprint(review)
+    request = build_planner_request(tmp_path, script_review=review)
+
+    events = list(run_graph_events(request))
+
+    assert "node.needs_permission" not in [event.type for event in events]
+    assert [
+        event.payload["nodeId"] for event in events if event.type == "node.running"
+    ] == ["temp-script", "task-output"]
+    assert events[-1].type == "task.completed"
+
+
+def test_changed_approved_script_fingerprint_returns_to_not_reviewed_and_blocks(
+    tmp_path: Path,
+) -> None:
+    review = script_review(risk_level="high", requires_approval=True)
+    review["status"] = "approved"
+    review["approvalFingerprint"] = script_review_fingerprint(review)
+    review["codePreview"] = "print('changed high risk script')\n"
+    request = build_planner_request(tmp_path, script_review=review)
+
+    events = list(run_graph_events(request))
+
+    assert "node.running" not in [event.type for event in events]
+    permission_event = next(
+        event for event in events if event.type == "node.needs_permission"
+    )
+    assert permission_event.payload["nodeId"] == "temp-script"
+    assert permission_event.payload["scriptReview"]["status"] == "not_reviewed"
+    assert permission_event.payload["scriptReview"]["approvalFingerprint"] is None
+    assert events[-1].type == "task.failed"
 
 
 def test_research_graph_executes_nodes_and_writes_markdown_report(tmp_path: Path) -> None:
@@ -474,6 +586,11 @@ def test_emits_runtime_notice_when_node_exceeds_estimate(tmp_path: Path) -> None
     }
     assert notice.payload["notice"]["kind"] == "duration_exceeded"
     assert notice.payload["notice"]["actualDurationMs"] >= 0
+    record = RunJournal(
+        project_path=request.project_path,
+        run_id=request.run_id,
+    ).read_node("document-input")
+    assert record["runtimeNotice"] == notice.payload["notice"]
 
 
 
@@ -906,6 +1023,60 @@ def build_request(tmp_path: Path, *, nodes: list[dict]) -> RunGraphRequest:
             ],
         },
     )
+
+
+def build_planner_request(tmp_path: Path, *, script_review: dict) -> RunGraphRequest:
+    temp_script = build_node(
+        "temp-script",
+        "temporary_script",
+        ["execution-order-planning"],
+    )
+    temp_script["scriptReview"] = script_review
+    return build_request(
+        tmp_path,
+        nodes=[
+            {
+                **build_node("task-analysis", "planning", []),
+                "status": "completed",
+            },
+            {
+                **build_node(
+                    "execution-order-planning",
+                    "planning",
+                    ["task-analysis"],
+                ),
+                "status": "completed",
+            },
+            temp_script,
+            build_node("task-output", "output", ["temp-script"]),
+        ],
+    )
+
+
+def script_review(*, risk_level: str, requires_approval: bool) -> dict:
+    return {
+        "status": "not_reviewed",
+        "summary": "Review generated script before execution.",
+        "permissions": ["read_project_files", "write_project_files"],
+        "riskLevel": risk_level,
+        "requiresApproval": requires_approval,
+        "codePreview": "print('planned script')\n",
+        "inputContract": {"targetPath": "project-relative path"},
+        "outputContract": {"summary": "text"},
+        "approvalFingerprint": None,
+    }
+
+
+def script_review_fingerprint(review: dict) -> str:
+    payload = {
+        "codePreview": review.get("codePreview"),
+        "permissions": review.get("permissions", []),
+        "riskLevel": review.get("riskLevel"),
+        "inputContract": review.get("inputContract", {}),
+        "outputContract": review.get("outputContract", {}),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def build_document_flow_request(

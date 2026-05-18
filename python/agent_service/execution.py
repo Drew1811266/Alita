@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -18,7 +20,12 @@ from agent_service.privacy import sanitize_for_web_search
 from agent_service.result_verifier import ResultVerifier
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY, RunRegistry
-from agent_service.schemas import AgentEvent, GraphNode, RunGraphRequest
+from agent_service.schemas import (
+    AgentEvent,
+    GraphNode,
+    RunGraphRequest,
+    ScriptReviewState,
+)
 from agent_service.tool_execution import (
     ToolExecutor,
     ToolInvocation,
@@ -266,9 +273,7 @@ class PlannedTaskExecutor:
 
         if node.nodeType == "temporary_script":
             review = node.scriptReview
-            if node.status == "needs_permission" or (
-                review is not None and review.requiresApproval
-            ):
+            if _script_requires_permission(node):
                 raise HarnessError(
                     "permission_required",
                     f"temporary script requires approval before execution: {node_id}",
@@ -595,6 +600,10 @@ def run_graph_events(
         return
 
     selected_nodes = _selected_nodes_for_mode(request, ordered_nodes)
+    if _is_planned_task_graph(request) and not _is_research_graph(request):
+        selected_nodes = [
+            node for node in selected_nodes if node.nodeType != "planning"
+        ]
     if executor is not None:
         node_executor = executor
     elif _is_research_graph(request):
@@ -639,6 +648,68 @@ def run_graph_events(
     )
 
     try:
+        permission_node = _permission_blocking_node(selected_nodes)
+        if permission_node is not None:
+            completed_at = _now_iso()
+            error = HarnessError(
+                "permission_required",
+                (
+                    "temporary script requires approval before execution: "
+                    f"{permission_node.nodeId}"
+                ),
+            )
+            payload = harness_error_payload(error)
+            review_payload = _script_review_event_payload(permission_node)
+            journal.write_node(
+                permission_node.nodeId,
+                {
+                    "nodeRunId": f"{request.run_id}-{permission_node.nodeId}",
+                    "runId": request.run_id,
+                    "nodeId": permission_node.nodeId,
+                    "status": "needs_permission",
+                    "startedAt": completed_at,
+                    "completedAt": completed_at,
+                    "artifactRefs": [],
+                    "error": str(error),
+                    "errorCode": payload.get("errorCode"),
+                    "values": {},
+                    "scriptReview": review_payload,
+                },
+            )
+            journal.write_run(
+                {
+                    "runId": request.run_id,
+                    "taskId": request.task_id,
+                    "status": "failed",
+                    "startedAt": started_at,
+                    "completedAt": completed_at,
+                    "mode": request.mode.model_dump(),
+                }
+            )
+            yield AgentEvent(
+                type="node.needs_permission",
+                payload={
+                    "nodeId": permission_node.nodeId,
+                    "taskId": request.task_id,
+                    "runId": request.run_id,
+                    "scriptReview": review_payload,
+                    **payload,
+                },
+            )
+            yield AgentEvent(
+                type="task.failed",
+                payload={
+                    "taskId": request.task_id,
+                    "runId": request.run_id,
+                    **payload,
+                },
+            )
+            return
+
+        if _is_planned_task_graph(request) and not _is_research_graph(request):
+            selected_nodes = [
+                node for node in selected_nodes if is_executable_node(node)
+            ]
         for node in selected_nodes:
             if node.toolRef and node.toolRef in disabled_tool_ids:
                 completed_at = _now_iso()
@@ -795,6 +866,7 @@ def run_graph_events(
             completed_at = _now_iso()
             actual_duration_ms = int((perf_counter() - node_perf_started) * 1000)
             outputs[node.nodeId] = output
+            runtime_notice = _runtime_notice_for_node(node, actual_duration_ms)
             record = {
                 "nodeRunId": node_run_id,
                 "runId": request.run_id,
@@ -805,12 +877,13 @@ def run_graph_events(
                 "artifactRefs": output.artifacts,
                 "values": output.values,
             }
+            if runtime_notice is not None:
+                record["runtimeNotice"] = runtime_notice
             journal.write_node(node.nodeId, record)
             yield AgentEvent(
                 type="node.completed",
                 payload={"nodeId": node.nodeId, "artifactRefs": output.artifacts},
             )
-            runtime_notice = _runtime_notice_for_node(node, actual_duration_ms)
             if runtime_notice is not None:
                 yield AgentEvent(
                     type="node.runtime_notice",
@@ -902,6 +975,66 @@ def _topological_nodes(request: RunGraphRequest) -> list[GraphNode]:
             completed.add(node.nodeId)
 
     return ordered
+
+
+def is_executable_node(node: GraphNode) -> bool:
+    if node.nodeType == "planning":
+        return False
+    if node.nodeType not in {"fixed_tool", "model", "temporary_script", "output"}:
+        return False
+    if node.status in {"completed", "needs_permission", "needs_user_input", "skipped"}:
+        return False
+    if node.nodeType == "temporary_script" and _script_requires_permission(node):
+        return False
+    return True
+
+
+def _permission_blocking_node(nodes: list[GraphNode]) -> GraphNode | None:
+    for node in nodes:
+        if _script_requires_permission(node):
+            return node
+    return None
+
+
+def _script_requires_permission(node: GraphNode) -> bool:
+    if node.nodeType != "temporary_script":
+        return False
+    review = node.scriptReview
+    if review is not None and _has_valid_script_approval(review):
+        return False
+    return node.status == "needs_permission" or (
+        review is not None and review.requiresApproval
+    )
+
+
+def _has_valid_script_approval(review: ScriptReviewState) -> bool:
+    return (
+        review.status == "approved"
+        and review.approvalFingerprint == _script_review_fingerprint(review)
+    )
+
+
+def _script_review_event_payload(node: GraphNode) -> dict:
+    review = node.scriptReview
+    if review is None:
+        return {}
+    payload = review.model_dump()
+    if review.status == "approved" and not _has_valid_script_approval(review):
+        payload["status"] = "not_reviewed"
+        payload["approvalFingerprint"] = None
+    return payload
+
+
+def _script_review_fingerprint(review: ScriptReviewState) -> str:
+    payload = {
+        "codePreview": review.codePreview,
+        "permissions": review.permissions,
+        "riskLevel": review.riskLevel,
+        "inputContract": review.inputContract,
+        "outputContract": review.outputContract,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _default_tool_registry() -> ToolRegistry:
@@ -1055,6 +1188,11 @@ def _event_record(record: dict) -> dict:
         "artifactRefs": record.get("artifactRefs", []),
         "error": record.get("error"),
         **({"errorCode": record["errorCode"]} if record.get("errorCode") else {}),
+        **(
+            {"runtimeNotice": record["runtimeNotice"]}
+            if record.get("runtimeNotice")
+            else {}
+        ),
     }
 
 
