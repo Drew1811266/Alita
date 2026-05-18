@@ -1,0 +1,140 @@
+from __future__ import annotations
+
+import pytest
+
+from agent_service.intent import (
+    InquiryMode,
+    IntentKind,
+    classify_route,
+)
+from agent_service.schemas import UserMessage
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_reason"),
+    [
+        ("hello, thanks for your help", "conversation"),
+        ("你好，谢谢你", "conversation"),
+    ],
+)
+def test_classifies_direct_conversation_as_chat(
+    content: str,
+    expected_reason: str,
+) -> None:
+    decision = classify_route(UserMessage(task_id="chat", content=content))
+
+    assert decision.intent.kind == IntentKind.CHAT
+    assert decision.inquiry is None
+    assert expected_reason in decision.reason
+    assert decision.missing_inputs == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "What files are attached to this conversation?",
+        "这个项目里的 agent_service/graph.py 是做什么的？",
+    ],
+)
+def test_classifies_local_context_questions_as_local_inquiry(content: str) -> None:
+    decision = classify_route(UserMessage(task_id="local", content=content))
+
+    assert decision.intent.kind == IntentKind.INQUIRY
+    assert decision.inquiry is not None
+    assert decision.inquiry.mode == InquiryMode.LOCAL
+    assert decision.inquiry.requires_web is False
+    assert decision.missing_inputs == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "What is the latest Python release?",
+        "今天 Qwen3 的官方模型信息是什么？",
+    ],
+)
+def test_classifies_current_factual_questions_as_simple_web_inquiry(
+    content: str,
+) -> None:
+    decision = classify_route(UserMessage(task_id="web-simple", content=content))
+
+    assert decision.intent.kind == IntentKind.INQUIRY
+    assert decision.inquiry is not None
+    assert decision.inquiry.mode == InquiryMode.WEB_SIMPLE
+    assert decision.inquiry.requires_web is True
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Research and compare the best local LLM runtimes for a design proposal.",
+        "调研并比较 RAG 方案，输出详细文档和流程图。",
+    ],
+)
+def test_classifies_research_and_design_questions_as_complex_web_inquiry(
+    content: str,
+) -> None:
+    decision = classify_route(UserMessage(task_id="web-complex", content=content))
+
+    assert decision.intent.kind == IntentKind.INQUIRY
+    assert decision.inquiry is not None
+    assert decision.inquiry.mode == InquiryMode.WEB_COMPLEX
+    assert decision.inquiry.requires_web is True
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Create a Python script that summarizes these notes.",
+        "帮我修改 graph.py 并生成测试。",
+    ],
+)
+def test_classifies_creation_and_modification_requests_as_task(content: str) -> None:
+    decision = classify_route(UserMessage(task_id="task", content=content))
+
+    assert decision.intent.kind == IntentKind.TASK
+    assert decision.inquiry is None
+    assert decision.missing_inputs == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",
+        "请总结这个文件",
+        "Please summarize the attached PDF",
+    ],
+)
+def test_classifies_empty_or_missing_document_input_as_need_input(content: str) -> None:
+    decision = classify_route(UserMessage(task_id="missing", content=content))
+
+    assert decision.intent.kind == IntentKind.NEED_INPUT
+    assert decision.inquiry is None
+    assert decision.missing_inputs == ["document_file"]
+
+
+def test_route_payload_does_not_leak_local_paths_into_external_query_fields() -> None:
+    local_path = r"C:\Users\Drew\Projects\Alita\python\agent_service\graph.py"
+    project_path = r"D:\Software Project\Alita"
+    model_path = r"C:\models\qwen\qwen2.5-coder.gguf"
+    decision = classify_route(
+        UserMessage(
+            task_id="privacy",
+            content=(
+                f"Using {local_path} in project {project_path}, explain "
+                f"the local model at {model_path} with the latest official docs."
+            ),
+        )
+    )
+
+    assert decision.intent.kind == IntentKind.INQUIRY
+    assert decision.inquiry is not None
+    assert decision.inquiry.mode == InquiryMode.WEB_SIMPLE
+
+    payload = decision.to_payload()
+    assert "query" not in payload
+    assert "web_query" not in payload
+    assert "search_query" not in payload
+    assert local_path not in repr(payload)
+    assert project_path not in repr(payload)
+    assert model_path not in repr(payload)

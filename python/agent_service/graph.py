@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
 
+from agent_service.intent import IntentKind, RouteDecision, classify_route
 from agent_service.model_client import (
     ChatMessage as ModelChatMessage,
     LlamaCppModelClient,
@@ -43,12 +44,15 @@ class AgentState(TypedDict, total=False):
     message: UserMessage
     events: list[AgentEvent]
     intent: AgentIntent
+    route_decision: dict
 
 
 def classify_intent(state: AgentState) -> AgentState:
+    decision = classify_route(state["message"])
     return {
         **state,
-        "intent": _classify_message(state["message"]),
+        "intent": _compatible_intent(state["message"], decision),
+        "route_decision": decision.to_payload(),
     }
 
 
@@ -150,7 +154,8 @@ def stream_agent_events(
     *,
     model_client: ModelClient | None = None,
 ) -> Iterator[AgentEvent]:
-    intent = _classify_message(message)
+    decision = classify_route(message)
+    intent = _compatible_intent(message, decision)
     if intent != "chat":
         yield from run_agent(message, model_client=model_client)
         return
@@ -201,6 +206,13 @@ def _route_intent(state: AgentState) -> AgentIntent:
 
 
 def _classify_message(message: UserMessage) -> AgentIntent:
+    return _compatible_intent(message, classify_route(message))
+
+
+def _compatible_intent(
+    message: UserMessage,
+    decision: RouteDecision,
+) -> AgentIntent:
     content = message.content.strip()
     has_attachments = bool(message.attachments)
     has_task_action = _contains_any(
@@ -248,7 +260,7 @@ def _classify_message(message: UserMessage) -> AgentIntent:
     if has_attachments and (not content or has_task_action or has_file_reference):
         return "document_task"
 
-    if not has_attachments and has_task_action and has_file_reference:
+    if decision.intent.kind == IntentKind.NEED_INPUT:
         return "missing_input"
 
     return "chat"

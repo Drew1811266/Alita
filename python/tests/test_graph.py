@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent_service.graph import _node, run_agent, stream_agent_events
+from agent_service.graph import _node, build_graph, run_agent, stream_agent_events
 from agent_service.model_client import ChatMessage
 from agent_service.schemas import Attachment, GraphNode, RunGraph, UserMessage
 
@@ -86,6 +86,30 @@ def test_plain_chat_streams_local_model_message_deltas() -> None:
         "delta": "，本地模型",
     }
     assert events[3].payload == {"messageId": message["messageId"]}
+
+
+def test_graph_state_preserves_structured_route_decision_for_inquiries() -> None:
+    client = FakeModelClient("local answer")
+    app = build_graph(model_client=client)
+
+    result = app.invoke(
+        {
+            "message": UserMessage(
+                task_id="task-route",
+                content="What is the latest Python release?",
+            ),
+            "events": [],
+        }
+    )
+
+    assert result["intent"] == "chat"
+    assert result["route_decision"] == {
+        "intent": {"kind": "inquiry"},
+        "inquiry": {"mode": "web_simple", "requires_web": True},
+        "reason": "question requests current or external factual data",
+        "missing_inputs": [],
+    }
+    assert result["events"][0].type == "message.created"
 
 
 def test_missing_attachment_requests_input_for_document_task() -> None:
