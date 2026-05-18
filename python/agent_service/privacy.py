@@ -19,10 +19,10 @@ _SECRET_LABEL = "[SECRET]"
 _EMAIL_LABEL = "[EMAIL]"
 
 _WINDOWS_PATH_RE = re.compile(
-    r"(?<![\w])(?:[A-Za-z]:\\(?:[^\s\\/:*?\"<>|\r\n]+(?: [^\s\\/:*?\"<>|\r\n]+)*\\)*"
-    r"[^\s\\/:*?\"<>|\r\n]+(?:\.[A-Za-z0-9][A-Za-z0-9._-]*)?)"
+    r"(?<![\w])(?:[A-Za-z]:\\(?:[^\r\n\\/:*?\"<>|]+\\)+"
+    r"[^\r\n\\/:*?\"<>|]*?\.[A-Za-z0-9][A-Za-z0-9_-]*(?=$|[\s,;:!?)]|\.(?:$|\s)))"
 )
-_POSIX_PATH_RE = re.compile(r"(?<!\w)/(?:[^\s/]+/)+[^\s/]+")
+_POSIX_PATH_RE = re.compile(r"(?<![\w:/])/(?:[^\s/]+/)+[^\s/]+")
 _MODEL_NAME_RE = re.compile(
     r"\b(?:Qwen|Llama|Mistral|Mixtral|Phi|Gemma|DeepSeek|Claude|GPT|Whisper)"
     r"[A-Za-z0-9._-]*(?:-[A-Za-z0-9._-]+)*\b",

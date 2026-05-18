@@ -41,6 +41,33 @@ def test_redacts_posix_paths() -> None:
     assert result.blocked is False
 
 
+def test_preserves_https_urls_without_marking_them_as_local_paths() -> None:
+    url = "https://docs.python.org/3/library/pathlib.html"
+
+    result = sanitize_for_web_search(
+        f"Search {url} for PurePath examples"
+    )
+
+    assert result.sanitizedText == f"Search {url} for PurePath examples"
+    assert result.removedCategories == []
+    assert result.blocked is False
+
+
+def test_redacts_windows_path_with_spaced_filename() -> None:
+    local_path = r"C:\Users\Drew\Projects\Alita\my file.txt"
+
+    result = sanitize_for_web_search(
+        f"Search errors in {local_path} about LangGraph"
+    )
+
+    assert result.sanitizedText == "Search errors in [LOCAL_PATH] about LangGraph"
+    assert local_path not in result.sanitizedText
+    assert "my" not in result.sanitizedText
+    assert "file.txt" not in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_redacts_model_paths_and_model_filenames() -> None:
     model_path = r"C:\models\qwen\qwen2.5-coder.gguf"
     model_name = "Qwen3-ASR-1.7B"
@@ -54,6 +81,19 @@ def test_redacts_model_paths_and_model_filenames() -> None:
     )
     assert model_path not in result.sanitizedText
     assert model_name not in result.sanitizedText
+    assert result.removedCategories == ["MODEL_PATH"]
+    assert result.blocked is False
+
+
+def test_redacts_model_path_with_spaced_filename() -> None:
+    model_path = r"C:\models\qwen\my model.gguf"
+
+    result = sanitize_for_web_search(f"Find benchmark for {model_path}")
+
+    assert result.sanitizedText == "Find benchmark for [MODEL_PATH]"
+    assert model_path not in result.sanitizedText
+    assert "my" not in result.sanitizedText
+    assert "model.gguf" not in result.sanitizedText
     assert result.removedCategories == ["MODEL_PATH"]
     assert result.blocked is False
 
