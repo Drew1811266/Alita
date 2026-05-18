@@ -277,11 +277,20 @@ def test_local_questions_with_constraint_words_after_graph_exists_use_inquiry_ro
     assert client.calls
 
 
-def test_explicit_graph_constraint_after_graph_exists_routes_to_feedback() -> None:
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Use only CSV sources for this graph.",
+        "Can you use only CSV sources for this graph?",
+    ],
+)
+def test_explicit_graph_constraint_after_graph_exists_routes_to_feedback(
+    content: str,
+) -> None:
     events = run_agent(
         UserMessage(
             task_id="task-1",
-            content="Use only CSV sources for this graph.",
+            content=content,
         ),
         current_graph=_existing_graph(),
     )

@@ -420,10 +420,12 @@ def _should_handle_graph_feedback(
         GraphFeedbackKind.FULL_REPLAN,
     }:
         return True
+    if _is_explicit_graph_constraint_feedback(message.content):
+        return True
     if route_decision.intent.kind == IntentKind.INQUIRY:
         return False
     if route_decision.intent.kind == IntentKind.CHAT:
-        return _is_explicit_graph_constraint_feedback(message.content)
+        return False
     return True
 
 
