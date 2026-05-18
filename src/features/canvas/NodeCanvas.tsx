@@ -48,7 +48,7 @@ const nodeTypeLabels: Record<AgentNode["nodeType"], string> = {
   output: "输出",
   temporary_placeholder: "占位",
   planning: "规划",
-  temporary_script: "临时脚本",
+  temporary_script: "临时代码",
 };
 
 const statusLabels: Record<AgentNode["status"], string> = {
@@ -64,11 +64,20 @@ const statusLabels: Record<AgentNode["status"], string> = {
 
 function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>) {
   const node = data.agentNode;
+  const classNames = [
+    "agentNode",
+    `agentNode-${node.nodeType}`,
+    node.nodeType === "planning" ? "agentNode-planningQuiet" : null,
+    node.status === "needs_permission" ? "agentNode-needsPermission" : null,
+    node.scriptReview?.riskLevel === "high" ? "agentNode-riskHigh" : null,
+    selected ? "agentNode-selected" : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const estimateChips = getEstimateChips(node);
 
   return (
-    <div
-      className={`agentNode agentNode-${node.nodeType}${selected ? " agentNode-selected" : ""}`}
-    >
+    <div className={classNames}>
       <Handle
         className="agentNodeHandle agentNodeHandleInput"
         id="input"
@@ -83,6 +92,13 @@ function AgentNodeView({ data, selected }: NodeProps<AgentFlowNode>) {
       </div>
       <h3>{node.displayName}</h3>
       <p>{node.summary}</p>
+      {estimateChips.length > 0 ? (
+        <div className="agentNodeEstimateChips" aria-label="节点预估">
+          {estimateChips.map((chip) => (
+            <span key={chip}>{chip}</span>
+          ))}
+        </div>
+      ) : null}
       <Handle
         className="agentNodeHandle agentNodeHandleOutput"
         id="output"
@@ -235,6 +251,33 @@ export function NodeCanvas({
       ) : null}
     </div>
   );
+}
+
+function getEstimateChips(node: AgentNode): string[] {
+  const estimate = node.estimate;
+  if (!estimate) {
+    return [];
+  }
+
+  return [
+    formatDuration(estimate.durationMs),
+    estimate.cpu ? `CPU ${estimate.cpu}` : null,
+    estimate.memory ? estimate.memory : null,
+    estimate.network ? `Net ${estimate.network}` : null,
+  ].filter((chip): chip is string => Boolean(chip));
+}
+
+function formatDuration(durationMs?: number | null): string | null {
+  if (durationMs === undefined || durationMs === null) {
+    return null;
+  }
+
+  if (durationMs < 1000) {
+    return `${durationMs}ms`;
+  }
+
+  const seconds = durationMs / 1000;
+  return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)}s`;
 }
 
 export function isResearchGraph(graph: NodeGraph): boolean {

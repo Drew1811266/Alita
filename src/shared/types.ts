@@ -149,6 +149,10 @@ export type RunHistoryEntry = {
   summary: string;
   nodeRunIds?: string[];
   artifactRefs?: string[];
+  runtimeNotices?: Array<{
+    nodeId: string;
+    notice: RuntimeNotice;
+  }>;
 };
 
 export type RunStatus = "running" | "completed" | "failed" | "cancelled";

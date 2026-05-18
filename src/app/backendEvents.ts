@@ -189,12 +189,13 @@ export function reduceBackendEvents(
     }
 
     if (event.type === "graph.replanned") {
+      const summary =
+        event.payload.summary ??
+        `Graph replanned from ${event.payload.previousGraphId ?? "previous graph"} to ${event.payload.graph.graphId}.`;
       return {
         ...current,
         graph: event.payload.graph,
-        messages: event.payload.summary
-          ? [...current.messages, createAssistantMessage(event.payload.summary)]
-          : current.messages,
+        messages: [...current.messages, createAssistantMessage(summary)],
         pendingResearchChoice: null,
         pendingGraphOverwriteChoice: null,
         dirty: true,
@@ -281,10 +282,38 @@ export function reduceBackendEvents(
       });
     }
 
+    if (event.type === "node.needs_permission") {
+      const updated = updateNode(current, event.payload.nodeId, {
+        status: "needs_permission",
+        ...(event.payload.scriptReview
+          ? { scriptReview: event.payload.scriptReview }
+          : {}),
+      });
+
+      return {
+        ...updated,
+        messages: [
+          ...updated.messages,
+          createAssistantMessage(formatPermissionPrompt(event.payload)),
+        ],
+        dirty: true,
+      };
+    }
+
     if (event.type === "node.runtime_notice") {
-      return updateNode(current, event.payload.nodeId, {
+      const updated = updateNode(current, event.payload.nodeId, {
         runtimeNotice: event.payload.notice,
       });
+
+      return {
+        ...updated,
+        runHistory: appendRuntimeNoticeToRunHistory(
+          updated,
+          event.payload.nodeId,
+          event.payload.notice,
+        ),
+        dirty: true,
+      };
     }
 
     if (event.type === "artifact.created") {
@@ -425,6 +454,17 @@ function formatResearchChoicePrompt(
   return `${payload.prompt}\n\n${choices}`;
 }
 
+function formatPermissionPrompt(
+  payload: Extract<BackendEvent, { type: "node.needs_permission" }>["payload"],
+): string {
+  const permissions =
+    payload.permissions.length > 0 ? payload.permissions.join(", ") : "none";
+  const summary = payload.scriptReview?.summary
+    ? `\n${payload.scriptReview.summary}`
+    : "";
+  return `Node ${payload.nodeId} needs permission before it can run.\nPermissions: ${permissions}${summary}`;
+}
+
 function updateNode(
   state: BackendEventState,
   nodeId: string,
@@ -454,4 +494,29 @@ function appendRunHistory(
     ...(state.runHistory ?? []).filter((run) => run.runId !== entry.runId),
     entry,
   ];
+}
+
+function appendRuntimeNoticeToRunHistory(
+  state: BackendEventState,
+  nodeId: string,
+  notice: NonNullable<AgentNode["runtimeNotice"]>,
+): RunHistoryEntry[] | undefined {
+  if (!state.activeRunId || !state.runHistory) {
+    return state.runHistory;
+  }
+
+  return state.runHistory.map((entry) =>
+    entry.runId === state.activeRunId
+      ? {
+          ...entry,
+          runtimeNotices: [
+            ...(entry.runtimeNotices ?? []),
+            {
+              nodeId,
+              notice,
+            },
+          ],
+        }
+      : entry,
+  );
 }

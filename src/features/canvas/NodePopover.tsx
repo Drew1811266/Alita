@@ -14,7 +14,7 @@ const nodeTypeLabels: Record<NodeType, string> = {
   output: "输出节点",
   temporary_placeholder: "临时占位",
   planning: "规划节点",
-  temporary_script: "临时脚本",
+  temporary_script: "临时代码",
 };
 
 const statusLabels: Record<NodeStatus, string> = {
@@ -40,6 +40,14 @@ const modelCapabilityLabels: Record<string, string> = {
 };
 
 function getCapability(node: AgentNode): string {
+  if (node.nodeType === "planning") {
+    return "不可执行";
+  }
+
+  if (node.nodeType === "temporary_script") {
+    return "临时代码审查";
+  }
+
   if (node.toolRef) {
     return toolCapabilityLabels[node.toolRef] ?? "已注册工具能力";
   }
@@ -121,6 +129,71 @@ function renderPermissions(permissions: string[]) {
   );
 }
 
+function renderMetricChips(
+  metrics: AgentNode["estimate"] | AgentNode["resourceUsage"],
+) {
+  if (!metrics) {
+    return <span className="nodePopoverEmpty">暂无</span>;
+  }
+
+  const chips = [
+    formatDuration(metrics.durationMs),
+    metrics.cpu ? `CPU ${metrics.cpu}` : null,
+    metrics.memory ? `${metrics.memory}` : null,
+    metrics.network ? `Net ${metrics.network}` : null,
+  ];
+
+  const extraChips = Object.entries(metrics)
+    .filter(
+      ([key, value]) =>
+        !["durationMs", "cpu", "memory", "network"].includes(key) &&
+        value !== undefined &&
+        value !== null,
+    )
+    .map(([key, value]) => `${key}: ${String(value)}`);
+
+  const visibleChips = [...chips, ...extraChips].filter(
+    (chip): chip is string => Boolean(chip),
+  );
+
+  if (visibleChips.length === 0) {
+    return <span className="nodePopoverEmpty">暂无</span>;
+  }
+
+  return (
+    <ul className="nodePopoverPortList">
+      {visibleChips.map((chip) => (
+        <li key={chip}>{chip}</li>
+      ))}
+    </ul>
+  );
+}
+
+function renderContract(contract: Record<string, unknown> | undefined) {
+  if (!contract) {
+    return null;
+  }
+
+  return (
+    <pre className="nodePopoverCodePreview">
+      {JSON.stringify(contract, null, 2)}
+    </pre>
+  );
+}
+
+function formatDuration(durationMs?: number | null): string | null {
+  if (durationMs === undefined || durationMs === null) {
+    return null;
+  }
+
+  if (durationMs < 1000) {
+    return `${durationMs}ms`;
+  }
+
+  const seconds = durationMs / 1000;
+  return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)}s`;
+}
+
 export function NodePopover({
   node,
   onClose,
@@ -131,6 +204,8 @@ export function NodePopover({
   const canRunFromNode =
     onRunFromNode &&
     node.nodeType !== "temporary_placeholder" &&
+    node.nodeType !== "planning" &&
+    node.nodeType !== "temporary_script" &&
     !node.scriptReview;
 
   return (
@@ -171,6 +246,24 @@ export function NodePopover({
           <dt>将调用的功能</dt>
           <dd>{getCapability(node)}</dd>
         </div>
+        {node.estimate ? (
+          <div>
+            <dt>预估</dt>
+            <dd>{renderMetricChips(node.estimate)}</dd>
+          </div>
+        ) : null}
+        {node.resourceUsage ? (
+          <div>
+            <dt>资源使用</dt>
+            <dd>{renderMetricChips(node.resourceUsage)}</dd>
+          </div>
+        ) : null}
+        {node.runtimeNotice ? (
+          <div>
+            <dt>运行提示</dt>
+            <dd>{node.runtimeNotice.message}</dd>
+          </div>
+        ) : null}
         <div>
           <dt>输入端口</dt>
           <dd>{renderPorts(node.inputPorts)}</dd>
@@ -217,7 +310,32 @@ export function NodePopover({
             <dt>安全审查</dt>
             <dd>
               <div>{node.scriptReview.summary}</div>
+              {node.scriptReview.riskLevel ? (
+                <div>风险: {node.scriptReview.riskLevel}</div>
+              ) : null}
+              <div>审批: {node.scriptReview.status}</div>
+              {node.scriptReview.requiresApproval ? <div>需要授权</div> : null}
+              {node.scriptReview.approvalFingerprint ? (
+                <div>{node.scriptReview.approvalFingerprint}</div>
+              ) : null}
               {renderPermissions(node.scriptReview.permissions)}
+              {node.scriptReview.codePreview ? (
+                <pre className="nodePopoverCodePreview">
+                  {node.scriptReview.codePreview}
+                </pre>
+              ) : null}
+              {node.scriptReview.inputContract ? (
+                <div>
+                  <div>输入契约</div>
+                  {renderContract(node.scriptReview.inputContract)}
+                </div>
+              ) : null}
+              {node.scriptReview.outputContract ? (
+                <div>
+                  <div>输出契约</div>
+                  {renderContract(node.scriptReview.outputContract)}
+                </div>
+              ) : null}
               <div>临时脚本节点当前仅可审查，尚不能执行。</div>
             </dd>
           </div>

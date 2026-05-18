@@ -83,4 +83,70 @@ describe("NodeCanvas", () => {
     expect(markup).toContain("nodeCanvasRunButton");
     expect(markup).not.toContain("Research graph execution is not available yet.");
   });
+
+  it("renders planning and temporary script labels with compact estimate chips", () => {
+    const graph: NodeGraph = {
+      graphId: "script-plan",
+      nodes: [
+        {
+          nodeId: "plan",
+          nodeType: "planning",
+          displayName: "Decide execution path",
+          status: "completed",
+          inputPorts: [],
+          outputPorts: [],
+          dependencies: [],
+          summary: "Use local files, then run a generated script.",
+          createdBy: "agent",
+          artifactRefs: [],
+          retryCount: 0,
+          estimate: {
+            durationMs: 5000,
+            cpu: "low",
+            memory: "256MB",
+          },
+          position: { x: 0, y: 0 },
+        },
+        {
+          nodeId: "temp-script",
+          nodeType: "temporary_script",
+          displayName: "Inspect CSV",
+          status: "needs_permission",
+          inputPorts: [],
+          outputPorts: [],
+          dependencies: ["plan"],
+          summary: "Run a generated script over project data.",
+          createdBy: "agent",
+          artifactRefs: [],
+          retryCount: 0,
+          estimate: {
+            durationMs: 12000,
+            memory: "512MB",
+            network: "none",
+          },
+          scriptReview: {
+            status: "reviewing",
+            summary: "Requires approval before execution.",
+            permissions: ["read_project_files"],
+            riskLevel: "high",
+            requiresApproval: true,
+          },
+          position: { x: 240, y: 0 },
+        },
+      ],
+      edges: [],
+    };
+
+    const markup = renderToStaticMarkup(
+      <NodeCanvas graph={graph} onRun={() => undefined} />,
+    );
+
+    expect(markup).toContain("规划");
+    expect(markup).toContain("临时代码");
+    expect(markup).toContain("agentNode-planningQuiet");
+    expect(markup).toContain("agentNode-needsPermission");
+    expect(markup).toContain("agentNodeEstimateChips");
+    expect(markup).toContain("5s");
+    expect(markup).toContain("256MB");
+  });
 });

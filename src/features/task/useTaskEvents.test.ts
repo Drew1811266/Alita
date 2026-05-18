@@ -3,7 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   cancelNodeGraphRun,
+  createResearchFlowPayload,
+  createResearchQuickAnswerPayload,
   createSseEventParser,
+  createTemporaryScriptPermissionPayload,
   runNodeGraphStream,
   submitUserMessage,
 } from "./useTaskEvents";
@@ -321,5 +324,59 @@ describe("runNodeGraphStream", () => {
         },
       }),
     );
+  });
+});
+
+describe("frontend action payload helpers", () => {
+  it("creates typed research quick answer and research flow payloads", () => {
+    const basePayload = {
+      taskId: "task-1",
+      content: "Compare Python packaging tools",
+      attachments: [],
+      hasRunHistory: false,
+    };
+
+    expect(createResearchQuickAnswerPayload(basePayload)).toMatchObject({
+      taskId: "task-1",
+      content: "Compare Python packaging tools",
+      inquiryChoice: "quick_answer",
+    });
+    expect(createResearchFlowPayload(basePayload)).toMatchObject({
+      taskId: "task-1",
+      content: "Compare Python packaging tools",
+      inquiryChoice: "research_flow",
+    });
+  });
+
+  it("creates typed temporary script approval and rejection payloads", () => {
+    expect(
+      createTemporaryScriptPermissionPayload({
+        taskId: "task-1",
+        nodeId: "temporary-script",
+        decision: "approve",
+        approvalFingerprint: "sha256:abc123",
+      }),
+    ).toEqual({
+      type: "temporary_script.permission",
+      taskId: "task-1",
+      nodeId: "temporary-script",
+      decision: "approve",
+      approvalFingerprint: "sha256:abc123",
+    });
+
+    expect(
+      createTemporaryScriptPermissionPayload({
+        taskId: "task-1",
+        nodeId: "temporary-script",
+        decision: "reject",
+        reason: "Needs narrower file access.",
+      }),
+    ).toEqual({
+      type: "temporary_script.permission",
+      taskId: "task-1",
+      nodeId: "temporary-script",
+      decision: "reject",
+      reason: "Needs narrower file access.",
+    });
   });
 });

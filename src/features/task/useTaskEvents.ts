@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { BackendEvent } from "../../shared/events";
+import type { BackendEvent, ResearchChoiceId } from "../../shared/events";
 import type { ChatAttachment, NodeGraph } from "../../shared/types";
 
 const SIDECAR_URL = "http://127.0.0.1:8765";
@@ -15,6 +15,23 @@ export type SubmitMessagePayload = {
   hasRunHistory?: boolean;
   artifactRefs?: string[];
   pendingChoice?: Record<string, unknown>;
+};
+
+export type ResearchChoiceSubmitActionPayload = Omit<
+  SubmitMessagePayload,
+  "inquiryChoice"
+>;
+
+export type TemporaryScriptPermissionDecision = "approve" | "reject";
+
+export type TemporaryScriptPermissionPayload = {
+  type: "temporary_script.permission";
+  taskId: string;
+  nodeId: string;
+  decision: TemporaryScriptPermissionDecision;
+  approvalFingerprint?: string | null;
+  reason?: string;
+  currentGraph?: NodeGraph;
 };
 
 export type RunNodeGraphPayload = {
@@ -41,6 +58,36 @@ export async function submitUserMessage(
   }
 
   return submitViaHttpSidecar(payload);
+}
+
+export function createResearchQuickAnswerPayload(
+  payload: ResearchChoiceSubmitActionPayload,
+): SubmitMessagePayload {
+  return createResearchChoicePayload(payload, "quick_answer");
+}
+
+export function createResearchFlowPayload(
+  payload: ResearchChoiceSubmitActionPayload,
+): SubmitMessagePayload {
+  return createResearchChoicePayload(payload, "research_flow");
+}
+
+export function createTemporaryScriptPermissionPayload(
+  payload: Omit<TemporaryScriptPermissionPayload, "type">,
+): TemporaryScriptPermissionPayload {
+  return {
+    type: "temporary_script.permission",
+    taskId: payload.taskId,
+    nodeId: payload.nodeId,
+    decision: payload.decision,
+    ...(payload.approvalFingerprint !== undefined
+      ? { approvalFingerprint: payload.approvalFingerprint }
+      : {}),
+    ...(payload.reason !== undefined ? { reason: payload.reason } : {}),
+    ...(payload.currentGraph !== undefined
+      ? { currentGraph: payload.currentGraph }
+      : {}),
+  };
 }
 
 export async function submitUserMessageStream(
@@ -142,6 +189,16 @@ export function createSseEventParser(onEvent: (event: BackendEvent) => void) {
 
 function isTauriRuntime(): boolean {
   return "__TAURI_INTERNALS__" in globalThis;
+}
+
+function createResearchChoicePayload(
+  payload: ResearchChoiceSubmitActionPayload,
+  inquiryChoice: ResearchChoiceId,
+): SubmitMessagePayload {
+  return {
+    ...payload,
+    inquiryChoice,
+  };
 }
 
 async function submitViaHttpSidecar(

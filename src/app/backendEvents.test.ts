@@ -533,6 +533,44 @@ describe("reduceBackendEvents", () => {
     expect(result.dirty).toBe(true);
   });
 
+  it("marks nodes that need permission and adds an actionable chat message", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: graphWithNode,
+        dirty: false,
+      },
+      [
+        {
+          type: "node.needs_permission",
+          payload: {
+            nodeId: "document-parse",
+            permissions: ["read_project_files", "network_access"],
+            scriptReview: {
+              status: "reviewing",
+              summary: "Script needs project file and network access.",
+              permissions: ["read_project_files", "network_access"],
+              riskLevel: "high",
+              requiresApproval: true,
+            },
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.graph?.nodes[0].status).toBe("needs_permission");
+    expect(result.graph?.nodes[0].scriptReview).toMatchObject({
+      status: "reviewing",
+      riskLevel: "high",
+      requiresApproval: true,
+    });
+    expect(result.messages[0].content).toContain("document-parse");
+    expect(result.messages[0].content).toContain("read_project_files");
+    expect(result.messages[0].content).toContain("network_access");
+    expect(result.dirty).toBe(true);
+  });
+
   it("stores runtime notices on matching nodes", () => {
     const result = reduceBackendEvents(
       {
@@ -562,6 +600,52 @@ describe("reduceBackendEvents", () => {
       actualDurationMs: 1200,
     });
     expect(result.dirty).toBe(true);
+  });
+
+  it("records runtime notices in matching run history entries", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: graphWithNode,
+        dirty: false,
+        activeRunId: "run-1",
+        runHistory: [
+          {
+            runId: "run-1",
+            startedAt: "2026-05-10T00:00:00.000Z",
+            status: "completed",
+            summary: "Run completed.",
+            nodeRunIds: [],
+            artifactRefs: [],
+          },
+        ],
+      },
+      [
+        {
+          type: "node.runtime_notice",
+          payload: {
+            nodeId: "document-parse",
+            notice: {
+              kind: "duration_exceeded",
+              message: "Node exceeded estimated duration.",
+              actualDurationMs: 1200,
+            },
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.runHistory?.[0].runtimeNotices).toEqual([
+      {
+        nodeId: "document-parse",
+        notice: {
+          kind: "duration_exceeded",
+          message: "Node exceeded estimated duration.",
+          actualDurationMs: 1200,
+        },
+      },
+    ]);
   });
 
   it("adds research completion artifact and chat summary", () => {
@@ -781,5 +865,29 @@ describe("reduceBackendEvents", () => {
 
     expect(result.runHistory?.[0].runId).toBe("run-1");
     expect(result.runHistory?.[0].status).toBe("completed");
+  });
+
+  it("adds a fallback explanation when a replanned graph has no summary", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph,
+        dirty: false,
+      },
+      [
+        {
+          type: "graph.replanned",
+          payload: {
+            graph: replannedGraph,
+            previousGraphId: graph.graphId,
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.graph).toBe(replannedGraph);
+    expect(result.messages[0].content).toContain(graph.graphId);
+    expect(result.messages[0].content).toContain(replannedGraph.graphId);
   });
 });

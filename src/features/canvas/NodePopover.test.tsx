@@ -147,4 +147,90 @@ describe("NodePopover", () => {
     expect(markup).toContain("Parallel web search");
     expect(markup).toContain("nodePopoverAction");
   });
+
+  it("marks planning nodes as non-executable and shows estimates plus runtime notices", () => {
+    const markup = renderToStaticMarkup(
+      <NodePopover
+        node={{
+          ...toolNode,
+          nodeId: "plan",
+          nodeType: "planning",
+          displayName: "Plan research route",
+          status: "completed",
+          summary: "Decision: answer with a research flow.",
+          estimate: {
+            durationMs: 3000,
+            cpu: "low",
+            memory: "128MB",
+          },
+          runtimeNotice: {
+            kind: "duration_exceeded",
+            message: "Planning took longer than expected.",
+            actualDurationMs: 4200,
+          },
+        }}
+        onClose={() => undefined}
+        onRunFromNode={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Decision: answer with a research flow.");
+    expect(markup).toContain("不可执行");
+    expect(markup).not.toContain("nodePopoverAction");
+    expect(markup).toContain("3s");
+    expect(markup).toContain("128MB");
+    expect(markup).toContain("Planning took longer than expected.");
+  });
+
+  it("renders temporary script risk, approval, preview, contracts, and usage", () => {
+    const markup = renderToStaticMarkup(
+      <NodePopover
+        node={{
+          ...toolNode,
+          nodeId: "temporary-script",
+          nodeType: "temporary_script",
+          displayName: "Temporary script",
+          status: "needs_permission",
+          summary: "Inspect CSV rows with generated code.",
+          scriptReview: {
+            status: "approved",
+            summary: "Needs read-only access to project CSV files.",
+            permissions: ["read_project_files"],
+            riskLevel: "high",
+            requiresApproval: true,
+            approvalFingerprint: "sha256:abc123",
+            codePreview: "import pandas as pd\nprint(pd.read_csv(path).head())",
+            inputContract: { path: "string" },
+            outputContract: { previewRows: "array" },
+          },
+          estimate: {
+            durationMs: 8000,
+            memory: "512MB",
+          },
+          resourceUsage: {
+            durationMs: 9100,
+            memory: "640MB",
+            network: "none",
+          },
+          runtimeNotice: {
+            kind: "memory_exceeded",
+            message: "Memory usage exceeded estimate.",
+            actualDurationMs: 9100,
+          },
+        }}
+        onClose={() => undefined}
+        onRunFromNode={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("风险: high");
+    expect(markup).toContain("审批: approved");
+    expect(markup).toContain("sha256:abc123");
+    expect(markup).toContain("import pandas as pd");
+    expect(markup).toContain("&quot;path&quot;: &quot;string&quot;");
+    expect(markup).toContain("&quot;previewRows&quot;: &quot;array&quot;");
+    expect(markup).toContain("8s");
+    expect(markup).toContain("640MB");
+    expect(markup).toContain("Memory usage exceeded estimate.");
+  });
 });
