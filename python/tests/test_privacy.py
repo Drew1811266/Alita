@@ -278,6 +278,20 @@ def test_redacts_local_prefix_tail_before_compare_query() -> None:
     assert result.blocked is False
 
 
+def test_redacts_local_prefix_and_tail_noun_before_compare_query() -> None:
+    local_path = r"C:\Users\Drew\secret client data"
+
+    result = sanitize_for_web_search(f"Search {local_path} compare alternatives")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] compare alternatives"
+    assert local_path not in result.sanitizedText
+    assert "client" not in result.sanitizedText
+    assert "data" not in result.sanitizedText
+    assert "compare alternatives" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_redacts_local_prefix_tail_before_install_query() -> None:
     local_path = r"C:\Users\Drew\secret archive"
 
@@ -396,6 +410,32 @@ def test_redacts_multiword_model_directory_before_preposition() -> None:
     assert "very" not in result.sanitizedText
     assert "secret" not in result.sanitizedText
     assert "model" not in result.sanitizedText
+    assert result.removedCategories == ["MODEL_PATH"]
+    assert result.blocked is False
+
+
+def test_redacts_custom_model_checkpoint_before_latest_usage_query() -> None:
+    model_path = r"C:\models\custom checkpoint"
+
+    result = sanitize_for_web_search(f"Search {model_path} latest official usage")
+
+    assert result.sanitizedText == "Search [MODEL_PATH] latest official usage"
+    assert model_path not in result.sanitizedText
+    assert "checkpoint" not in result.sanitizedText
+    assert "latest official usage" in result.sanitizedText
+    assert result.removedCategories == ["MODEL_PATH"]
+    assert result.blocked is False
+
+
+def test_redacts_titlecase_custom_model_checkpoint_before_latest_usage_query() -> None:
+    model_path = r"C:\models\Custom Checkpoint"
+
+    result = sanitize_for_web_search(f"Search {model_path} latest official usage")
+
+    assert result.sanitizedText == "Search [MODEL_PATH] latest official usage"
+    assert model_path not in result.sanitizedText
+    assert "Checkpoint" not in result.sanitizedText
+    assert "latest official usage" in result.sanitizedText
     assert result.removedCategories == ["MODEL_PATH"]
     assert result.blocked is False
 

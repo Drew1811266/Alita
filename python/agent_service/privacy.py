@@ -76,6 +76,9 @@ _PATH_BOUNDARY_PREPOSITIONS = {
 _LOCAL_TAIL_NOUNS = {
     "archive",
     "cache",
+    "checkpoint",
+    "data",
+    "dataset",
     "directory",
     "file",
     "files",
@@ -88,7 +91,12 @@ _LOCAL_TAIL_NOUNS = {
     "workspace",
 }
 _LOCAL_TAIL_PREFIXES = {
+    "client",
+    "confidential",
+    "custom",
     "draft",
+    "hidden",
+    "internal",
     "local",
     "my",
     "new",
@@ -302,7 +310,7 @@ def _local_prefix_tail_end(
         return None
 
     consumed: list[tuple[str, int]] = []
-    for word, end in tokens:
+    for word, end in tokens[:3]:
         normalized = word.lower()
         if normalized in _LOCAL_TAIL_PREFIXES:
             consumed.append((word, end))
