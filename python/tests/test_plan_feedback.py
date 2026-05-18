@@ -172,6 +172,67 @@ def test_local_modification_preserves_unaffected_nodes_and_marks_downstream() ->
     assert updated.graphId == graph.graphId
 
 
+def test_local_modification_resets_affected_and_downstream_completed_state() -> None:
+    payload = _graph().model_dump()
+    for node in payload["nodes"]:
+        if node["nodeId"] in {"extract-data", "summarize-data", "write-output"}:
+            node["status"] = "completed"
+            node["artifactRefs"] = [f"artifact-{node['nodeId']}"]
+            node["resourceUsage"] = {"cpu": "high"}
+            node["runtimeNotice"] = {
+                "kind": "completed",
+                "message": "Previous run completed.",
+            }
+            node["lastRun"] = {
+                "runId": f"run-{node['nodeId']}",
+                "completedAt": "2026-05-19T00:00:00Z",
+            }
+    graph = RunGraph.model_validate(payload)
+
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Change the Extract Data node to read JSON files."),
+        graph,
+    )
+
+    updated_nodes = {node["nodeId"]: node for node in event.payload["graph"]["nodes"]}
+    for node_id in ["extract-data", "summarize-data", "write-output"]:
+        node = updated_nodes[node_id]
+        assert node["status"] == "waiting"
+        assert node["artifactRefs"] == []
+        assert node.get("resourceUsage") is None
+        assert node.get("runtimeNotice") is None
+        assert node.get("lastRun") is None
+
+
+def test_local_modification_preserves_unaffected_node_last_run() -> None:
+    payload = _graph().model_dump()
+    payload["nodes"].append(
+        _node(
+            "independent-output",
+            "Independent Output",
+            "Keep independent output.",
+            node_type="output",
+            status="completed",
+        )
+    )
+    payload["nodes"][-1]["lastRun"] = {
+        "runId": "run-independent",
+        "completedAt": "2026-05-19T00:00:00Z",
+    }
+    graph = RunGraph.model_validate(payload)
+
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Change the Extract Data node to read JSON files."),
+        graph,
+    )
+
+    updated_nodes = {node["nodeId"]: node for node in event.payload["graph"]["nodes"]}
+    assert updated_nodes["independent-output"]["lastRun"] == {
+        "runId": "run-independent",
+        "completedAt": "2026-05-19T00:00:00Z",
+    }
+
+
 def test_constraint_update_regenerates_planning_and_replaces_changed_shape() -> None:
     graph = _graph()
 
@@ -183,7 +244,9 @@ def test_constraint_update_regenerates_planning_and_replaces_changed_shape() -> 
     assert event.type == "graph.replanned"
     updated = RunGraph.model_validate(event.payload["graph"])
     nodes = {node.nodeId: node for node in updated.nodes}
-    assert "Prior constraint: Use a concise style and keep extraction before summary." in nodes["task-analysis"].summary
+    assert nodes["task-analysis"].summary.count(
+        "Use a concise style and keep extraction before summary."
+    ) == 1
     assert "tool-selection" in nodes
     assert "execution-order-planning" in nodes
     assert [node.nodeId for node in updated.nodes] != [node.nodeId for node in graph.nodes]
@@ -280,6 +343,7 @@ def test_graph_with_run_history_asks_before_overwrite() -> None:
     assert event.type == "graph.overwrite_confirmation_required"
     assert event.payload["previousGraphId"] == "graph-1"
     assert event.payload["pendingChoice"]["kind"] == "full_replan"
+    assert event.payload["pendingChoice"]["previousGraphId"] == "graph-1"
     assert [choice["id"] for choice in event.payload["choices"]] == ["confirm_overwrite", "cancel"]
 
 
@@ -294,6 +358,8 @@ def test_local_modification_with_run_history_asks_before_overwrite() -> None:
 
     assert event.type == "graph.overwrite_confirmation_required"
     assert event.payload["pendingChoice"]["kind"] == "local_modification"
+    assert event.payload["pendingChoice"]["previousGraphId"] == graph.graphId
+    assert event.payload["pendingChoice"]["nodeId"] == "extract-data"
 
 
 def test_constraint_update_with_artifacts_asks_before_overwrite() -> None:
@@ -347,6 +413,34 @@ def test_confirmed_overwrite_uses_original_pending_feedback() -> None:
     assert updated.graphId != graph.graphId
 
 
+def test_confirmed_local_overwrite_uses_pending_node_id() -> None:
+    graph = _graph()
+    confirmation = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Change the Extract Data node to read JSON files."),
+        graph,
+        has_run_history=True,
+    )
+    assert confirmation.type == "graph.overwrite_confirmation_required"
+
+    confirmed_choice = {
+        **confirmation.payload["pendingChoice"],
+        "id": "confirm_overwrite",
+    }
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="yes"),
+        graph,
+        has_run_history=True,
+        pending_choice=confirmed_choice,
+    )
+
+    assert event.type == "graph.replanned"
+    updated = RunGraph.model_validate(event.payload["graph"])
+    nodes = {node.nodeId: node for node in updated.nodes}
+    assert updated.graphId == graph.graphId
+    assert "read JSON files" in nodes["extract-data"].summary
+    assert "read JSON files" not in nodes["summarize-data"].summary
+
+
 def test_confirmed_new_task_overwrite_emits_graph_replanned() -> None:
     graph = _graph()
     confirmation = apply_graph_feedback(
@@ -396,6 +490,31 @@ def test_cancelled_overwrite_returns_message_without_replacing_graph() -> None:
     assert "kept unchanged" in event.payload["message"]["content"]
 
 
+def test_stale_overwrite_confirmation_does_not_apply_to_different_graph() -> None:
+    graph = _graph()
+    confirmation = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Restart, the direction is wrong."),
+        graph,
+        has_run_history=True,
+    )
+    other_graph = _graph()
+    other_graph.graphId = "graph-2"
+    stale_choice = {
+        **confirmation.payload["pendingChoice"],
+        "id": "confirm_overwrite",
+    }
+
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="yes"),
+        other_graph,
+        has_run_history=True,
+        pending_choice=stale_choice,
+    )
+
+    assert event.type == "message.created"
+    assert "stale" in event.payload["message"]["content"].lower()
+
+
 def test_full_replan_preserves_prior_constraints_in_metadata_and_planning_summary() -> None:
     graph = _graph_with_constraints()
 
@@ -428,7 +547,19 @@ def test_full_replan_uses_prior_constraints_as_planning_input() -> None:
 
 
 def test_changed_high_risk_script_requires_reapproval() -> None:
-    graph = _script_graph()
+    payload = _script_graph().model_dump()
+    payload["nodes"][1]["status"] = "completed"
+    payload["nodes"][1]["artifactRefs"] = ["artifact-script"]
+    payload["nodes"][1]["resourceUsage"] = {"cpu": "high"}
+    payload["nodes"][1]["runtimeNotice"] = {
+        "kind": "completed",
+        "message": "Previous run completed.",
+    }
+    payload["nodes"][1]["lastRun"] = {
+        "runId": "run-script",
+        "completedAt": "2026-05-19T00:00:00Z",
+    }
+    graph = RunGraph.model_validate(payload)
 
     event = apply_graph_feedback(
         UserMessage(
@@ -440,6 +571,11 @@ def test_changed_high_risk_script_requires_reapproval() -> None:
 
     updated = RunGraph.model_validate(event.payload["graph"])
     script_node = next(node for node in updated.nodes if node.nodeId == "cleanup-script")
+    assert script_node.status == "needs_permission"
+    assert script_node.artifactRefs == []
+    assert script_node.resourceUsage is None
+    assert script_node.runtimeNotice is None
+    assert script_node.lastRun is None
     assert script_node.scriptReview == ScriptReviewState(
         status="not_reviewed",
         summary="Approved destructive cleanup script.",

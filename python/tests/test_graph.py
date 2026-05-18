@@ -53,6 +53,24 @@ class FakeSearchProvider:
         return self.response
 
 
+def _existing_graph() -> RunGraph:
+    return RunGraph(
+        graphId="existing-graph",
+        nodes=[
+            {
+                "nodeId": "task-analysis",
+                "nodeType": "planning",
+                "displayName": "Task Analysis",
+                "status": "completed",
+                "summary": "Existing plan.",
+                "createdBy": "agent",
+                "position": {"x": 0, "y": 0},
+            }
+        ],
+        edges=[],
+    )
+
+
 def test_plain_chat_returns_local_model_message() -> None:
     client = FakeModelClient("你好，我是本地模型。")
 
@@ -74,6 +92,20 @@ def test_plain_chat_returns_local_model_message() -> None:
         role="user",
         content="你好，请介绍一下你自己",
     )
+
+
+def test_plain_chat_after_graph_exists_uses_chat_router() -> None:
+    client = FakeModelClient("chat answer")
+
+    events = run_agent(
+        UserMessage(task_id="task-chat", content="hello"),
+        model_client=client,
+        current_graph=_existing_graph(),
+    )
+
+    assert [event.type for event in events] == ["message.created"]
+    assert events[0].payload["message"]["content"] == "chat answer"
+    assert client.calls
 
 
 def test_plain_chat_streams_local_model_message_deltas() -> None:
@@ -169,6 +201,30 @@ def test_web_simple_route_auto_searches_and_returns_sources_without_graph() -> N
     assert events[0].payload["sources"][0]["ref"] == "[1]"
     assert events[0].payload["sources"][0]["accepted"] is True
     assert events[0].payload["rejectedSources"][0]["rejectionReason"] == "content_farm"
+
+
+def test_web_simple_inquiry_after_graph_exists_uses_inquiry_router() -> None:
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Python docs",
+                    url="https://docs.python.org/3/",
+                    snippet="Latest Python release.",
+                )
+            ]
+        )
+    )
+
+    events = run_agent(
+        UserMessage(task_id="simple-web", content="What is the latest Python release?"),
+        search_provider=provider,
+        current_graph=_existing_graph(),
+    )
+
+    assert provider.queries == ["What is the latest Python release?"]
+    assert [event.type for event in events] == ["message.created"]
+    assert events[0].payload["sources"][0]["url"] == "https://docs.python.org/3/"
 
 
 def test_web_complex_default_returns_research_choice_required() -> None:

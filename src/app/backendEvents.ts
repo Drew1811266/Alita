@@ -208,6 +208,7 @@ export function reduceBackendEvents(
           ...current.messages,
           createAssistantMessage(formatGraphOverwritePrompt(event.payload)),
         ],
+        pendingResearchChoice: null,
         pendingGraphOverwriteChoice: event.payload,
         dirty: true,
       };

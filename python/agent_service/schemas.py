@@ -105,6 +105,7 @@ class GraphNode(BaseModel):
     estimate: NodeEstimate | None = None
     resourceUsage: dict[str, Any] | None = None
     runtimeNotice: RuntimeNotice | None = None
+    lastRun: dict[str, Any] | None = None
     position: dict[str, float]
 
 

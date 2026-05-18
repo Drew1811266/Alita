@@ -19,7 +19,11 @@ from agent_service.model_client import (
     ModelRuntimeDisabled,
     ModelRuntimeRequestFailed,
 )
-from agent_service.plan_feedback import apply_graph_feedback
+from agent_service.plan_feedback import (
+    GraphFeedbackKind,
+    apply_graph_feedback,
+    classify_graph_feedback,
+)
 from agent_service.schemas import AgentEvent, RunGraph, UserMessage
 from agent_service.task_planner import (
     analyze_task,
@@ -293,7 +297,11 @@ def run_agent(
     artifact_refs: list[str] | None = None,
     pending_choice: dict | None = None,
 ) -> list[AgentEvent]:
-    if current_graph is not None:
+    if _should_handle_graph_feedback(
+        message,
+        current_graph,
+        pending_choice=pending_choice,
+    ):
         return [
             apply_graph_feedback(
                 message,
@@ -326,7 +334,11 @@ def stream_agent_events(
     artifact_refs: list[str] | None = None,
     pending_choice: dict | None = None,
 ) -> Iterator[AgentEvent]:
-    if current_graph is not None:
+    if _should_handle_graph_feedback(
+        message,
+        current_graph,
+        pending_choice=pending_choice,
+    ):
         yield apply_graph_feedback(
             message,
             current_graph,
@@ -386,6 +398,20 @@ def stream_agent_events(
         type="message.completed",
         payload={"messageId": message_id},
     )
+
+
+def _should_handle_graph_feedback(
+    message: UserMessage,
+    current_graph: RunGraph | None,
+    *,
+    pending_choice: dict | None,
+) -> bool:
+    if current_graph is None:
+        return False
+    if pending_choice is not None:
+        return True
+    decision = classify_graph_feedback(message.content, current_graph)
+    return decision.kind != GraphFeedbackKind.NEW_TASK
 
 
 def _route_intent(state: AgentState) -> AgentIntent:

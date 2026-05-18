@@ -393,6 +393,8 @@ describe("reduceBackendEvents", () => {
               id: "pending-graph-overwrite",
               kind: "local_modification",
               message: "Change Extract Data",
+              previousGraphId: graph.graphId,
+              nodeId: "extract-data",
             },
             choices: [
               {
@@ -416,6 +418,8 @@ describe("reduceBackendEvents", () => {
         id: "pending-graph-overwrite",
         kind: "local_modification",
         message: "Change Extract Data",
+        previousGraphId: graph.graphId,
+        nodeId: "extract-data",
       },
       choices: [
         {
@@ -429,6 +433,7 @@ describe("reduceBackendEvents", () => {
     expect(result.messages[1].content).toContain(
       "This change will replace the current graph.",
     );
+    expect(result.pendingResearchChoice).toBeNull();
     expect(result.dirty).toBe(true);
   });
 
