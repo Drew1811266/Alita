@@ -410,8 +410,36 @@ def _should_handle_graph_feedback(
         return False
     if pending_choice is not None:
         return True
-    decision = classify_graph_feedback(message.content, current_graph)
-    return decision.kind != GraphFeedbackKind.NEW_TASK
+
+    route_decision = classify_route(message)
+    feedback_decision = classify_graph_feedback(message.content, current_graph)
+    if feedback_decision.kind == GraphFeedbackKind.NEW_TASK:
+        return False
+    if feedback_decision.kind in {
+        GraphFeedbackKind.LOCAL_MODIFICATION,
+        GraphFeedbackKind.FULL_REPLAN,
+    }:
+        return True
+    if route_decision.intent.kind == IntentKind.INQUIRY:
+        return False
+    if route_decision.intent.kind == IntentKind.CHAT:
+        return _is_explicit_graph_constraint_feedback(message.content)
+    return True
+
+
+def _is_explicit_graph_constraint_feedback(content: str) -> bool:
+    normalized = content.lower()
+    return "constraint" in normalized or any(
+        phrase in normalized
+        for phrase in (
+            "for this graph",
+            "for the graph",
+            "current graph",
+            "this plan",
+            "the plan",
+            "workflow",
+        )
+    )
 
 
 def _route_intent(state: AgentState) -> AgentIntent:

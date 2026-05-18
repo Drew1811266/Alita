@@ -227,6 +227,68 @@ def test_web_simple_inquiry_after_graph_exists_uses_inquiry_router() -> None:
     assert events[0].payload["sources"][0]["url"] == "https://docs.python.org/3/"
 
 
+def test_sources_question_after_graph_exists_uses_web_inquiry_router() -> None:
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Python release notes",
+                    url="https://docs.python.org/3/",
+                    snippet="Latest Python release details.",
+                )
+            ]
+        )
+    )
+
+    events = run_agent(
+        UserMessage(
+            task_id="simple-web",
+            content="What sources discuss the latest Python release?",
+        ),
+        search_provider=provider,
+        current_graph=_existing_graph(),
+    )
+
+    assert provider.queries == ["What sources discuss the latest Python release?"]
+    assert [event.type for event in events] == ["message.created"]
+    assert events[0].payload["sources"][0]["url"] == "https://docs.python.org/3/"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "What is the order of operations in Python?",
+        "What style guide does Python use?",
+    ],
+)
+def test_local_questions_with_constraint_words_after_graph_exists_use_inquiry_router(
+    content: str,
+) -> None:
+    client = FakeModelClient("local inquiry answer")
+
+    events = run_agent(
+        UserMessage(task_id="task-chat", content=content),
+        model_client=client,
+        current_graph=_existing_graph(),
+    )
+
+    assert [event.type for event in events] == ["message.created"]
+    assert events[0].payload["message"]["content"] == "local inquiry answer"
+    assert client.calls
+
+
+def test_explicit_graph_constraint_after_graph_exists_routes_to_feedback() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="task-1",
+            content="Use only CSV sources for this graph.",
+        ),
+        current_graph=_existing_graph(),
+    )
+
+    assert [event.type for event in events] == ["graph.replanned"]
+
+
 def test_web_complex_default_returns_research_choice_required() -> None:
     events = run_agent(
         UserMessage(
