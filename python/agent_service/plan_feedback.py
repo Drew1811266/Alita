@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 import re
 from typing import Any
@@ -99,6 +100,9 @@ def apply_graph_feedback(
     pending_choice: dict[str, Any] | None = None,
     model_feedback_hook: ModelFeedbackHook | None = None,
 ) -> AgentEvent:
+    if _is_cancelled_pending_choice(pending_choice):
+        return _overwrite_cancelled_event()
+
     effective_message = _message_for_pending_choice(message, pending_choice)
     decision = _decision_for_pending_choice(pending_choice, effective_message, current_graph)
     if decision is None:
@@ -177,6 +181,26 @@ def _decision_for_pending_choice(
 
 def _is_confirmed_pending_choice(pending_choice: dict[str, Any] | None) -> bool:
     return bool(pending_choice and pending_choice.get("id") == "confirm_overwrite")
+
+
+def _is_cancelled_pending_choice(pending_choice: dict[str, Any] | None) -> bool:
+    return bool(pending_choice and pending_choice.get("id") == "cancel")
+
+
+def _overwrite_cancelled_event() -> AgentEvent:
+    created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return AgentEvent(
+        type="message.created",
+        payload={
+            "message": {
+                "messageId": f"assistant-{uuid4()}",
+                "role": "assistant",
+                "content": "Graph overwrite cancelled; the current graph was kept unchanged.",
+                "attachments": [],
+                "createdAt": created_at,
+            }
+        },
+    )
 
 
 def _mentioned_node_ids(normalized_message: str, graph: RunGraph) -> list[str]:
@@ -281,6 +305,22 @@ def _apply_local_modification(message: str, graph: RunGraph, node_id: str) -> Ru
 
 
 def _apply_constraint_update(message: UserMessage, graph: RunGraph) -> RunGraph:
+    graph_with_constraints = graph.model_copy(deep=True)
+    graph_with_constraints.metadata = {
+        **graph_with_constraints.metadata,
+        "constraints": [
+            *graph_with_constraints.metadata.get("constraints", []),
+            message.content,
+        ],
+    }
+    regenerated = _build_replanned_graph(message, graph_with_constraints)
+    if _regenerated_plan_changes_executable_shape(graph, regenerated):
+        regenerated.metadata = {
+            **regenerated.metadata,
+            "feedbackRegeneratedPlanningNodeIds": _planning_node_ids(regenerated),
+        }
+        return regenerated
+
     updated = graph.model_copy(deep=True)
     target = next((node for node in updated.nodes if node.nodeId == "task-analysis"), None)
     if target is None:
@@ -307,10 +347,38 @@ def _apply_constraint_update(message: UserMessage, graph: RunGraph) -> RunGraph:
 
     updated.metadata = {
         **updated.metadata,
-        "constraints": [*updated.metadata.get("constraints", []), message.content],
+        "constraints": graph_with_constraints.metadata["constraints"],
         "feedbackRegeneratedPlanningNodeIds": sorted(regenerated_node_ids),
     }
     return updated
+
+
+def _regenerated_plan_changes_executable_shape(
+    current_graph: RunGraph,
+    regenerated_graph: RunGraph,
+) -> bool:
+    current_node_ids = {node.nodeId for node in current_graph.nodes}
+    regenerated_capability_summary = _node_summary(regenerated_graph, "capability-analysis")
+    regenerated_tool_summary = _node_summary(regenerated_graph, "tool-selection")
+    current_text = " ".join(node.summary for node in current_graph.nodes)
+    regenerated_text = f"{regenerated_capability_summary} {regenerated_tool_summary}"
+
+    if "network.fetch" in regenerated_text and "network.fetch" not in current_text:
+        return True
+
+    return any(
+        node.nodeType == "temporary_placeholder" and node.nodeId not in current_node_ids
+        for node in regenerated_graph.nodes
+    )
+
+
+def _node_summary(graph: RunGraph, node_id: str) -> str:
+    node = next((candidate for candidate in graph.nodes if candidate.nodeId == node_id), None)
+    return node.summary if node is not None else ""
+
+
+def _planning_node_ids(graph: RunGraph) -> list[str]:
+    return sorted(node.nodeId for node in graph.nodes if node.nodeType == "planning")
 
 
 def _build_replanned_graph(message: UserMessage, previous_graph: RunGraph) -> RunGraph:

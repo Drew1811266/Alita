@@ -199,6 +199,26 @@ def test_constraint_update_regenerates_selection_planning_and_preserves_executio
     ]
 
 
+def test_constraint_update_reruns_planner_and_can_change_graph_shape() -> None:
+    graph = _graph()
+
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Constraint: Download the source data from the network."),
+        graph,
+    )
+
+    assert event.type == "graph.replanned"
+    updated = RunGraph.model_validate(event.payload["graph"])
+    nodes = {node.nodeId: node for node in updated.nodes}
+    assert "network.fetch" in nodes["capability-analysis"].summary
+    assert "network.fetch" in nodes["tool-selection"].summary
+    assert any("network.fetch" in node.summary for node in updated.nodes)
+    assert [node.nodeId for node in updated.nodes] != [node.nodeId for node in graph.nodes]
+    assert updated.metadata["constraints"] == [
+        "Constraint: Download the source data from the network."
+    ]
+
+
 def test_full_replan_replaces_graph() -> None:
     graph = _graph()
 
@@ -292,6 +312,30 @@ def test_confirmed_overwrite_uses_original_pending_feedback() -> None:
     assert event.type == "graph.replanned"
     updated = RunGraph.model_validate(event.payload["graph"])
     assert updated.graphId != graph.graphId
+
+
+def test_cancelled_overwrite_returns_message_without_replacing_graph() -> None:
+    graph = _graph()
+    confirmation = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Restart, the direction is wrong."),
+        graph,
+        has_run_history=True,
+    )
+    assert confirmation.type == "graph.overwrite_confirmation_required"
+
+    cancelled_choice = {
+        **confirmation.payload["pendingChoice"],
+        "id": "cancel",
+    }
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="no"),
+        graph,
+        has_run_history=True,
+        pending_choice=cancelled_choice,
+    )
+
+    assert event.type == "message.created"
+    assert "kept unchanged" in event.payload["message"]["content"]
 
 
 def test_full_replan_preserves_prior_constraints_in_metadata_and_planning_summary() -> None:
