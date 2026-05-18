@@ -57,6 +57,37 @@ def test_analyze_task_detects_document_conversion_requirements() -> None:
     ]
 
 
+def test_mixed_network_csv_task_is_unsupported_not_low_risk_script() -> None:
+    task_plan = analyze_task("Download a CSV from the network and count rows.", [])
+    task_plan.tool_gaps = resolve_tool_gaps(task_plan.requirements, selected_tools=[])
+
+    assert task_plan.kind == TaskKind.UNSUPPORTED
+    assert [requirement.capability for requirement in task_plan.requirements] == [
+        "network.fetch"
+    ]
+    assert task_plan.tool_gaps[0].temporary_script is None
+    assert task_plan.tool_gaps[0].user_message is not None
+
+
+def test_shell_process_credential_and_broad_filesystem_tasks_are_unsupported() -> None:
+    cases = [
+        ("Run a shell command to count rows in a CSV.", "shell.execute"),
+        ("Kill the stuck process after inspecting the log.", "process.control"),
+        ("Use my password to open the local CSV.", "credential.handle"),
+        ("Scan my whole filesystem and summarize every CSV.", "filesystem.broad_access"),
+    ]
+
+    for prompt, capability in cases:
+        task_plan = analyze_task(prompt, [])
+        task_plan.tool_gaps = resolve_tool_gaps(task_plan.requirements, selected_tools=[])
+
+        assert task_plan.kind == TaskKind.UNSUPPORTED
+        assert [requirement.capability for requirement in task_plan.requirements] == [
+            capability
+        ]
+        assert task_plan.tool_gaps[0].temporary_script is None
+
+
 def test_builtin_tool_selection_prefers_enabled_integrated_tools() -> None:
     registry = ToolRegistry.from_packages_root(TOOL_PACKAGES_ROOT)
     requirements = [
@@ -208,6 +239,45 @@ def test_document_task_graph_preserves_workflow_with_planner_nodes_and_estimates
     executable_nodes = [
         node
         for node in document_nodes
+        if node["nodeType"] in {"fixed_tool", "model", "temporary_script"}
+    ]
+    document_input = next(
+        node for node in graph["nodes"] if node["nodeId"] == "document-input"
+    )
+    assert executable_nodes
+    assert all(node.get("estimate") for node in executable_nodes)
+    assert all(node.get("resourceUsage") for node in executable_nodes)
+    assert document_input["dependencies"] == ["execution-order-planning"]
+    assert {
+        (edge["source"], edge["target"]) for edge in graph["edges"]
+    } >= {("execution-order-planning", "document-input")}
+
+
+def test_markdown_document_conversion_graph_only_parses_and_outputs() -> None:
+    task_plan = analyze_task("Please convert this document to Markdown.", [_docx_attachment()])
+    task_plan.task_id = "doc-markdown"
+
+    graph = build_task_graph(task_plan)
+
+    assert [node["nodeId"] for node in graph["nodes"]] == [
+        "document-input",
+        "document-parse",
+        "file-export",
+        "task-analysis",
+        "capability-analysis",
+        "tool-selection",
+        "execution-order-planning",
+    ]
+    assert [
+        node["nodeId"] for node in graph["nodes"] if node["nodeType"] == "model"
+    ] == []
+    assert "typst-export" not in {node["nodeId"] for node in graph["nodes"]}
+    assert next(
+        node for node in graph["nodes"] if node["nodeId"] == "document-input"
+    )["dependencies"] == ["execution-order-planning"]
+    executable_nodes = [
+        node
+        for node in graph["nodes"]
         if node["nodeType"] in {"fixed_tool", "model", "temporary_script"}
     ]
     assert executable_nodes

@@ -58,6 +58,16 @@ class ModelClient(Protocol):
         ...
 
 
+DOCUMENT_FLOW_NODE_IDS = {
+    "document-input",
+    "document-parse",
+    "content-organize",
+    "report-generate",
+    "typst-export",
+    "file-export",
+}
+
+
 @dataclass(frozen=True)
 class PartialNodeOutputError(HarnessError):
     output: NodeOutput = field(default_factory=NodeOutput)
@@ -214,6 +224,102 @@ class DocumentFlowExecutor:
         if not safe_stem:
             safe_stem = "attachment"
         return self.artifact_dir / "converted" / f"{index + 1:02d}-{safe_stem}.md"
+
+
+class PlannedTaskExecutor:
+    def __init__(
+        self,
+        request: RunGraphRequest,
+        *,
+        model_client: ModelClient | None = None,
+        tool_executor: ToolExecutor | None = None,
+    ) -> None:
+        self.request = request
+        self.nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
+        self.document_executor = DocumentFlowExecutor(
+            request,
+            model_client=model_client,
+            tool_executor=tool_executor,
+        )
+
+    def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+        node = self.nodes_by_id[node_id]
+
+        if node_id in DOCUMENT_FLOW_NODE_IDS:
+            return self.document_executor.run(node_id, inputs)
+
+        if node.nodeType == "planning":
+            return NodeOutput(
+                values={
+                    "mode": "planned_task",
+                    "nodeType": node.nodeType,
+                    "summary": node.summary,
+                }
+            )
+
+        if node.nodeType == "temporary_script":
+            review = node.scriptReview
+            if node.status == "needs_permission" or (
+                review is not None and review.requiresApproval
+            ):
+                raise HarnessError(
+                    "permission_required",
+                    f"temporary script requires approval before execution: {node_id}",
+                )
+            return NodeOutput(
+                values={
+                    "mode": "planned_task",
+                    "nodeType": node.nodeType,
+                    "summary": node.summary,
+                    "scriptStatus": "preview_only",
+                    "riskLevel": review.riskLevel if review is not None else "low",
+                }
+            )
+
+        if node.nodeType == "model":
+            return NodeOutput(
+                values={
+                    "mode": "planned_task",
+                    "nodeType": node.nodeType,
+                    "summary": node.summary,
+                    "modelRef": node.modelRef or "",
+                    "text": f"Planned model step: {node.summary}",
+                }
+            )
+
+        if node.nodeType == "fixed_tool":
+            return NodeOutput(
+                values={
+                    "mode": "planned_task",
+                    "nodeType": node.nodeType,
+                    "summary": node.summary,
+                    "toolRef": node.toolRef or "",
+                    "text": f"Planned tool step: {node.summary}",
+                }
+            )
+
+        if node.nodeType == "output":
+            return NodeOutput(
+                artifacts=_unique_artifacts_from_inputs(inputs),
+                values={
+                    "mode": "planned_task",
+                    "nodeType": node.nodeType,
+                    "summary": node.summary,
+                    "dependencyValues": {
+                        dependency: output.values
+                        for dependency, output in inputs.items()
+                    },
+                    "text": node.summary,
+                },
+            )
+
+        return NodeOutput(
+            values={
+                "mode": "planned_task",
+                "nodeType": node.nodeType,
+                "summary": node.summary,
+            }
+        )
 
 
 class ResearchFlowExecutor:
@@ -486,6 +592,12 @@ def run_graph_events(
         node_executor = executor
     elif _is_research_graph(request):
         node_executor = ResearchFlowExecutor(request, search_provider=search_provider)
+    elif _is_planned_task_graph(request):
+        node_executor = PlannedTaskExecutor(
+            request,
+            model_client=model_client,
+            tool_executor=tool_executor,
+        )
     else:
         node_executor = DocumentFlowExecutor(
             request,
@@ -808,6 +920,12 @@ def _is_research_graph(request: RunGraphRequest) -> bool:
     return "research-graph" in graph_id or any(
         node.nodeId.startswith("research-") for node in request.graph.nodes
     )
+
+
+def _is_planned_task_graph(request: RunGraphRequest) -> bool:
+    if request.graph.metadata.get("taskKind"):
+        return True
+    return any(node.nodeType == "planning" for node in request.graph.nodes)
 
 
 def _selected_nodes_for_mode(

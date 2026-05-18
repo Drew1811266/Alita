@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agent_service.intent import classify_route
 from agent_service.execution import NodeOutput, run_graph_events
+from agent_service.graph import run_agent
 from agent_service.model_client import ChatMessage
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import RunRegistry
@@ -159,6 +160,43 @@ def test_rejects_graph_with_unknown_tool_ref_before_running_nodes(tmp_path: Path
     assert events[-1].type == "task.failed"
     assert events[-1].payload["errorCode"] == "unsupported_tool"
     assert "missing.tool" in events[-1].payload["error"]
+
+
+def test_run_graph_events_executes_generic_planner_graph_from_run_agent(
+    tmp_path: Path,
+) -> None:
+    graph_event = run_agent(
+        UserMessage(
+            task_id="task-generic-run",
+            content="Can you create a Python script that counts rows in a CSV file?",
+        )
+    )[0]
+    request = RunGraphRequest(
+        task_id="task-generic-run",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[],
+        graph=graph_event.payload["graph"],
+    )
+
+    events = list(run_graph_events(request))
+
+    event_types = [event.type for event in events]
+    running_node_ids = [
+        event.payload["nodeId"] for event in events if event.type == "node.running"
+    ]
+    assert running_node_ids[0] == "task-analysis"
+    assert "node.failed" not in event_types
+    assert "task.failed" not in event_types
+    assert events[-1].type == "task.completed"
+    recorded_task_analysis = [
+        record
+        for record in RunJournal(
+            project_path=request.project_path,
+            run_id=request.run_id,
+        ).read_nodes()
+        if record["nodeId"] == "task-analysis"
+    ][0]
+    assert recorded_task_analysis["values"]["mode"] == "planned_task"
 
 
 def test_research_graph_executes_nodes_and_writes_markdown_report(tmp_path: Path) -> None:

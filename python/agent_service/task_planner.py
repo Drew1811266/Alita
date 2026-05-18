@@ -78,8 +78,17 @@ def analyze_task(
 ) -> TaskPlan:
     normalized = message.lower()
     requirements: list[CapabilityRequirement] = []
+    unsafe_capability = _unsupported_capability(normalized)
 
-    if attachments:
+    if unsafe_capability is not None:
+        kind = TaskKind.UNSUPPORTED
+        requirements.append(
+            CapabilityRequirement(
+                capability=unsafe_capability,
+                description="Perform an operation that needs an unsupported unsafe capability.",
+            )
+        )
+    elif attachments:
         kind = TaskKind.DOCUMENT
         requirements.append(
             CapabilityRequirement(
@@ -89,7 +98,18 @@ def analyze_task(
         )
         if _contains_any(
             normalized,
-            ["convert", "markdown", "md", "pdf", "export", "report", "organize"],
+            [
+                "convert",
+                "markdown",
+                "md",
+                "pdf",
+                "export",
+                "report",
+                "organize",
+                "\u8f6c",
+                "\u62a5\u544a",
+                "\u6574\u7406",
+            ],
         ):
             requirements.append(
                 CapabilityRequirement(
@@ -97,7 +117,10 @@ def analyze_task(
                     description="Convert the attached document to Markdown.",
                 )
             )
-        if _contains_any(normalized, ["pdf", "export", "report", "organize"]):
+        if _contains_any(
+            normalized,
+            ["pdf", "export", "report", "organize", "\u62a5\u544a", "\u6574\u7406"],
+        ):
             requirements.extend(
                 [
                     CapabilityRequirement(
@@ -131,17 +154,6 @@ def analyze_task(
                 description="Modify or delete selected local files.",
                 temporary_script_candidate=True,
                 risk_factors=["destructive_write"],
-            )
-        )
-    elif _contains_any(
-        normalized,
-        ["network", "fetch", "download", "credential", "password", "shell", "process"],
-    ):
-        kind = TaskKind.UNSUPPORTED
-        requirements.append(
-            CapabilityRequirement(
-                capability=_unsupported_capability(normalized),
-                description="Perform an operation that needs an unsupported unsafe capability.",
             )
         )
     else:
@@ -356,6 +368,67 @@ def build_task_graph(task_plan: TaskPlan) -> dict:
 
 
 def _document_task_graph(task_plan: TaskPlan) -> dict:
+    capabilities = {requirement.capability for requirement in task_plan.requirements}
+    needs_markdown = "document.convert.markdown" in capabilities
+    needs_model = "model.reasoning" in capabilities
+    needs_pdf = "document.render.typst_pdf" in capabilities
+
+    if not needs_model and not needs_pdf:
+        document_nodes = [
+            _node(
+                node_id="document-input",
+                node_type="fixed_tool",
+                display_name="Document input",
+                status="completed",
+                input_ports=[],
+                output_ports=[_port("document-output", "Document", "document")],
+                dependencies=["execution-order-planning"],
+                summary="Receive the document attachment provided in chat.",
+                position={"x": 260, "y": 20},
+                tool_ref="document.receive_attachment",
+                estimate=_estimate(250, "low", "low", "none"),
+                resource_usage=_resource_usage("low", "low", "none"),
+            )
+        ]
+        edges = [_edge("execution-order-planning", "document-input")]
+        output_dependencies = ["document-input"]
+        if needs_markdown:
+            document_nodes.append(
+                _node(
+                    node_id="document-parse",
+                    node_type="fixed_tool",
+                    display_name="Document to Markdown",
+                    status="waiting",
+                    input_ports=[_port("document-input", "Document", "document")],
+                    output_ports=[_port("markdown-output", "Markdown", "text")],
+                    dependencies=["document-input"],
+                    summary="Convert the attached local document into Markdown text.",
+                    position={"x": 260, "y": 190},
+                    tool_ref="document.markitdown_convert",
+                    estimate=_estimate(2000, "medium", "low", "none"),
+                    resource_usage=_resource_usage("medium", "low", "none"),
+                )
+            )
+            edges.append(_edge("document-input", "document-parse"))
+            output_dependencies = ["document-parse"]
+        document_nodes.append(
+            _node(
+                node_id="file-export",
+                node_type="output",
+                display_name="Export file",
+                status="waiting",
+                input_ports=[_port("artifact-input", "Markdown file", "artifact")],
+                output_ports=[_port("artifact-output", "Artifact", "artifact")],
+                dependencies=output_dependencies,
+                summary="Return the final document artifacts to the user.",
+                position={"x": 260, "y": 380},
+            )
+        )
+        edges.extend(_edge(dependency, "file-export") for dependency in output_dependencies)
+        planning_nodes = _planning_nodes(task_plan)
+        edges.extend(_sequential_edges([node["nodeId"] for node in planning_nodes]))
+        return _graph_payload(task_plan, [*document_nodes, *planning_nodes], edges)
+
     document_nodes = [
         _node(
             node_id="document-input",
@@ -364,7 +437,7 @@ def _document_task_graph(task_plan: TaskPlan) -> dict:
             status="completed",
             input_ports=[],
             output_ports=[_port("document-output", "Document", "document")],
-            dependencies=[],
+            dependencies=["execution-order-planning"],
             summary="Receive the document attachment provided in chat.",
             position={"x": 260, "y": 20},
             tool_ref="document.receive_attachment",
@@ -447,6 +520,7 @@ def _document_task_graph(task_plan: TaskPlan) -> dict:
     ]
     planning_nodes = _planning_nodes(task_plan)
     edges = [
+        _edge("execution-order-planning", "document-input"),
         _edge("document-input", "document-parse"),
         _edge("document-parse", "content-organize"),
         _edge("document-parse", "report-generate"),
@@ -588,7 +662,7 @@ def _task_summary(kind: TaskKind, message: str) -> str:
     return f"Plan a {kind.value.replace('_', ' ')} task for: {compact_message}"
 
 
-def _unsupported_capability(normalized: str) -> str:
+def _unsupported_capability(normalized: str) -> str | None:
     if _contains_any(normalized, ["network", "fetch", "download"]):
         return "network.fetch"
     if _contains_any(normalized, ["credential", "password"]):
@@ -597,7 +671,12 @@ def _unsupported_capability(normalized: str) -> str:
         return "shell.execute"
     if _contains_any(normalized, ["process"]):
         return "process.control"
-    return "unsupported.operation"
+    if _contains_any(
+        normalized,
+        ["whole filesystem", "entire filesystem", "all files", "every file"],
+    ):
+        return "filesystem.broad_access"
+    return None
 
 
 def _node(

@@ -303,11 +303,17 @@ def test_attachment_generates_node_graph_for_document_task() -> None:
     assert parse_node["displayName"] == "文档转 Markdown"
     assert parse_node["toolRef"] == "document.markitdown_convert"
     assert parse_node["outputPorts"][0]["label"] == "Markdown"
-    assert graph["edges"][0] == {
+    assert graph["nodes"][0]["dependencies"] == ["execution-order-planning"]
+    assert {
+        "id": "execution-order-planning-document-input",
+        "source": "execution-order-planning",
+        "target": "document-input",
+    } in graph["edges"]
+    assert {
         "id": "document-input-document-parse",
         "source": "document-input",
         "target": "document-parse",
-    }
+    } in graph["edges"]
     assert [node["nodeId"] for node in graph["nodes"][:6]] == [
         "document-input",
         "document-parse",
