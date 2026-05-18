@@ -1,7 +1,7 @@
 use crate::{
     agent_client::{
         AgentAttachment, AgentClient, AgentEvent, AgentMessageRequest, AsrStatusResponse,
-        AsrTranscriptionRequest, AsrTranscriptionResponse,
+        AsrTranscriptionRequest, AsrTranscriptionResponse, InquiryChoice,
     },
     asr::{
         decode_wav_base64, remove_temp_audio_file, write_temp_audio_file,
@@ -46,7 +46,7 @@ pub struct SubmitMessagePayload {
     pub content: String,
     pub attachments: Vec<SubmitAttachmentPayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub inquiry_choice: Option<String>,
+    pub inquiry_choice: Option<InquiryChoice>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

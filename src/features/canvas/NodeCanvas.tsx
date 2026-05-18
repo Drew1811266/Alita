@@ -107,6 +107,7 @@ export function NodeCanvas({
   onRevealArtifact,
 }: NodeCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const researchGraph = graph ? isResearchGraph(graph) : false;
 
   const nodes = useMemo<AgentFlowNode[]>(() => {
     if (!graph) {
@@ -171,34 +172,42 @@ export function NodeCanvas({
   return (
     <div className="nodeCanvas">
       <div className="nodeCanvasToolbar">
-        <button
-          className="nodeCanvasRunButton"
-          disabled={running}
-          onClick={onRun}
-          type="button"
-        >
-          {running ? "运行中" : "运行流程"}
-        </button>
-        {running ? (
-          <button
-            className="nodeCanvasSecondaryButton"
-            disabled={cancelling}
-            onClick={onStop}
-            type="button"
-          >
-            停止运行
-          </button>
-        ) : null}
-        {canRetryFailed ? (
-          <button
-            className="nodeCanvasSecondaryButton"
-            disabled={running}
-            onClick={onRetryFailed}
-            type="button"
-          >
-            重试失败节点
-          </button>
-        ) : null}
+        {researchGraph ? (
+          <div className="nodeCanvasNotice" role="status">
+            Research graph execution is not available yet.
+          </div>
+        ) : (
+          <>
+            <button
+              className="nodeCanvasRunButton"
+              disabled={running}
+              onClick={onRun}
+              type="button"
+            >
+              {running ? "运行中" : "运行流程"}
+            </button>
+            {running ? (
+              <button
+                className="nodeCanvasSecondaryButton"
+                disabled={cancelling}
+                onClick={onStop}
+                type="button"
+              >
+                停止运行
+              </button>
+            ) : null}
+            {canRetryFailed ? (
+              <button
+                className="nodeCanvasSecondaryButton"
+                disabled={running}
+                onClick={onRetryFailed}
+                type="button"
+              >
+                重试失败节点
+              </button>
+            ) : null}
+          </>
+        )}
       </div>
       <ReactFlow
         nodes={nodes}
@@ -226,11 +235,22 @@ export function NodeCanvas({
         <NodePopover
           node={selectedNode}
           onClose={clearSelectedNode}
-          onRunFromNode={onRunFromNode}
+          onRunFromNode={researchGraph ? undefined : onRunFromNode}
           onOpenArtifact={onOpenArtifact}
           onRevealArtifact={onRevealArtifact}
         />
       ) : null}
     </div>
+  );
+}
+
+export function isResearchGraph(graph: NodeGraph): boolean {
+  return (
+    graph.graphId.startsWith("research-") ||
+    graph.nodes.some(
+      (node) =>
+        node.nodeId.startsWith("research-") ||
+        node.toolRef === "web.search.parallel",
+    )
   );
 }

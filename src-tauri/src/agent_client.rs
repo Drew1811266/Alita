@@ -15,7 +15,14 @@ pub struct AgentMessageRequest {
     pub content: String,
     pub attachments: Vec<AgentAttachment>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub inquiry_choice: Option<String>,
+    pub inquiry_choice: Option<InquiryChoice>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InquiryChoice {
+    QuickAnswer,
+    ResearchFlow,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

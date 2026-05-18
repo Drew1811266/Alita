@@ -52,6 +52,13 @@ const typstToolNode: AgentNode = {
   displayName: "Typst PDF",
 };
 
+const researchToolNode: AgentNode = {
+  ...toolNode,
+  nodeId: "research-parallel-search",
+  toolRef: "web.search.parallel",
+  displayName: "Parallel web search",
+};
+
 function renderPopover(node: AgentNode) {
   return renderToStaticMarkup(
     <NodePopover node={node} onClose={() => undefined} />,
@@ -184,6 +191,19 @@ describe("NodePopover", () => {
 
     expect(markup).not.toContain("从此节点重跑");
     expect(markup).not.toContain("运行脚本");
+  });
+
+  it("hides rerun-from-node action for research graph nodes", () => {
+    const markup = renderToStaticMarkup(
+      <NodePopover
+        node={researchToolNode}
+        onClose={() => undefined}
+        onRunFromNode={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Parallel web search");
+    expect(markup).not.toContain("浠庢鑺傜偣閲嶈窇");
   });
 
   it("renders temporary script safety state and last run error code without execution controls", () => {

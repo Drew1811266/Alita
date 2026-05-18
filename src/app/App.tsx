@@ -413,7 +413,10 @@ export function App() {
     await openProjectFromPath(path);
   };
 
-  const applyBackendEvent = (event: BackendEvent) => {
+  const applyBackendEvent = (
+    event: BackendEvent,
+    submittedPayload?: SubmitMessagePayload,
+  ) => {
     setMessages((current) => {
       const result = reduceBackendEvents(
         {
@@ -427,6 +430,7 @@ export function App() {
         },
         [event],
         (eventContent) => createMessage("assistant", eventContent),
+        submittedPayload,
       );
 
       graphRef.current = result.graph;
@@ -723,7 +727,7 @@ export function App() {
     try {
       await submitUserMessageStream(payload, (event) => {
         receivedStreamEvent = true;
-        applyBackendEvent(event);
+        applyBackendEvent(event, payload);
       });
     } catch (streamError) {
       if (receivedStreamEvent) {
@@ -732,7 +736,7 @@ export function App() {
 
       const events = await submitUserMessage(payload);
       for (const event of events) {
-        applyBackendEvent(event);
+        applyBackendEvent(event, payload);
       }
     }
   };
@@ -791,9 +795,7 @@ export function App() {
     }
 
     const payload = buildResearchChoiceSubmitPayload({
-      taskId: activeProject.projectId,
-      messages: messagesRef.current,
-      contextAttachments,
+      pendingChoice: pendingResearchChoiceRef.current,
       choiceId,
     });
 
@@ -1166,31 +1168,18 @@ export function shouldRefreshAsrForPreferencesUpdate(
 }
 
 export function buildResearchChoiceSubmitPayload({
-  taskId,
-  messages,
-  contextAttachments,
+  pendingChoice,
   choiceId,
 }: {
-  taskId: string;
-  messages: ChatMessage[];
-  contextAttachments: ChatAttachment[];
+  pendingChoice: PendingResearchChoice;
   choiceId: ResearchChoiceId;
 }): SubmitMessagePayload | null {
-  const lastUserMessage = [...messages]
-    .reverse()
-    .find((message) => message.role === "user");
-
-  if (!lastUserMessage) {
+  if (!pendingChoice.submittedPayload) {
     return null;
   }
 
   return {
-    taskId,
-    content: lastUserMessage.content,
-    attachments:
-      lastUserMessage.attachments.length > 0
-        ? lastUserMessage.attachments
-        : contextAttachments,
+    ...pendingChoice.submittedPayload,
     inquiryChoice: choiceId,
   };
 }

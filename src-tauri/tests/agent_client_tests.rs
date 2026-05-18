@@ -1,7 +1,3 @@
-#[path = "../src/agent_client.rs"]
-#[allow(dead_code)]
-mod agent_client;
-
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -9,8 +5,8 @@ use std::{
     time::Duration,
 };
 
-use agent_client::{
-    AgentAttachment, AgentMessageRequest, AsrStatusResponse, AsrTranscriptionRequest,
+use alita_lib::agent_client::{
+    AgentAttachment, AgentMessageRequest, AsrStatusResponse, AsrTranscriptionRequest, InquiryChoice,
 };
 use alita_lib::commands::{agent_message_request_from_payload, SubmitMessagePayload};
 
@@ -45,7 +41,7 @@ fn serializes_agent_message_request_with_inquiry_choice() {
         task_id: "task-1".to_string(),
         content: "Research and compare current Python packaging tools".to_string(),
         attachments: vec![],
-        inquiry_choice: Some("research_flow".to_string()),
+        inquiry_choice: Some(InquiryChoice::ResearchFlow),
     };
 
     let json = serde_json::to_value(request).expect("request should serialize");
@@ -54,16 +50,29 @@ fn serializes_agent_message_request_with_inquiry_choice() {
 }
 
 #[test]
+fn deserializes_agent_message_request_inquiry_choice_as_enum() {
+    let request: AgentMessageRequest = serde_json::from_value(serde_json::json!({
+        "task_id": "task-1",
+        "content": "Research and compare current Python packaging tools",
+        "attachments": [],
+        "inquiry_choice": "quick_answer"
+    }))
+    .expect("request should deserialize");
+
+    assert_eq!(request.inquiry_choice, Some(InquiryChoice::QuickAnswer));
+}
+
+#[test]
 fn maps_submit_message_payload_to_agent_request_with_inquiry_choice() {
     let request = agent_message_request_from_payload(SubmitMessagePayload {
         task_id: "task-1".to_string(),
         content: "Research and compare current Python packaging tools".to_string(),
         attachments: vec![],
-        inquiry_choice: Some("research_flow".to_string()),
+        inquiry_choice: Some(InquiryChoice::ResearchFlow),
     });
 
     assert_eq!(request.task_id, "task-1");
-    assert_eq!(request.inquiry_choice.as_deref(), Some("research_flow"));
+    assert_eq!(request.inquiry_choice, Some(InquiryChoice::ResearchFlow));
     assert!(request.attachments.is_empty());
 }
 
@@ -82,11 +91,12 @@ fn maps_submit_message_payload_to_agent_request_without_inquiry_choice() {
 
 #[test]
 fn stores_sidecar_auth_token() {
-    let client = agent_client::AgentClient::new("http://127.0.0.1:8765").with_auth_token("token-1");
+    let client = alita_lib::agent_client::AgentClient::new("http://127.0.0.1:8765")
+        .with_auth_token("token-1");
 
     assert_eq!(client.auth_token(), Some("token-1"));
     assert_eq!(
-        agent_client::sidecar_token_header(),
+        alita_lib::agent_client::sidecar_token_header(),
         "X-Alita-Sidecar-Token"
     );
 }
@@ -141,7 +151,7 @@ fn get_asr_status_sends_auth_header_to_status_endpoint() {
     let (base_url, server) = spawn_test_server(
         r#"{"available":true,"configured":true,"modelPath":"C:\\Models\\asr","message":"voice model is configured"}"#,
     );
-    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-1");
+    let client = alita_lib::agent_client::AgentClient::new(base_url).with_auth_token("token-1");
 
     let status = tauri::async_runtime::block_on(client.get_asr_status())
         .expect("status request should succeed");
@@ -151,7 +161,7 @@ fn get_asr_status_sends_auth_header_to_status_endpoint() {
     assert_eq!(request.method, "GET");
     assert_eq!(request.path, "/asr/status");
     assert_eq!(
-        request.header(agent_client::sidecar_token_header()),
+        request.header(alita_lib::agent_client::sidecar_token_header()),
         Some("token-1")
     );
 }
@@ -161,7 +171,7 @@ fn get_asr_status_for_model_sends_model_path_query_and_auth_header() {
     let (base_url, server) = spawn_test_server(
         r#"{"available":true,"configured":true,"modelPath":"C:\\Models\\Qwen3-ASR-1.7B","message":"voice model is configured"}"#,
     );
-    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-model");
+    let client = alita_lib::agent_client::AgentClient::new(base_url).with_auth_token("token-model");
 
     let status = tauri::async_runtime::block_on(
         client.get_asr_status_for_model(Some("C:\\Models\\Qwen3-ASR-1.7B")),
@@ -176,7 +186,7 @@ fn get_asr_status_for_model_sends_model_path_query_and_auth_header() {
         "/asr/status?modelPath=C%3A%5CModels%5CQwen3-ASR-1.7B"
     );
     assert_eq!(
-        request.header(agent_client::sidecar_token_header()),
+        request.header(alita_lib::agent_client::sidecar_token_header()),
         Some("token-model")
     );
 }
@@ -184,7 +194,7 @@ fn get_asr_status_for_model_sends_model_path_query_and_auth_header() {
 #[test]
 fn transcribe_asr_audio_sends_auth_header_and_json_body() {
     let (base_url, server) = spawn_test_server(r#"{"text":"ok"}"#);
-    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-2");
+    let client = alita_lib::agent_client::AgentClient::new(base_url).with_auth_token("token-2");
     let request = AsrTranscriptionRequest {
         audio_path: "C:\\Temp\\alita-asr-input.wav".to_string(),
         language: "zh".to_string(),
@@ -201,7 +211,7 @@ fn transcribe_asr_audio_sends_auth_header_and_json_body() {
     assert_eq!(captured.method, "POST");
     assert_eq!(captured.path, "/asr/transcribe");
     assert_eq!(
-        captured.header(agent_client::sidecar_token_header()),
+        captured.header(alita_lib::agent_client::sidecar_token_header()),
         Some("token-2")
     );
     assert_eq!(captured.header("content-type"), Some("application/json"));

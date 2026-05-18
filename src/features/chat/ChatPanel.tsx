@@ -22,7 +22,9 @@ export type VoiceInputView = {
   levels: number[];
 };
 
-export type PendingResearchChoice = ResearchChoicePayload;
+export type PendingResearchChoice = ResearchChoicePayload & {
+  submittedPayload?: unknown;
+};
 
 type ChatPanelProps = {
   messages: ChatMessage[];
@@ -172,6 +174,7 @@ export function ChatPanel({
             <button
               aria-label={`Choose ${choice.label}`}
               className="secondaryButton researchChoiceButton"
+              disabled={!pendingResearchChoice.submittedPayload}
               key={choice.id}
               onClick={() => onResearchChoice(choice.id)}
               type="button"

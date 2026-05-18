@@ -51,6 +51,12 @@ function getCapability(node: AgentNode): string {
   return "内部流程节点";
 }
 
+function isResearchNode(node: AgentNode): boolean {
+  return (
+    node.nodeId.startsWith("research-") || node.toolRef === "web.search.parallel"
+  );
+}
+
 function renderPorts(ports: AgentNode["inputPorts"]) {
   if (ports.length === 0) {
     return <span className="nodePopoverEmpty">无</span>;
@@ -131,7 +137,8 @@ export function NodePopover({
   const canRunFromNode =
     onRunFromNode &&
     node.nodeType !== "temporary_placeholder" &&
-    !node.scriptReview;
+    !node.scriptReview &&
+    !isResearchNode(node);
 
   return (
     <aside className="nodePopover" aria-label={`${node.displayName} 节点信息`}>

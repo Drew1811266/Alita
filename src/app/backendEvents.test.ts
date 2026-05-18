@@ -121,6 +121,11 @@ describe("reduceBackendEvents", () => {
   });
 
   it("adds a chat prompt for research choice events", () => {
+    const submittedPayload = {
+      taskId: "task-1",
+      content: "Compare current Python packaging tools",
+      attachments: [],
+    };
     const result = reduceBackendEvents(
       {
         messages: [existingMessage],
@@ -152,6 +157,7 @@ describe("reduceBackendEvents", () => {
         },
       ],
       createAssistantMessage,
+      submittedPayload,
     );
 
     expect(result.messages).toHaveLength(2);
@@ -177,8 +183,63 @@ describe("reduceBackendEvents", () => {
             "Create a research graph for planning, source review, and report synthesis.",
         },
       ],
+      submittedPayload,
     });
     expect(result.dirty).toBe(true);
+  });
+
+  it("binds a stale research choice to the request that produced it", () => {
+    const olderPayload = {
+      taskId: "task-1",
+      content: "Research source A",
+      attachments: [
+        {
+          attachmentId: "a1",
+          name: "a.md",
+          path: "D:\\Project\\a.md",
+          sizeBytes: 10,
+          mimeType: "text/markdown",
+        },
+      ],
+    };
+    const newerPayload = {
+      taskId: "task-1",
+      content: "Research source B",
+      attachments: [],
+    };
+
+    const result = reduceBackendEvents(
+      {
+        messages: [
+          {
+            messageId: "user-b",
+            role: "user",
+            content: newerPayload.content,
+            attachments: [],
+            createdAt: "2026-05-09T00:00:02.000Z",
+          },
+        ],
+        graph: null,
+        dirty: false,
+      },
+      [
+        {
+          type: "research.choice_required",
+          payload: {
+            taskId: "task-1",
+            prompt: "Choose how to answer.",
+            choices: [{ id: "research_flow", label: "Research flow" }],
+          },
+        },
+      ],
+      createAssistantMessage,
+      olderPayload,
+    );
+
+    expect(result.pendingResearchChoice?.submittedPayload).toEqual(olderPayload);
+    expect(result.pendingResearchChoice?.submittedPayload).not.toEqual(
+      newerPayload,
+    );
   });
 
   it("clears pending research choice when a response arrives", () => {

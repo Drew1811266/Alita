@@ -79,6 +79,11 @@ const pendingResearchChoice: PendingResearchChoice = {
         "Create a research graph for planning, source review, and report synthesis.",
     },
   ],
+  submittedPayload: {
+    taskId: "task-1",
+    content: "Research current packaging tools",
+    attachments: [],
+  },
 };
 
 type MockTextarea = {

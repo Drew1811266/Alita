@@ -6,7 +6,8 @@ import {
   buildResearchChoiceSubmitPayload,
   shouldRefreshAsrForPreferencesUpdate,
 } from "./App";
-import type { ChatAttachment, ChatMessage } from "../shared/types";
+import type { ChatAttachment } from "../shared/types";
+import type { PendingResearchChoice } from "./backendEvents";
 import type { PreferencesView } from "../features/preferences/preferencesApi";
 
 function preferencesViewWithSpeechModel(
@@ -57,43 +58,51 @@ describe("App", () => {
     ).toBe(false);
   });
 
-  it("builds research choice submit payload from the latest user message", () => {
-    const contextAttachment: ChatAttachment = {
-      attachmentId: "context-1",
-      name: "context.md",
-      path: "D:\\Project\\context.md",
+  it("builds research choice submit payload from the original pending request", () => {
+    const originalAttachment: ChatAttachment = {
+      attachmentId: "original-1",
+      name: "original.md",
+      path: "D:\\Project\\original.md",
       sizeBytes: 10,
       mimeType: "text/markdown",
     };
-    const messages: ChatMessage[] = [
-      {
-        messageId: "assistant-1",
-        role: "assistant",
-        content: "Choose how to proceed.",
-        attachments: [],
-        createdAt: "2026-05-09T00:00:00.000Z",
-      },
-      {
-        messageId: "user-1",
-        role: "user",
+    const pendingChoice: PendingResearchChoice = {
+      taskId: "task-1",
+      prompt: "Choose how to proceed.",
+      choices: [
+        { id: "quick_answer", label: "Quick answer" },
+        { id: "research_flow", label: "Research flow" },
+      ],
+      submittedPayload: {
+        taskId: "task-1",
         content: "Research current packaging tools",
-        attachments: [],
-        createdAt: "2026-05-09T00:00:01.000Z",
+        attachments: [originalAttachment],
       },
-    ];
+    };
 
     expect(
       buildResearchChoiceSubmitPayload({
-        taskId: "task-1",
-        messages,
-        contextAttachments: [contextAttachment],
+        pendingChoice,
         choiceId: "research_flow",
       }),
     ).toEqual({
       taskId: "task-1",
       content: "Research current packaging tools",
-      attachments: [contextAttachment],
+      attachments: [originalAttachment],
       inquiryChoice: "research_flow",
     });
+  });
+
+  it("does not build a research choice submit payload without the original request", () => {
+    expect(
+      buildResearchChoiceSubmitPayload({
+        pendingChoice: {
+          taskId: "task-1",
+          prompt: "Choose how to proceed.",
+          choices: [{ id: "quick_answer", label: "Quick answer" }],
+        },
+        choiceId: "quick_answer",
+      }),
+    ).toBeNull();
   });
 });

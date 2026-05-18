@@ -874,6 +874,18 @@ button:focus-visible {
   gap: 8px;
 }
 
+.nodeCanvasNotice {
+  max-width: 360px;
+  padding: 9px 12px;
+  border: 1px solid #cbd5df;
+  border-radius: 8px;
+  color: #334155;
+  background: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.08);
+}
+
 .nodeCanvasRunButton {
   min-width: 96px;
   height: 38px;

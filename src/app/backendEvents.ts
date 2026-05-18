@@ -1,7 +1,12 @@
-import type { BackendEvent, ResearchChoicePayload } from "../shared/events";
+import type {
+  BackendEvent,
+  ResearchChoiceId,
+  ResearchChoicePayload,
+} from "../shared/events";
 import type {
   AgentNode,
   ArtifactRef,
+  ChatAttachment,
   ChatMessage,
   NodeGraph,
   RunHistoryEntry,
@@ -17,12 +22,22 @@ export type BackendEventState = {
   artifacts?: ArtifactRef[];
 };
 
-export type PendingResearchChoice = ResearchChoicePayload;
+export type ResearchChoiceSubmitPayload = {
+  taskId: string;
+  content: string;
+  attachments: ChatAttachment[];
+  inquiryChoice?: ResearchChoiceId;
+};
+
+export type PendingResearchChoice = ResearchChoicePayload & {
+  submittedPayload?: ResearchChoiceSubmitPayload;
+};
 
 export function reduceBackendEvents(
   state: BackendEventState,
   events: BackendEvent[],
   createAssistantMessage: (content: string) => ChatMessage,
+  submittedPayload?: ResearchChoiceSubmitPayload,
 ): BackendEventState {
   return events.reduce<BackendEventState>((current, event) => {
     if (event.type === "run.started") {
@@ -107,7 +122,10 @@ export function reduceBackendEvents(
           ...current.messages,
           createAssistantMessage(formatResearchChoicePrompt(event.payload)),
         ],
-        pendingResearchChoice: event.payload,
+        pendingResearchChoice: {
+          ...event.payload,
+          ...(submittedPayload ? { submittedPayload } : {}),
+        },
         dirty: true,
       };
     }
