@@ -193,7 +193,7 @@ def _redact_model_paths(text: str, categories: list[str]) -> str:
         return value
 
     text = _replace_matches(_WINDOWS_PATH_RE, text, replace_path)
-    text = _POSIX_PATH_RE.sub(replace_path, text)
+    text = _replace_matches(_POSIX_PATH_RE, text, replace_path)
     return _redact(_MODEL_NAME_RE, text, _MODEL_PATH_LABEL, "MODEL_PATH", categories)
 
 
@@ -216,9 +216,7 @@ def _redact_path_pattern(
         _add_category(categories, "LOCAL_PATH")
         return f"{_LOCAL_PATH_LABEL}{punctuation}"
 
-    if pattern is _WINDOWS_PATH_RE:
-        return _replace_matches(pattern, text, replace)
-    return pattern.sub(replace, text)
+    return _replace_matches(pattern, text, replace)
 
 
 def _replace_matches(
@@ -229,6 +227,8 @@ def _replace_matches(
     parts: list[str] = []
     position = 0
     for match in pattern.finditer(text):
+        if match.start() < position:
+            continue
         end = _extended_match_end(match, text)
         parts.append(text[position : match.start()])
         parts.append(replace(match))
@@ -242,7 +242,7 @@ def _extend_spaced_path_suffix(match: re.Match[str], text: str) -> str:
 
 
 def _extended_match_end(match: re.Match[str], text: str) -> int:
-    if not _is_extensionless_windows_directory_match(match):
+    if not _is_extensionless_path_directory_match(match):
         return match.end()
 
     tokens = _following_words(text, match.end())
@@ -267,8 +267,8 @@ def _extended_match_end(match: re.Match[str], text: str) -> int:
     return match.end()
 
 
-def _is_extensionless_windows_directory_match(match: re.Match[str]) -> bool:
-    final_component = match.group(0).rstrip(".,;:!?").rsplit("\\", 1)[-1]
+def _is_extensionless_path_directory_match(match: re.Match[str]) -> bool:
+    final_component = _final_path_component(match.group(0))
     return "." not in final_component
 
 
@@ -276,7 +276,10 @@ def _following_words(text: str, start: int) -> list[tuple[str, int]]:
     words: list[tuple[str, int]] = []
     position = start
     while True:
-        match = re.match(r"\s+([A-Za-z][A-Za-z0-9_-]*)", text[position:])
+        match = re.match(
+            r"\s+([A-Za-z][A-Za-z0-9_-]*)(?:/[^\s,;:!?)]*)?",
+            text[position:],
+        )
         if match is None:
             return words
         position += len(match.group(0))
@@ -326,8 +329,12 @@ def _local_prefix_tail_end(
 
 
 def _final_component_is_local_tail_prefix(match: re.Match[str]) -> bool:
-    final_component = match.group(0).rstrip(".,;:!?").rsplit("\\", 1)[-1]
+    final_component = _final_path_component(match.group(0))
     return final_component.lower() in _LOCAL_TAIL_PREFIXES
+
+
+def _final_path_component(path: str) -> str:
+    return re.split(r"[\\/]+", path.rstrip(".,;:!?"))[-1]
 
 
 def _tokens_reach_query_end(tokens: list[tuple[str, int]], text: str) -> bool:

@@ -41,6 +41,46 @@ def test_redacts_posix_paths() -> None:
     assert result.blocked is False
 
 
+def test_redacts_posix_path_with_spaced_directory_and_file() -> None:
+    local_path = "/home/drew/My Project/app.py"
+
+    result = sanitize_for_web_search(f"Search {local_path} latest usage")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] latest usage"
+    assert local_path not in result.sanitizedText
+    assert "My" not in result.sanitizedText
+    assert "Project/app.py" not in result.sanitizedText
+    assert "latest usage" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
+def test_redacts_posix_directory_path_with_spaced_final_segment() -> None:
+    local_path = "/home/drew/My Project"
+
+    result = sanitize_for_web_search(f"Search {local_path} latest usage")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] latest usage"
+    assert local_path not in result.sanitizedText
+    assert "Project" not in result.sanitizedText
+    assert "latest usage" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
+def test_redacts_posix_model_directory_path_with_spaced_final_segment() -> None:
+    model_path = "/models/my model"
+
+    result = sanitize_for_web_search(f"Search {model_path} latest usage")
+
+    assert result.sanitizedText == "Search [MODEL_PATH] latest usage"
+    assert model_path not in result.sanitizedText
+    assert "model" not in result.sanitizedText
+    assert "latest usage" in result.sanitizedText
+    assert result.removedCategories == ["MODEL_PATH"]
+    assert result.blocked is False
+
+
 def test_preserves_https_urls_without_marking_them_as_local_paths() -> None:
     url = "https://docs.python.org/3/library/pathlib.html"
 
