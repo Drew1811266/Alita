@@ -219,6 +219,24 @@ def test_constraint_update_reruns_planner_and_can_change_graph_shape() -> None:
     ]
 
 
+def test_constraint_update_replaces_graph_for_unsupported_missing_tool_output() -> None:
+    graph = _graph()
+
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Constraint: Must handle password credentials."),
+        graph,
+    )
+
+    assert event.type == "graph.replanned"
+    updated = RunGraph.model_validate(event.payload["graph"])
+    nodes = {node.nodeId: node for node in updated.nodes}
+    assert "credential.handle" in nodes["capability-analysis"].summary
+    assert "credential.handle" in nodes["tool-selection"].summary
+    assert "missing-tool-response" in nodes
+    assert "unsupported unsafe capability" in nodes["missing-tool-response"].summary
+    assert "extract-data" not in nodes
+
+
 def test_full_replan_replaces_graph() -> None:
     graph = _graph()
 
@@ -312,6 +330,31 @@ def test_confirmed_overwrite_uses_original_pending_feedback() -> None:
     assert event.type == "graph.replanned"
     updated = RunGraph.model_validate(event.payload["graph"])
     assert updated.graphId != graph.graphId
+
+
+def test_confirmed_new_task_overwrite_emits_graph_replanned() -> None:
+    graph = _graph()
+    confirmation = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Also create a weekly calendar reminder."),
+        graph,
+        has_run_history=True,
+    )
+    assert confirmation.type == "graph.overwrite_confirmation_required"
+    assert confirmation.payload["pendingChoice"]["kind"] == "new_task"
+
+    confirmed_choice = {
+        **confirmation.payload["pendingChoice"],
+        "id": "confirm_overwrite",
+    }
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="yes"),
+        graph,
+        has_run_history=True,
+        pending_choice=confirmed_choice,
+    )
+
+    assert event.type == "graph.replanned"
+    assert event.payload["previousGraphId"] == graph.graphId
 
 
 def test_cancelled_overwrite_returns_message_without_replacing_graph() -> None:

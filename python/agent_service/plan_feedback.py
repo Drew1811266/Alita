@@ -137,9 +137,17 @@ def apply_graph_feedback(
             summary="Updated graph node from user feedback.",
         )
 
+    replanned_graph = _build_replanned_graph(effective_message, current_graph)
+    if _is_confirmed_pending_choice(pending_choice):
+        return _graph_replanned_event(
+            replanned_graph,
+            previous_graph_id=current_graph.graphId,
+            summary="Replanned graph from user feedback.",
+        )
+
     return AgentEvent(
         type="node_graph.created",
-        payload={"graph": _build_replanned_graph(effective_message, current_graph).model_dump()},
+        payload={"graph": replanned_graph.model_dump()},
     )
 
 
@@ -358,6 +366,10 @@ def _regenerated_plan_changes_executable_shape(
     regenerated_graph: RunGraph,
 ) -> bool:
     current_node_ids = {node.nodeId for node in current_graph.nodes}
+    regenerated_missing_tool = _node_summary(regenerated_graph, "missing-tool-response")
+    if regenerated_missing_tool:
+        return _node_summary(current_graph, "missing-tool-response") != regenerated_missing_tool
+
     regenerated_capability_summary = _node_summary(regenerated_graph, "capability-analysis")
     regenerated_tool_summary = _node_summary(regenerated_graph, "tool-selection")
     current_text = " ".join(node.summary for node in current_graph.nodes)
