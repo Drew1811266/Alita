@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
 
+from agent_service import web_search
 from agent_service.web_search import (
     DuckDuckGoHtmlSearchProvider,
     SearchFailure,
@@ -72,6 +74,21 @@ def test_timeout_returns_structured_failure() -> None:
     )
 
 
+def test_network_error_returns_structured_failure() -> None:
+    def transport(url: str, timeout: float, headers: dict[str, str]) -> bytes:
+        raise URLError("DNS failure with host details")
+
+    provider = DuckDuckGoHtmlSearchProvider(transport=transport)
+
+    response = provider.search("LangGraph routing docs")
+
+    assert response.results == []
+    assert response.failure == SearchFailure(
+        kind="network_error",
+        message="Search request failed.",
+    )
+
+
 def test_html_parser_returns_title_url_and_snippet() -> None:
     html = """
     <html><body>
@@ -99,6 +116,52 @@ def test_html_parser_returns_title_url_and_snippet() -> None:
             url="https://github.com/org/project",
             snippet="Primary source repository.",
         ),
+    ]
+
+
+def test_html_parser_preserves_encoded_characters_in_duckduckgo_redirects() -> None:
+    html = """
+    <html><body>
+      <div class="result">
+        <a class="result__a"
+           href="/l/?uddg=https%3A%2F%2Fexample.com%2Fsearch%3Fq%3Da%252Bb">
+          Encoded Query
+        </a>
+        <div class="result__snippet">Snippet.</div>
+      </div>
+    </body></html>
+    """
+
+    results = parse_duckduckgo_html_results(html)
+
+    assert results[0].url == "https://example.com/search?q=a%2Bb"
+    assert results[0].url != "https://example.com/search?q=a+b"
+
+
+def test_html_parser_does_not_flush_before_split_feed_result_is_complete() -> None:
+    partial_html = """
+    <html><body>
+      <div class="result">
+        <a class="result__a" href="https://docs.example.com/page">Example Docs</a>
+    """
+    final_html = """
+        <div class="result__snippet">Official usage examples.</div>
+      </div>
+    </body></html>
+    """
+    parser = web_search._DuckDuckGoHtmlParser()
+    parser.feed(partial_html)
+    assert parser.results == []
+
+    parser.feed(final_html)
+    parser.close()
+
+    assert parser.results == [
+        SearchResult(
+            title="Example Docs",
+            url="https://docs.example.com/page",
+            snippet="Official usage examples.",
+        )
     ]
 
 
@@ -184,6 +247,7 @@ def test_source_classification_accepts_primary_sources_and_rejects_low_signal_so
         SearchResult("Low signal repost", "https://medium.com/someone/copied-release-notes", ""),
         SearchResult("Stale page", "https://old.example.com/asyncio", "Last updated 2017"),
         SearchResult("Unrelated forum", "https://reddit.com/r/gardening/comments/1", "tomato thread"),
+        SearchResult("Unknown blog", "https://blog.example.com/post", "generic blog post"),
     ]
 
     classified = classify_sources("software", results)
@@ -203,3 +267,4 @@ def test_source_classification_accepts_primary_sources_and_rejects_low_signal_so
     assert rejected["Low signal repost"].rejectionReason == "low_signal_repost"
     assert rejected["Stale page"].rejectionReason == "stale_page"
     assert rejected["Unrelated forum"].rejectionReason == "unrelated_forum_thread"
+    assert rejected["Unknown blog"].rejectionReason == "unrecognized_source"

@@ -5,7 +5,7 @@ from html.parser import HTMLParser
 import socket
 from typing import Callable, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, unquote, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from agent_service.privacy import sanitize_for_web_search
@@ -112,6 +112,7 @@ def _urllib_transport(url: str, timeout: float, headers: dict[str, str]) -> byte
 def parse_duckduckgo_html_results(html: str) -> list[SearchResult]:
     parser = _DuckDuckGoHtmlParser()
     parser.feed(html)
+    parser.close()
     return parser.results
 
 
@@ -156,10 +157,6 @@ class _DuckDuckGoHtmlParser(HTMLParser):
         self._flush_result()
         super().close()
 
-    def feed(self, data: str) -> None:
-        super().feed(data)
-        self._flush_result()
-
     def _flush_result(self) -> None:
         title = _clean_text(" ".join(self._current_title))
         url = self._current_url or ""
@@ -185,7 +182,7 @@ def _normalize_result_url(url: str) -> str:
     if parsed.path == "/l/":
         redirected = parse_qs(parsed.query).get("uddg", [""])[0]
         if redirected:
-            return unquote(redirected)
+            return redirected
     return url
 
 
@@ -204,15 +201,24 @@ def classify_sources(
     question_type: str,
     results: list[SearchResult],
 ) -> list[SearchResult]:
-    return [
-        replace(
-            result,
-            sourceType=_source_type(question_type, result),
-            accepted=_rejection_reason(question_type, result) is None,
-            rejectionReason=_rejection_reason(question_type, result),
+    classified: list[SearchResult] = []
+    for result in results:
+        source_type = _source_type(question_type, result)
+        rejection_reason = _rejection_reason(question_type, result)
+        accepted = rejection_reason is None and _is_accepted_source_type(source_type)
+        classified.append(
+            replace(
+                result,
+                sourceType=source_type,
+                accepted=accepted,
+                rejectionReason=(
+                    rejection_reason
+                    if rejection_reason is not None or accepted
+                    else "unrecognized_source"
+                ),
+            )
         )
-        for result in results
-    ]
+    return classified
 
 
 def _rank_score(question_type: str, result: SearchResult) -> tuple[int, str]:
@@ -274,6 +280,17 @@ def _source_type(question_type: str, result: SearchResult) -> str:
     if _is_forum(host):
         return "forum"
     return question_type.lower()
+
+
+def _is_accepted_source_type(source_type: str) -> bool:
+    return source_type in {
+        "official_docs",
+        "vendor_page",
+        "primary_repo",
+        "research_paper",
+        "standards_body",
+        "recognized_docs",
+    }
 
 
 def _rejection_reason(question_type: str, result: SearchResult) -> str | None:
