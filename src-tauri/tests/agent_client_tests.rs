@@ -26,6 +26,7 @@ fn serializes_agent_message_request() {
             mime_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 .to_string(),
         }],
+        inquiry_choice: None,
     };
 
     let json = serde_json::to_value(request).expect("request should serialize");
@@ -34,6 +35,21 @@ fn serializes_agent_message_request() {
     assert_eq!(json["content"], "整理成报告");
     assert_eq!(json["attachments"][0]["name"], "input.docx");
     assert_eq!(json["attachments"][0]["size_bytes"], 10);
+    assert!(json.get("inquiry_choice").is_none());
+}
+
+#[test]
+fn serializes_agent_message_request_with_inquiry_choice() {
+    let request = AgentMessageRequest {
+        task_id: "task-1".to_string(),
+        content: "Research and compare current Python packaging tools".to_string(),
+        attachments: vec![],
+        inquiry_choice: Some("research_flow".to_string()),
+    };
+
+    let json = serde_json::to_value(request).expect("request should serialize");
+
+    assert_eq!(json["inquiry_choice"], "research_flow");
 }
 
 #[test]

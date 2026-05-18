@@ -20,9 +20,9 @@ from agent_service.graph import run_agent, stream_agent_events
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY
 from agent_service.schemas import (
     AgentEvent,
+    AgentMessageRequest,
     CancelRunRequest,
     RunGraphRequest,
-    UserMessage,
 )
 
 
@@ -78,19 +78,22 @@ def asr_transcribe(
 
 @app.post("/agent/message", response_model=list[AgentEvent])
 def agent_message(
-    message: UserMessage,
+    request: AgentMessageRequest,
     _auth: None = Depends(require_sidecar_token),
 ) -> list[AgentEvent]:
-    return run_agent(message)
+    return run_agent(
+        request.to_user_message(),
+        inquiry_choice=request.inquiry_choice,
+    )
 
 
 @app.post("/agent/message/stream")
 def agent_message_stream(
-    message: UserMessage,
+    request: AgentMessageRequest,
     _auth: None = Depends(require_sidecar_token),
 ) -> StreamingResponse:
     return StreamingResponse(
-        _serialize_sse_events(message),
+        _serialize_sse_events(request),
         media_type="text/event-stream",
     )
 
@@ -114,8 +117,11 @@ def cancel_graph_run(
     return {"cancelled": DEFAULT_RUN_REGISTRY.cancel(request.run_id)}
 
 
-def _serialize_sse_events(message: UserMessage):
-    for event in stream_agent_events(message):
+def _serialize_sse_events(request: AgentMessageRequest):
+    for event in stream_agent_events(
+        request.to_user_message(),
+        inquiry_choice=request.inquiry_choice,
+    ):
         yield f"data: {event.model_dump_json()}\n\n"
 
 

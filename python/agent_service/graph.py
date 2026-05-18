@@ -35,6 +35,10 @@ AgentIntent = Literal[
     "document_task",
 ]
 InquiryChoice = Literal["quick_answer", "research_flow"]
+RESEARCH_CHOICE_PROMPT = (
+    "This question can be answered quickly or turned into a research flow. "
+    "Choose how to proceed."
+)
 
 
 class ModelClient(Protocol):
@@ -120,6 +124,8 @@ def choose_research_mode(state: AgentState) -> AgentState:
             AgentEvent(
                 type="research.choice_required",
                 payload={
+                    "taskId": state["message"].task_id,
+                    "prompt": RESEARCH_CHOICE_PROMPT,
                     "choices": [
                         {
                             "id": "quick_answer",

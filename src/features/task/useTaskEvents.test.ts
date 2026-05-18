@@ -5,6 +5,7 @@ import {
   cancelNodeGraphRun,
   createSseEventParser,
   runNodeGraphStream,
+  submitUserMessage,
 } from "./useTaskEvents";
 import type { BackendEvent } from "../../shared/events";
 import type { NodeGraph } from "../../shared/types";
@@ -50,6 +51,34 @@ describe("createSseEventParser", () => {
 });
 
 describe("runNodeGraphStream", () => {
+  it("posts inquiry choice when submitting a user message", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await submitUserMessage({
+      taskId: "task-1",
+      content: "Research and compare current Python packaging tools",
+      attachments: [],
+      inquiryChoice: "research_flow",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/agent/message",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          task_id: "task-1",
+          content: "Research and compare current Python packaging tools",
+          attachments: [],
+          inquiry_choice: "research_flow",
+        }),
+      }),
+    );
+  });
+
   it("posts the graph and attachments to the sidecar stream endpoint", async () => {
     const events: BackendEvent[] = [];
     const graph: NodeGraph = {

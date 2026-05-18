@@ -94,6 +94,17 @@ export function reduceBackendEvents(
       };
     }
 
+    if (event.type === "research.choice_required") {
+      return {
+        ...current,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(formatResearchChoicePrompt(event.payload)),
+        ],
+        dirty: true,
+      };
+    }
+
     if (event.type === "node_graph.created") {
       return {
         ...current,
@@ -226,6 +237,18 @@ export function reduceBackendEvents(
 
     return current;
   }, state);
+}
+
+function formatResearchChoicePrompt(
+  payload: Extract<BackendEvent, { type: "research.choice_required" }>["payload"],
+): string {
+  const choices = payload.choices
+    .map((choice, index) => {
+      const description = choice.description ? ` - ${choice.description}` : "";
+      return `${index + 1}. ${choice.label}${description}`;
+    })
+    .join("\n");
+  return `${payload.prompt}\n\n${choices}`;
 }
 
 function updateNode(

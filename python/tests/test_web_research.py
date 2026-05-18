@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from agent_service.intent import classify_route
 from agent_service.schemas import AgentEvent, RunGraph, UserMessage
-from agent_service.web_search import SearchFailure, SearchResponse, SearchResult
+from agent_service.web_search import SearchResponse, SearchResult
 
 
 class FakeSearchProvider:
@@ -138,79 +138,3 @@ def test_simple_web_inquiry_searches_and_returns_concise_answer_with_source_meta
     assert payload["sources"][0]["ref"] == "[1]"
     assert len(payload["sources"][0]["snippet"]) <= 240
     assert payload["rejectedSources"][0]["rejectionReason"] == "content_farm"
-
-
-def test_research_query_retry_reuses_successful_results_and_fails_after_budget() -> None:
-    from agent_service.web_research import ResearchQuery, run_research_queries_with_retries
-
-    provider = FakeSearchProvider(
-        [
-            SearchResponse(
-                results=[
-                    SearchResult(
-                        title="Python downloads",
-                        url="https://www.python.org/downloads/",
-                        snippet="Latest Python release.",
-                    )
-                ]
-            ),
-            SearchResponse(
-                results=[],
-                failure=SearchFailure(kind="timeout", message="timed out"),
-            ),
-            SearchResponse(
-                results=[
-                    SearchResult(
-                        title="Python docs",
-                        url="https://docs.python.org/3/",
-                        snippet="Python docs.",
-                    )
-                ]
-            ),
-        ]
-    )
-
-    result = run_research_queries_with_retries(
-        [
-            ResearchQuery(query="latest Python release", purpose="version"),
-            ResearchQuery(query="latest Python docs", purpose="docs"),
-        ],
-        search_provider=provider,
-        retry_budget=1,
-    )
-
-    assert provider.queries == [
-        "latest Python release",
-        "latest Python docs",
-        "latest Python docs",
-    ]
-    assert result.failure is None
-    assert [unit.query.query for unit in result.units] == [
-        "latest Python release",
-        "latest Python docs",
-    ]
-    assert result.units[0].attempts == 1
-    assert result.units[1].attempts == 2
-
-    failing_provider = FakeSearchProvider(
-        [
-            SearchResponse(
-                results=[],
-                failure=SearchFailure(kind="timeout", message="timed out"),
-            ),
-            SearchResponse(
-                results=[],
-                failure=SearchFailure(kind="timeout", message="timed out again"),
-            ),
-        ]
-    )
-
-    failed = run_research_queries_with_retries(
-        [ResearchQuery(query="latest Python docs", purpose="docs")],
-        search_provider=failing_provider,
-        retry_budget=1,
-    )
-
-    assert failed.failure is not None
-    assert failed.failure.kind == "retry_exhausted"
-    assert failed.units[0].attempts == 2

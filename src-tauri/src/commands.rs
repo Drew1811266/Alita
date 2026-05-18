@@ -45,6 +45,8 @@ pub struct SubmitMessagePayload {
     pub task_id: String,
     pub content: String,
     pub attachments: Vec<SubmitAttachmentPayload>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inquiry_choice: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,6 +299,7 @@ pub async fn submit_user_message(
     let request = AgentMessageRequest {
         task_id: payload.task_id,
         content: payload.content,
+        inquiry_choice: payload.inquiry_choice,
         attachments: payload
             .attachments
             .into_iter()

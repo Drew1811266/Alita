@@ -11,7 +11,6 @@ from agent_service.web_search import (
     DuckDuckGoHtmlSearchProvider,
     SearchFailure,
     SearchProvider,
-    SearchResponse,
     SearchResult,
     classify_sources,
     rank_sources,
@@ -61,19 +60,6 @@ class ResearchReport:
     source_set: ResearchSourceSet
     section_order: list[str] = field(default_factory=lambda: list(REPORT_SECTION_ORDER))
     markdown: str = ""
-
-
-@dataclass(frozen=True)
-class ResearchQueryUnitResult:
-    query: ResearchQuery
-    response: SearchResponse
-    attempts: int
-
-
-@dataclass(frozen=True)
-class ResearchQueryRunResult:
-    units: list[ResearchQueryUnitResult]
-    failure: SearchFailure | None = None
 
 
 def build_research_graph(
@@ -205,42 +191,6 @@ def answer_simple_web_inquiry(
             },
         },
     )
-
-
-def run_research_queries_with_retries(
-    queries: list[ResearchQuery],
-    *,
-    search_provider: SearchProvider,
-    retry_budget: int = 1,
-) -> ResearchQueryRunResult:
-    units: list[ResearchQueryUnitResult] = []
-    exhausted_failure: SearchFailure | None = None
-
-    for query in queries:
-        attempts = 0
-        response: SearchResponse | None = None
-        while attempts <= retry_budget:
-            attempts += 1
-            response = search_provider.search(query.query)
-            if response.failure is None:
-                break
-        if response is None:
-            response = SearchResponse(results=[])
-        units.append(
-            ResearchQueryUnitResult(
-                query=query,
-                response=response,
-                attempts=attempts,
-            )
-        )
-        if response.failure is not None:
-            exhausted_failure = SearchFailure(
-                kind="retry_exhausted",
-                message=f"Search query failed after {attempts} attempts.",
-            )
-            break
-
-    return ResearchQueryRunResult(units=units, failure=exhausted_failure)
 
 
 def _synthesize_answer(

@@ -180,18 +180,22 @@ def test_web_complex_default_returns_research_choice_required() -> None:
     )
 
     assert [event.type for event in events] == ["research.choice_required"]
-    assert events[0].payload["choices"] == [
-        {
-            "id": "quick_answer",
-            "label": "Quick answer",
-            "description": "Search the web now and return a concise sourced answer.",
-        },
-        {
-            "id": "research_flow",
-            "label": "Research flow",
-            "description": "Create a research graph for planning, source review, and report synthesis.",
-        },
-    ]
+    assert events[0].payload == {
+        "taskId": "complex-web",
+        "prompt": "This question can be answered quickly or turned into a research flow. Choose how to proceed.",
+        "choices": [
+            {
+                "id": "quick_answer",
+                "label": "Quick answer",
+                "description": "Search the web now and return a concise sourced answer.",
+            },
+            {
+                "id": "research_flow",
+                "label": "Research flow",
+                "description": "Create a research graph for planning, source review, and report synthesis.",
+            },
+        ],
+    }
 
 
 def test_web_complex_quick_answer_choice_searches_and_answers() -> None:

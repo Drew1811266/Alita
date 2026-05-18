@@ -14,6 +14,8 @@ pub struct AgentMessageRequest {
     pub task_id: String,
     pub content: String,
     pub attachments: Vec<AgentAttachment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inquiry_choice: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

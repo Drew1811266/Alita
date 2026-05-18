@@ -10,6 +10,7 @@ export type SubmitMessagePayload = {
   taskId: string;
   content: string;
   attachments: ChatAttachment[];
+  inquiryChoice?: "quick_answer" | "research_flow";
 };
 
 export type RunNodeGraphPayload = {
@@ -178,6 +179,7 @@ function toSidecarMessage(payload: SubmitMessagePayload) {
     task_id: payload.taskId,
     content: payload.content,
     attachments: payload.attachments.map(toSidecarAttachment),
+    ...(payload.inquiryChoice ? { inquiry_choice: payload.inquiryChoice } : {}),
   };
 }
 

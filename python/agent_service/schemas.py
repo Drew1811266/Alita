@@ -20,6 +20,17 @@ class UserMessage(BaseModel):
     attachments: list[Attachment] = Field(default_factory=list)
 
 
+class AgentMessageRequest(UserMessage):
+    inquiry_choice: Literal["quick_answer", "research_flow"] | None = None
+
+    def to_user_message(self) -> UserMessage:
+        return UserMessage(
+            task_id=self.task_id,
+            content=self.content,
+            attachments=list(self.attachments),
+        )
+
+
 class AgentEvent(BaseModel):
     type: str
     payload: dict

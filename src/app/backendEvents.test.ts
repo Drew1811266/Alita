@@ -120,6 +120,49 @@ describe("reduceBackendEvents", () => {
     expect(result.dirty).toBe(true);
   });
 
+  it("adds a chat prompt for research choice events", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph: null,
+        dirty: false,
+      },
+      [
+        {
+          type: "research.choice_required",
+          payload: {
+            taskId: "task-1",
+            prompt:
+              "This question can be answered quickly or turned into a research flow. Choose how to proceed.",
+            choices: [
+              {
+                id: "quick_answer",
+                label: "Quick answer",
+                description:
+                  "Search the web now and return a concise sourced answer.",
+              },
+              {
+                id: "research_flow",
+                label: "Research flow",
+                description:
+                  "Create a research graph for planning, source review, and report synthesis.",
+              },
+            ],
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[1].content).toContain(
+      "This question can be answered quickly",
+    );
+    expect(result.messages[1].content).toContain("Quick answer");
+    expect(result.messages[1].content).toContain("Research flow");
+    expect(result.dirty).toBe(true);
+  });
+
   it("applies streaming message lifecycle events", () => {
     const result = reduceBackendEvents(
       {

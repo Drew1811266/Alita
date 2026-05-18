@@ -29,6 +29,58 @@ def test_agent_message_stream_returns_sse_events() -> None:
     assert "node_graph.created" in response.text
 
 
+def test_agent_message_complex_inquiry_default_returns_research_choice_payload() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/message",
+        json={
+            "task_id": "task-choice",
+            "content": "Research and compare current Python packaging tools",
+            "attachments": [],
+        },
+    )
+
+    assert response.status_code == 200
+    events = response.json()
+    assert [event["type"] for event in events] == ["research.choice_required"]
+    assert events[0]["payload"] == {
+        "taskId": "task-choice",
+        "prompt": "This question can be answered quickly or turned into a research flow. Choose how to proceed.",
+        "choices": [
+            {
+                "id": "quick_answer",
+                "label": "Quick answer",
+                "description": "Search the web now and return a concise sourced answer.",
+            },
+            {
+                "id": "research_flow",
+                "label": "Research flow",
+                "description": "Create a research graph for planning, source review, and report synthesis.",
+            },
+        ],
+    }
+
+
+def test_agent_message_complex_inquiry_research_flow_choice_returns_graph() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/message",
+        json={
+            "task_id": "task-research-flow",
+            "content": "Research and compare current Python packaging tools",
+            "attachments": [],
+            "inquiry_choice": "research_flow",
+        },
+    )
+
+    assert response.status_code == 200
+    events = response.json()
+    assert [event["type"] for event in events] == ["node_graph.created"]
+    assert events[0]["payload"]["graph"]["graphId"] == "task-research-flow-research-graph"
+
+
 def test_agent_endpoints_require_sidecar_token_when_configured(monkeypatch) -> None:
     monkeypatch.setenv("ALITA_SIDECAR_TOKEN", "secret-token")
     client = TestClient(app)
