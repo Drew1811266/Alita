@@ -84,6 +84,10 @@ def agent_message(
     return run_agent(
         request.to_user_message(),
         inquiry_choice=request.inquiry_choice,
+        current_graph=request.currentGraph,
+        has_run_history=bool(request.hasRunHistory),
+        artifact_refs=request.artifactRefs,
+        pending_choice=request.pendingChoice,
     )
 
 
@@ -121,6 +125,10 @@ def _serialize_sse_events(request: AgentMessageRequest):
     for event in stream_agent_events(
         request.to_user_message(),
         inquiry_choice=request.inquiry_choice,
+        current_graph=request.currentGraph,
+        has_run_history=bool(request.hasRunHistory),
+        artifact_refs=request.artifactRefs,
+        pending_choice=request.pendingChoice,
     ):
         yield f"data: {event.model_dump_json()}\n\n"
 

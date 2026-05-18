@@ -769,10 +769,20 @@ export function App() {
     setDirty(true);
 
     try {
-      const payload = {
+      const currentGraph = graphRef.current;
+      const payload: SubmitMessagePayload = {
         taskId: activeProject.projectId,
         content: userMessage.content,
         attachments: agentAttachments,
+        ...(currentGraph
+          ? {
+              currentGraph,
+              hasRunHistory: runHistoryRef.current.length > 0,
+              artifactRefs: artifactsRef.current.map(
+                (artifact) => artifact.artifactId,
+              ),
+            }
+          : {}),
       };
 
       await submitAgentMessagePayload(payload);

@@ -47,6 +47,14 @@ pub struct SubmitMessagePayload {
     pub attachments: Vec<SubmitAttachmentPayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inquiry_choice: Option<InquiryChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_graph: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_run_history: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_refs: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_choice: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,6 +314,10 @@ pub fn agent_message_request_from_payload(payload: SubmitMessagePayload) -> Agen
         task_id: payload.task_id,
         content: payload.content,
         inquiry_choice: payload.inquiry_choice,
+        current_graph: payload.current_graph,
+        has_run_history: payload.has_run_history,
+        artifact_refs: payload.artifact_refs,
+        pending_choice: payload.pending_choice,
         attachments: payload
             .attachments
             .into_iter()

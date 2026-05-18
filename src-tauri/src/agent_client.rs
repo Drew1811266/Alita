@@ -16,6 +16,14 @@ pub struct AgentMessageRequest {
     pub attachments: Vec<AgentAttachment>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inquiry_choice: Option<InquiryChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_graph: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_run_history: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_refs: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_choice: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

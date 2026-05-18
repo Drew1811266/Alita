@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Attachment(BaseModel):
@@ -21,7 +21,13 @@ class UserMessage(BaseModel):
 
 
 class AgentMessageRequest(UserMessage):
+    model_config = ConfigDict(populate_by_name=True)
+
     inquiry_choice: Literal["quick_answer", "research_flow"] | None = None
+    currentGraph: "RunGraph | None" = Field(default=None, alias="current_graph")
+    hasRunHistory: bool | None = Field(default=None, alias="has_run_history")
+    artifactRefs: list[str] | None = Field(default=None, alias="artifact_refs")
+    pendingChoice: dict[str, Any] | None = Field(default=None, alias="pending_choice")
 
     def to_user_message(self) -> UserMessage:
         return UserMessage(

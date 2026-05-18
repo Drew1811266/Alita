@@ -79,6 +79,37 @@ describe("runNodeGraphStream", () => {
     );
   });
 
+  it("posts graph feedback context when submitting after a graph exists", async () => {
+    const graph: NodeGraph = {
+      graphId: "graph-1",
+      nodes: [],
+      edges: [],
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await submitUserMessage({
+      taskId: "task-1",
+      content: "Change the summary step",
+      attachments: [],
+      currentGraph: graph,
+      hasRunHistory: true,
+      artifactRefs: ["artifact-1"],
+      pendingChoice: { id: "confirm_overwrite", kind: "full_replan" },
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      task_id: "task-1",
+      current_graph: graph,
+      has_run_history: true,
+      artifact_refs: ["artifact-1"],
+      pending_choice: { id: "confirm_overwrite", kind: "full_replan" },
+    });
+  });
+
   it("posts the graph and attachments to the sidecar stream endpoint", async () => {
     const events: BackendEvent[] = [];
     const graph: NodeGraph = {

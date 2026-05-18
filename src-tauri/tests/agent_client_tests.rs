@@ -24,6 +24,10 @@ fn serializes_agent_message_request() {
                 .to_string(),
         }],
         inquiry_choice: None,
+        current_graph: None,
+        has_run_history: None,
+        artifact_refs: None,
+        pending_choice: None,
     };
 
     let json = serde_json::to_value(request).expect("request should serialize");
@@ -42,6 +46,10 @@ fn serializes_agent_message_request_with_inquiry_choice() {
         content: "Research and compare current Python packaging tools".to_string(),
         attachments: vec![],
         inquiry_choice: Some(InquiryChoice::ResearchFlow),
+        current_graph: None,
+        has_run_history: None,
+        artifact_refs: None,
+        pending_choice: None,
     };
 
     let json = serde_json::to_value(request).expect("request should serialize");
@@ -69,6 +77,10 @@ fn maps_submit_message_payload_to_agent_request_with_inquiry_choice() {
         content: "Research and compare current Python packaging tools".to_string(),
         attachments: vec![],
         inquiry_choice: Some(InquiryChoice::ResearchFlow),
+        current_graph: None,
+        has_run_history: None,
+        artifact_refs: None,
+        pending_choice: None,
     });
 
     assert_eq!(request.task_id, "task-1");
@@ -83,10 +95,43 @@ fn maps_submit_message_payload_to_agent_request_without_inquiry_choice() {
         content: "hello".to_string(),
         attachments: vec![],
         inquiry_choice: None,
+        current_graph: None,
+        has_run_history: None,
+        artifact_refs: None,
+        pending_choice: None,
     });
 
     assert_eq!(request.task_id, "task-1");
     assert_eq!(request.inquiry_choice, None);
+}
+
+#[test]
+fn maps_submit_message_payload_to_agent_request_with_graph_feedback_context() {
+    let graph = serde_json::json!({
+        "graphId": "graph-1",
+        "nodes": [],
+        "edges": []
+    });
+    let pending_choice = serde_json::json!({
+        "id": "confirm_overwrite",
+        "kind": "full_replan"
+    });
+
+    let request = agent_message_request_from_payload(SubmitMessagePayload {
+        task_id: "task-1".to_string(),
+        content: "Change the existing graph".to_string(),
+        attachments: vec![],
+        inquiry_choice: None,
+        current_graph: Some(graph.clone()),
+        has_run_history: Some(true),
+        artifact_refs: Some(vec!["artifact-1".to_string()]),
+        pending_choice: Some(pending_choice.clone()),
+    });
+
+    assert_eq!(request.current_graph, Some(graph));
+    assert_eq!(request.has_run_history, Some(true));
+    assert_eq!(request.artifact_refs, Some(vec!["artifact-1".to_string()]));
+    assert_eq!(request.pending_choice, Some(pending_choice));
 }
 
 #[test]

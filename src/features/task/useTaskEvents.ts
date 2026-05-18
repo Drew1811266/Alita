@@ -11,6 +11,10 @@ export type SubmitMessagePayload = {
   content: string;
   attachments: ChatAttachment[];
   inquiryChoice?: "quick_answer" | "research_flow";
+  currentGraph?: NodeGraph;
+  hasRunHistory?: boolean;
+  artifactRefs?: string[];
+  pendingChoice?: Record<string, unknown>;
 };
 
 export type RunNodeGraphPayload = {
@@ -180,6 +184,12 @@ function toSidecarMessage(payload: SubmitMessagePayload) {
     content: payload.content,
     attachments: payload.attachments.map(toSidecarAttachment),
     ...(payload.inquiryChoice ? { inquiry_choice: payload.inquiryChoice } : {}),
+    ...(payload.currentGraph ? { current_graph: payload.currentGraph } : {}),
+    ...(payload.hasRunHistory !== undefined
+      ? { has_run_history: payload.hasRunHistory }
+      : {}),
+    ...(payload.artifactRefs ? { artifact_refs: payload.artifactRefs } : {}),
+    ...(payload.pendingChoice ? { pending_choice: payload.pendingChoice } : {}),
   };
 }
 

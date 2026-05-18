@@ -19,7 +19,8 @@ from agent_service.model_client import (
     ModelRuntimeDisabled,
     ModelRuntimeRequestFailed,
 )
-from agent_service.schemas import AgentEvent, UserMessage
+from agent_service.plan_feedback import apply_graph_feedback
+from agent_service.schemas import AgentEvent, RunGraph, UserMessage
 from agent_service.task_planner import (
     analyze_task,
     build_task_graph,
@@ -74,6 +75,10 @@ class AgentState(TypedDict, total=False):
     intent: AgentIntent
     route_decision: dict
     inquiry_choice: InquiryChoice
+    current_graph: RunGraph
+    has_run_history: bool
+    artifact_refs: list[str]
+    pending_choice: dict
 
 
 def classify_intent(state: AgentState) -> AgentState:
@@ -283,7 +288,22 @@ def run_agent(
     model_client: ModelClient | None = None,
     search_provider: SearchProvider | None = None,
     inquiry_choice: InquiryChoice | None = None,
+    current_graph: RunGraph | None = None,
+    has_run_history: bool = False,
+    artifact_refs: list[str] | None = None,
+    pending_choice: dict | None = None,
 ) -> list[AgentEvent]:
+    if current_graph is not None:
+        return [
+            apply_graph_feedback(
+                message,
+                current_graph,
+                has_run_history=has_run_history,
+                artifact_refs=artifact_refs,
+                pending_choice=pending_choice,
+            )
+        ]
+
     app = build_graph(
         model_client=model_client,
         search_provider=search_provider,
@@ -301,7 +321,21 @@ def stream_agent_events(
     model_client: ModelClient | None = None,
     search_provider: SearchProvider | None = None,
     inquiry_choice: InquiryChoice | None = None,
+    current_graph: RunGraph | None = None,
+    has_run_history: bool = False,
+    artifact_refs: list[str] | None = None,
+    pending_choice: dict | None = None,
 ) -> Iterator[AgentEvent]:
+    if current_graph is not None:
+        yield apply_graph_feedback(
+            message,
+            current_graph,
+            has_run_history=has_run_history,
+            artifact_refs=artifact_refs,
+            pending_choice=pending_choice,
+        )
+        return
+
     decision = classify_route(message)
     intent = _compatible_intent(message, decision, inquiry_choice=inquiry_choice)
     if intent not in {"chat", "local_inquiry"}:

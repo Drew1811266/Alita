@@ -174,6 +174,20 @@ export type BackendEvent =
       };
     }
   | {
+      type: "graph.overwrite_confirmation_required";
+      payload: {
+        taskId: string;
+        previousGraphId: string;
+        summary: string;
+        pendingChoice: Record<string, unknown>;
+        choices: Array<{
+          id: "confirm_overwrite" | "cancel";
+          label: string;
+          description?: string;
+        }>;
+      };
+    }
+  | {
       type: "artifact.created";
       payload: {
         artifactId: string;
