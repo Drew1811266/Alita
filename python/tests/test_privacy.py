@@ -578,6 +578,39 @@ def test_redacts_common_secret_assignment_and_bearer_forms() -> None:
         assert result.reason is None
 
 
+def test_redacts_env_var_style_credential_assignments() -> None:
+    secret_value = "abcdefghijklmnopqrstuvwxyz1234567890"
+    inputs = [
+        f"Search auth docs OPENAI_API_KEY={secret_value}",
+        f"Search auth docs MY_SERVICE_TOKEN={secret_value}",
+        f"Search auth docs DB_PASSWORD={secret_value}",
+        f"Search auth docs PRIVATE_SECRET={secret_value}",
+    ]
+
+    for text in inputs:
+        result = sanitize_for_web_search(text)
+
+        assert "[SECRET]" in result.sanitizedText
+        assert secret_value not in result.sanitizedText
+        assert result.removedCategories == ["SECRET"]
+        assert result.blocked is False
+        assert result.reason is None
+
+
+def test_redacts_quoted_secret_assignment_without_orphan_quotes() -> None:
+    secret_value = "abcdefghijklmnopqrstuvwxyz1234567890"
+
+    result = sanitize_for_web_search(
+        f'Search auth docs api_key="{secret_value}" next'
+    )
+
+    assert result.sanitizedText == "Search auth docs [SECRET] next"
+    assert secret_value not in result.sanitizedText
+    assert '"' not in result.sanitizedText
+    assert result.removedCategories == ["SECRET"]
+    assert result.blocked is False
+
+
 def test_redacts_jwt_like_strings() -> None:
     jwt_like = (
         "eyJhbGciOiJIUzI1NiJ9."
@@ -612,12 +645,34 @@ def test_blocks_command_only_leftovers_after_path_redaction() -> None:
         assert "home/drew" not in result.sanitizedText
 
 
+def test_blocks_git_command_only_leftover_after_path_redaction() -> None:
+    result = sanitize_for_web_search(
+        r"git -C C:\Users\Drew\Projects\Alita status"
+    )
+
+    assert result.sanitizedText == "git -C [LOCAL_PATH] status"
+    assert result.blocked is True
+    assert result.reason == (
+        "Query contains too little non-sensitive content for web search."
+    )
+
+
 def test_preserves_public_intent_after_command_and_path_redaction() -> None:
     path = r"C:\Users\Drew\Projects\Alita"
 
     result = sanitize_for_web_search(f"cd {path} LangGraph docs")
 
     assert result.sanitizedText == "cd [LOCAL_PATH] LangGraph docs"
+    assert result.blocked is False
+    assert result.reason is None
+
+
+def test_preserves_public_intent_after_git_command_and_path_redaction() -> None:
+    result = sanitize_for_web_search(
+        r"git -C C:\Users\Drew\Projects\Alita LangGraph docs"
+    )
+
+    assert result.sanitizedText == "git -C [LOCAL_PATH] LangGraph docs"
     assert result.blocked is False
     assert result.reason is None
 

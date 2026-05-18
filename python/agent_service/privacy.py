@@ -37,10 +37,11 @@ _MODEL_NAME_RE = re.compile(
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _SECRET_RE = re.compile(
     r"\b(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9_]{20,}|"
-    r"ghu_[A-Za-z0-9_]{20,}|ghs_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
-    r"(?:api[_-]?key|token|password|secret)\s*[:=]\s*['\"]?[A-Za-z0-9._~+/=-]{20,}['\"]?|"
-    r"(?:Authorization\s*:\s*)?Bearer\s+[A-Za-z0-9._~+/=-]{20,}|"
-    r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})\b",
+    r"ghu_[A-Za-z0-9_]{20,}|ghs_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b|"
+    r"\b(?:[A-Za-z0-9]+_)*(?:api[_-]?key|token|password|secret)"
+    r"\s*[:=]\s*(['\"]?)[A-Za-z0-9._~+/=-]{20,}\1|"
+    r"\b(?:Authorization\s*:\s*)?Bearer\s+[A-Za-z0-9._~+/=-]{20,}\b|"
+    r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b",
     re.IGNORECASE,
 )
 _REDACTION_LABEL_RE = re.compile(
@@ -119,6 +120,7 @@ _COMMAND_ONLY_TOKENS = {
     "dir",
     "echo",
     "f",
+    "git",
     "ls",
     "mkdir",
     "move",
@@ -128,6 +130,7 @@ _COMMAND_ONLY_TOKENS = {
     "rf",
     "rm",
     "rmdir",
+    "status",
     "type",
 }
 
