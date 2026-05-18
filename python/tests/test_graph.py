@@ -285,6 +285,11 @@ def test_local_questions_with_constraint_words_after_graph_exists_use_inquiry_ro
     [
         "Use only CSV sources for this graph.",
         "Can you use only CSV sources for this graph?",
+        "Add constraint: use only CSV sources.",
+        "Please add constraint: use only CSV sources.",
+        "Add the constraint to use only CSV sources.",
+        "Set constraint: verified sources only.",
+        "Constraint: use only CSV sources.",
     ],
 )
 def test_explicit_graph_constraint_after_graph_exists_routes_to_feedback(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from collections.abc import Iterator
+import re
 from typing import Literal, Protocol, TypedDict
 from uuid import uuid4
 
@@ -430,7 +431,7 @@ def _should_handle_graph_feedback(
 
 
 def _is_explicit_graph_constraint_feedback(content: str) -> bool:
-    normalized = content.lower()
+    normalized = content.strip().lower()
     graph_referential = any(
         phrase in normalized
         for phrase in (
@@ -450,17 +451,17 @@ def _is_explicit_graph_constraint_feedback(content: str) -> bool:
     if graph_referential:
         return True
 
-    return any(
-        phrase in normalized
-        for phrase in (
-            "add a constraint",
-            "add this constraint",
-            "set a constraint",
-            "set this constraint",
-            "apply this constraint to the graph",
-            "apply a constraint to the graph",
-        )
-    )
+    if re.match(r"^(what|why|how|when|where|which|who|can you explain)\b", normalized):
+        return False
+
+    return re.match(
+        r"^(please\s+)?("
+        r"(add|set|apply)\s+(the\s+|this\s+|a\s+)?constraint\b"
+        r"|use\s+.+\b(sources|style|order)\b"
+        r"|constraint\s*:"
+        r")",
+        normalized,
+    ) is not None
 
 
 def _route_intent(state: AgentState) -> AgentIntent:
