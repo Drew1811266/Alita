@@ -13,6 +13,8 @@ const nodeTypeLabels: Record<NodeType, string> = {
   model: "模型调用",
   output: "输出节点",
   temporary_placeholder: "临时占位",
+  planning: "规划节点",
+  temporary_script: "临时脚本",
 };
 
 const statusLabels: Record<NodeStatus, string> = {

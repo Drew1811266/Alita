@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { SUPPORTED_NODE_TYPES } from "../../shared/types";
-import type { NodeGraph } from "../../shared/types";
+import type { NodeGraph, NodeType } from "../../shared/types";
 import { createDocumentGraph } from "./nodeLayout";
+
+const validPlanningNodeType: NodeType = "planning";
+// @ts-expect-error NodeType must remain a closed union of supported graph node types.
+const invalidNodeType: NodeType = "not_a_real_node_type";
 
 function nodeById(graph: ReturnType<typeof createDocumentGraph>, nodeId: string) {
   const node = graph.nodes.find((candidate) => candidate.nodeId === nodeId);
@@ -130,6 +134,9 @@ describe("createDocumentGraph", () => {
   });
 
   it("accepts planning and temporary script nodes in canvas graph data", () => {
+    expect(validPlanningNodeType).toBe("planning");
+    expect(invalidNodeType).toBe("not_a_real_node_type");
+
     const graph: NodeGraph = {
       graphId: "routing-plan",
       nodes: [

@@ -8,15 +8,13 @@ export type NodeStatus =
   | "needs_permission"
   | "skipped";
 
-export type KnownNodeType =
+export type NodeType =
   | "fixed_tool"
   | "model"
   | "output"
   | "temporary_placeholder"
   | "planning"
   | "temporary_script";
-
-export type NodeType = string;
 
 export const SUPPORTED_NODE_TYPES = [
   "fixed_tool",

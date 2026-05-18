@@ -47,6 +47,8 @@ const nodeTypeLabels: Record<AgentNode["nodeType"], string> = {
   model: "模型",
   output: "输出",
   temporary_placeholder: "占位",
+  planning: "规划",
+  temporary_script: "临时脚本",
 };
 
 const statusLabels: Record<AgentNode["status"], string> = {
