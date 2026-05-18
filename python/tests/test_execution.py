@@ -9,7 +9,7 @@ from agent_service.graph import run_agent
 from agent_service.model_client import ChatMessage
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import RunRegistry
-from agent_service.schemas import RunGraphRequest, UserMessage
+from agent_service.schemas import Attachment, RunGraphRequest, UserMessage
 from agent_service.tool_execution import ToolResult
 from agent_service.web_research import build_research_graph
 from agent_service.web_search import SearchFailure, SearchResponse, SearchResult
@@ -681,6 +681,48 @@ def test_document_flow_exports_markdown_artifact(tmp_path: Path) -> None:
     exported_content = exported_path.read_text(encoding="utf-8")
     assert "整理结果：标题和正文内容" in exported_content
     assert "报告正文：这是一份测试报告" in exported_content
+    assert events[-1].type == "task.completed"
+
+
+def test_generated_markdown_conversion_graph_exports_converted_artifact(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.docx"
+    source.write_bytes(b"fake docx")
+    attachment = Attachment(
+        attachment_id="a1",
+        name=source.name,
+        path=str(source),
+        size_bytes=source.stat().st_size,
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    graph_event = run_agent(
+        UserMessage(
+            task_id="task-markdown-convert",
+            content="Please convert this document to Markdown.",
+            attachments=[attachment],
+        )
+    )[0]
+    request = RunGraphRequest(
+        task_id="task-markdown-convert",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[attachment.model_dump()],
+        graph=graph_event.payload["graph"],
+    )
+
+    events = list(run_graph_events(request, tool_executor=FakeToolExecutor()))
+
+    file_export_events = [
+        event
+        for event in events
+        if event.type == "artifact.created"
+        and event.payload["sourceNodeId"] == "file-export"
+    ]
+    assert len(file_export_events) == 1
+    final_artifact = Path(file_export_events[0].payload["path"])
+    assert final_artifact == tmp_path / "artifacts" / "converted" / "01-input.md"
+    assert final_artifact.read_text(encoding="utf-8") == "# Markdown\n\nparsed text"
+    assert not list((tmp_path / "artifacts").glob("report-*.md"))
     assert events[-1].type == "task.completed"
 
 

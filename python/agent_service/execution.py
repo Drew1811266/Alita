@@ -191,8 +191,15 @@ class DocumentFlowExecutor:
                     values={"artifact": compiled_artifact},
                 )
 
+            upstream_artifacts = _unique_artifacts_from_inputs(inputs)
             outline = _first_input_value(inputs, "outline")
             report = _first_input_value(inputs, "report")
+            if upstream_artifacts and not outline and not report:
+                return NodeOutput(
+                    artifacts=upstream_artifacts,
+                    values={"artifact": upstream_artifacts[0]},
+                )
+
             output_path = self.artifact_dir / f"report-{uuid4().hex[:8]}.md"
             exported = write_markdown(
                 (
