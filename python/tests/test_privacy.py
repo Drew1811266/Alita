@@ -104,6 +104,34 @@ def test_preserves_latest_usage_query_after_windows_directory_path() -> None:
     assert result.blocked is False
 
 
+def test_preserves_public_model_query_after_windows_directory_path() -> None:
+    local_path = r"C:\Users\Drew\Projects\Alita"
+
+    result = sanitize_for_web_search(f"Search {local_path} model benchmark results")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] model benchmark results"
+    assert local_path not in result.sanitizedText
+    assert "model benchmark results" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
+def test_preserves_public_repo_query_after_windows_directory_path() -> None:
+    local_path = r"C:\Users\Drew\Projects\Alita"
+
+    result = sanitize_for_web_search(
+        f"Search {local_path} repo documentation best practices"
+    )
+
+    assert result.sanitizedText == (
+        "Search [LOCAL_PATH] repo documentation best practices"
+    )
+    assert local_path not in result.sanitizedText
+    assert "repo documentation best practices" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_redacts_windows_directory_path_with_spaced_final_segment() -> None:
     local_path = r"C:\Users\Drew\My Project"
 

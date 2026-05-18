@@ -74,6 +74,17 @@ _PATH_BOUNDARY_PREPOSITIONS = {
     "with",
 }
 _LOCAL_TAIL_NOUNS = {"folder", "model", "project", "repo", "workspace"}
+_LOCAL_TAIL_PREFIXES = {
+    "draft",
+    "local",
+    "my",
+    "new",
+    "old",
+    "private",
+    "secret",
+    "test",
+    "very",
+}
 
 
 def sanitize_for_web_search(text: str) -> PrivacyGuardResult:
@@ -221,7 +232,7 @@ def _extended_match_end(match: re.Match[str], text: str) -> int:
     if boundary_index is not None:
         return tokens[boundary_index - 1][1] if boundary_index > 0 else match.end()
 
-    local_tail_index = _local_tail_noun_index(tokens)
+    local_tail_index = _local_tail_noun_index(match, tokens)
     if local_tail_index is not None:
         return tokens[local_tail_index][1]
 
@@ -254,11 +265,21 @@ def _boundary_token_index(tokens: list[tuple[str, int]]) -> int | None:
     return None
 
 
-def _local_tail_noun_index(tokens: list[tuple[str, int]]) -> int | None:
+def _local_tail_noun_index(
+    match: re.Match[str],
+    tokens: list[tuple[str, int]],
+) -> int | None:
     for index, (word, _end) in enumerate(tokens):
-        if word.lower() in _LOCAL_TAIL_NOUNS:
+        if word.lower() in _LOCAL_TAIL_NOUNS and (
+            index > 0 or _final_component_is_local_tail_prefix(match)
+        ):
             return index
     return None
+
+
+def _final_component_is_local_tail_prefix(match: re.Match[str]) -> bool:
+    final_component = match.group(0).rstrip(".,;:!?").rsplit("\\", 1)[-1]
+    return final_component.lower() in _LOCAL_TAIL_PREFIXES
 
 
 def _tokens_reach_query_end(tokens: list[tuple[str, int]], text: str) -> bool:
