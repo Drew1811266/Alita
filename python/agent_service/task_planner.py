@@ -79,7 +79,7 @@ def analyze_task(
     normalized = message.lower()
     requirements: list[CapabilityRequirement] = []
 
-    if attachments and _contains_any(normalized, ["document", "file", "convert", "markdown", "pdf", "report"]):
+    if attachments:
         kind = TaskKind.DOCUMENT
         requirements.append(
             CapabilityRequirement(
@@ -87,14 +87,17 @@ def analyze_task(
                 description="Receive the user-provided attachment.",
             )
         )
-        if _contains_any(normalized, ["convert", "markdown", "md"]):
+        if _contains_any(
+            normalized,
+            ["convert", "markdown", "md", "pdf", "export", "report", "organize"],
+        ):
             requirements.append(
                 CapabilityRequirement(
                     capability="document.convert.markdown",
                     description="Convert the attached document to Markdown.",
                 )
             )
-        if _contains_any(normalized, ["pdf", "export", "report"]):
+        if _contains_any(normalized, ["pdf", "export", "report", "organize"]):
             requirements.extend(
                 [
                     CapabilityRequirement(
@@ -108,12 +111,15 @@ def analyze_task(
                     ),
                 ]
             )
-    elif _contains_any(normalized, ["csv", "inspect", "count rows", "transform local", "local file"]):
+    elif _contains_any(
+        normalized,
+        ["csv", "inspect", "count rows", "transform local", "local file"],
+    ):
         kind = TaskKind.LOCAL_FILE
         requirements.append(
             CapabilityRequirement(
                 capability="file.inspect",
-                description="Inspect or transform a bounded local file.",
+                description="Inspect or transform a bounded local CSV file.",
                 temporary_script_candidate=True,
             )
         )
@@ -127,7 +133,10 @@ def analyze_task(
                 risk_factors=["destructive_write"],
             )
         )
-    elif _contains_any(normalized, ["network", "fetch", "download", "credential", "password", "shell", "process"]):
+    elif _contains_any(
+        normalized,
+        ["network", "fetch", "download", "credential", "password", "shell", "process"],
+    ):
         kind = TaskKind.UNSUPPORTED
         requirements.append(
             CapabilityRequirement(
@@ -167,9 +176,7 @@ def select_tools(
             continue
 
         candidates = [
-            tool
-            for tool in enabled_tools
-            if requirement.capability in tool.capabilities
+            tool for tool in enabled_tools if requirement.capability in tool.capabilities
         ]
         if not candidates:
             continue
@@ -231,10 +238,30 @@ def resolve_tool_gaps(
 
 
 def build_task_graph(task_plan: TaskPlan) -> dict:
+    if task_plan.kind == TaskKind.DOCUMENT:
+        return _document_task_graph(task_plan)
+
     nodes = _planning_nodes(task_plan)
     edges = _sequential_edges([node["nodeId"] for node in nodes])
     executable_dependencies = ["execution-order-planning"]
     final_dependencies: list[str] = []
+    unsupported_gaps = [gap for gap in task_plan.tool_gaps if gap.user_message]
+
+    if unsupported_gaps:
+        node_id = "missing-tool-response"
+        nodes.append(
+            _node(
+                node_id=node_id,
+                node_type="output",
+                display_name="Missing tool response",
+                status="completed",
+                dependencies=["execution-order-planning"],
+                summary=" ".join(gap.user_message or "" for gap in unsupported_gaps),
+                position={"x": 260, "y": 610},
+            )
+        )
+        edges.append(_edge("execution-order-planning", node_id))
+        return _graph_payload(task_plan, nodes, edges)
 
     for requirement in task_plan.requirements:
         if not requirement.can_use_model:
@@ -309,37 +336,128 @@ def build_task_graph(task_plan: TaskPlan) -> dict:
         edges.append(_edge("execution-order-planning", node_id))
         final_dependencies.append(node_id)
 
-    unsupported_gaps = [gap for gap in task_plan.tool_gaps if gap.user_message]
-    if unsupported_gaps:
-        node_id = "missing-tool-response"
-        nodes.append(
-            _node(
-                node_id=node_id,
-                node_type="output",
-                display_name="Missing tool response",
-                status="completed",
-                dependencies=["execution-order-planning"],
-                summary=" ".join(gap.user_message or "" for gap in unsupported_gaps),
-                position={"x": 260, "y": 610},
-            )
+    node_id = "task-output"
+    dependencies = final_dependencies or ["execution-order-planning"]
+    nodes.append(
+        _node(
+            node_id=node_id,
+            node_type="output",
+            display_name="Task output",
+            status="waiting",
+            dependencies=dependencies,
+            summary="Collect results from the planned task steps and present them to the user.",
+            position={"x": 260, "y": 610},
         )
-        edges.append(_edge("execution-order-planning", node_id))
-    else:
-        node_id = "task-output"
-        dependencies = final_dependencies or ["execution-order-planning"]
-        nodes.append(
-            _node(
-                node_id=node_id,
-                node_type="output",
-                display_name="Task output",
-                status="waiting",
-                dependencies=dependencies,
-                summary="Collect results from the planned task steps and present them to the user.",
-                position={"x": 260, "y": 610},
-            )
-        )
-        edges.extend(_edge(dependency, node_id) for dependency in dependencies)
+    )
+    edges.extend(_edge(dependency, node_id) for dependency in dependencies)
 
+    return _graph_payload(task_plan, nodes, edges)
+
+
+def _document_task_graph(task_plan: TaskPlan) -> dict:
+    document_nodes = [
+        _node(
+            node_id="document-input",
+            node_type="fixed_tool",
+            display_name="文档输入",
+            status="completed",
+            input_ports=[],
+            output_ports=[_port("document-output", "Document", "document")],
+            dependencies=[],
+            summary="Receive the document attachment provided in chat.",
+            position={"x": 260, "y": 20},
+            tool_ref="document.receive_attachment",
+            estimate=_estimate(250, "low", "low", "none"),
+            resource_usage=_resource_usage("low", "low", "none"),
+        ),
+        _node(
+            node_id="document-parse",
+            node_type="fixed_tool",
+            display_name="文档转 Markdown",
+            status="waiting",
+            input_ports=[_port("document-input", "Document", "document")],
+            output_ports=[_port("markdown-output", "Markdown", "text")],
+            dependencies=["document-input"],
+            summary="Convert the attached local document into Markdown text.",
+            position={"x": 260, "y": 190},
+            tool_ref="document.markitdown_convert",
+            estimate=_estimate(2000, "medium", "low", "none"),
+            resource_usage=_resource_usage("medium", "low", "none"),
+        ),
+        _node(
+            node_id="content-organize",
+            node_type="model",
+            display_name="整理内容",
+            status="waiting",
+            input_ports=[_port("text-input", "Text", "text")],
+            output_ports=[_port("outline-output", "Outline", "json")],
+            dependencies=["document-parse"],
+            summary="Extract document points and create a structured outline.",
+            position={"x": 90, "y": 370},
+            model_ref="local-content-organizer",
+            estimate=_estimate(1200, "medium", "medium", "none"),
+            resource_usage=_resource_usage("medium", "medium", "none"),
+        ),
+        _node(
+            node_id="report-generate",
+            node_type="model",
+            display_name="生成报告",
+            status="waiting",
+            input_ports=[_port("text-input", "Text", "text")],
+            output_ports=[_port("report-output", "Report", "text")],
+            dependencies=["document-parse"],
+            summary="Generate a draft report from the extracted document content.",
+            position={"x": 430, "y": 370},
+            model_ref="local-report-writer",
+            estimate=_estimate(1200, "medium", "medium", "none"),
+            resource_usage=_resource_usage("medium", "medium", "none"),
+        ),
+        _node(
+            node_id="typst-export",
+            node_type="fixed_tool",
+            display_name="Typst PDF 导出",
+            status="waiting",
+            input_ports=[
+                _port("outline-input", "Outline", "json"),
+                _port("report-input", "Report", "text"),
+            ],
+            output_ports=[
+                _port("typst-output", "Typst source", "artifact"),
+                _port("pdf-output", "PDF file", "artifact"),
+            ],
+            dependencies=["content-organize", "report-generate"],
+            summary="Lay out the outline and report in Typst and compile a PDF.",
+            position={"x": 260, "y": 560},
+            tool_ref="document.typst_compile",
+            estimate=_estimate(2000, "medium", "low", "none"),
+            resource_usage=_resource_usage("medium", "low", "none"),
+        ),
+        _node(
+            node_id="file-export",
+            node_type="output",
+            display_name="导出文件",
+            status="waiting",
+            input_ports=[_port("artifact-input", "PDF file", "artifact")],
+            output_ports=[_port("artifact-output", "Artifact", "artifact")],
+            dependencies=["typst-export"],
+            summary="Return the final document artifacts to the user.",
+            position={"x": 260, "y": 750},
+        ),
+    ]
+    planning_nodes = _planning_nodes(task_plan)
+    edges = [
+        _edge("document-input", "document-parse"),
+        _edge("document-parse", "content-organize"),
+        _edge("document-parse", "report-generate"),
+        _edge("content-organize", "typst-export"),
+        _edge("report-generate", "typst-export"),
+        _edge("typst-export", "file-export"),
+        *_sequential_edges([node["nodeId"] for node in planning_nodes]),
+    ]
+    return _graph_payload(task_plan, [*document_nodes, *planning_nodes], edges)
+
+
+def _graph_payload(task_plan: TaskPlan, nodes: list[dict], edges: list[dict]) -> dict:
     return {
         "graphId": f"{task_plan.task_id}-graph",
         "nodes": nodes,
@@ -353,22 +471,14 @@ def build_task_graph(task_plan: TaskPlan) -> dict:
 
 def _planning_nodes(task_plan: TaskPlan) -> list[dict]:
     planning = [
-        (
-            "task-analysis",
-            "Task analysis",
-            task_plan.summary,
-        ),
+        ("task-analysis", "Task analysis", task_plan.summary),
         (
             "capability-analysis",
             "Capability analysis",
             "Required capabilities: "
             + ", ".join(requirement.capability for requirement in task_plan.requirements),
         ),
-        (
-            "tool-selection",
-            "Tool selection",
-            _tool_selection_summary(task_plan),
-        ),
+        ("tool-selection", "Tool selection", _tool_selection_summary(task_plan)),
         (
             "execution-order-planning",
             "Execution-order planning",
@@ -498,6 +608,8 @@ def _node(
     dependencies: list[str],
     summary: str,
     position: dict[str, float],
+    input_ports: list[dict] | None = None,
+    output_ports: list[dict] | None = None,
     tool_ref: str | None = None,
     model_ref: str | None = None,
     script_review: dict | None = None,
@@ -509,8 +621,8 @@ def _node(
         "nodeType": node_type,
         "displayName": display_name,
         "status": status,
-        "inputPorts": [],
-        "outputPorts": [],
+        "inputPorts": input_ports or [],
+        "outputPorts": output_ports or [],
         "dependencies": dependencies,
         "summary": summary,
         "createdBy": "agent",
@@ -529,6 +641,14 @@ def _node(
     if resource_usage is not None:
         node["resourceUsage"] = resource_usage
     return node
+
+
+def _port(port_id: str, label: str, data_type: str) -> dict:
+    return {
+        "id": port_id,
+        "label": label,
+        "dataType": data_type,
+    }
 
 
 def _node_id(prefix: str, value: str) -> str:

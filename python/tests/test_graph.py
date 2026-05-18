@@ -308,7 +308,7 @@ def test_attachment_generates_node_graph_for_document_task() -> None:
         "source": "document-input",
         "target": "document-parse",
     }
-    assert [node["nodeId"] for node in graph["nodes"]] == [
+    assert [node["nodeId"] for node in graph["nodes"][:6]] == [
         "document-input",
         "document-parse",
         "content-organize",
@@ -347,9 +347,55 @@ def test_attachment_document_task_route_decision_matches_document_graph_route() 
     events = result["events"]
 
     assert decision.intent.kind == IntentKind.TASK
+    assert result["intent"] == "task"
     assert result["route_decision"]["intent"]["kind"] == "task"
-    assert _classify_message(message) == "document_task"
+    assert _classify_message(message) == "task"
     assert events[0].type == "node_graph.created"
+    assert events[0].payload["graph"]["metadata"]["taskKind"] == "document"
+
+
+def test_attachment_document_task_graph_has_planner_nodes_and_executable_estimates() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="task-document-planner",
+            content="Please organize this document into a report PDF.",
+            attachments=[
+                Attachment(
+                    attachment_id="a1",
+                    name="input.docx",
+                    path="workspace/inputs/input.docx",
+                    size_bytes=100,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            ],
+        )
+    )
+
+    graph = events[0].payload["graph"]
+    planning_nodes = [node for node in graph["nodes"] if node["nodeType"] == "planning"]
+    executable_nodes = [
+        node
+        for node in graph["nodes"]
+        if node["nodeType"] in {"fixed_tool", "model", "temporary_script"}
+    ]
+
+    assert [node["nodeId"] for node in planning_nodes] == [
+        "task-analysis",
+        "capability-analysis",
+        "tool-selection",
+        "execution-order-planning",
+    ]
+    assert [node["nodeId"] for node in graph["nodes"][:6]] == [
+        "document-input",
+        "document-parse",
+        "content-organize",
+        "report-generate",
+        "typst-export",
+        "file-export",
+    ]
+    assert executable_nodes
+    assert all(node.get("estimate") for node in executable_nodes)
+    assert all(node.get("resourceUsage") for node in executable_nodes)
 
 
 def test_general_task_classification_creates_planner_graph_instead_of_answer() -> None:

@@ -12,7 +12,6 @@ from agent_service.intent import (
     InquiryMode,
     RouteDecision,
     classify_route,
-    should_route_document_task,
 )
 from agent_service.model_client import (
     ChatMessage as ModelChatMessage,
@@ -40,7 +39,6 @@ AgentIntent = Literal[
     "web_complex_choice",
     "web_complex_research_flow",
     "missing_input",
-    "document_task",
     "task",
 ]
 InquiryChoice = Literal["quick_answer", "research_flow"]
@@ -106,20 +104,6 @@ def request_required_inputs(state: AgentState) -> AgentState:
                 payload={
                     "prompt": prompt,
                     "missing": missing_inputs or ["message"],
-                },
-            )
-        ],
-    }
-
-
-def plan_node_graph(state: AgentState) -> AgentState:
-    return {
-        **state,
-        "events": [
-            AgentEvent(
-                type="node_graph.created",
-                payload={
-                    "graph": _create_document_graph(state["message"].task_id),
                 },
             )
         ],
@@ -213,7 +197,6 @@ def build_graph(
         ),
     )
     graph.add_node("request_required_inputs", request_required_inputs)
-    graph.add_node("plan_node_graph", plan_node_graph)
     graph.add_node("plan_task_graph", plan_task_graph)
     graph.add_node("choose_research_mode", choose_research_mode)
     graph.add_node("plan_research_graph", plan_research_graph)
@@ -236,7 +219,6 @@ def build_graph(
             "web_complex_choice": "choose_research_mode",
             "web_complex_research_flow": "plan_research_graph",
             "missing_input": "request_required_inputs",
-            "document_task": "plan_node_graph",
             "task": "plan_task_graph",
         },
     )
@@ -245,7 +227,6 @@ def build_graph(
     graph.add_edge("choose_research_mode", END)
     graph.add_edge("plan_research_graph", END)
     graph.add_edge("request_required_inputs", END)
-    graph.add_edge("plan_node_graph", END)
     graph.add_edge("plan_task_graph", END)
     return graph.compile()
 
@@ -387,9 +368,6 @@ def _compatible_intent(
     *,
     inquiry_choice: InquiryChoice | None = None,
 ) -> AgentIntent:
-    if should_route_document_task(message, decision):
-        return "document_task"
-
     if decision.intent.kind == IntentKind.NEED_INPUT:
         return "missing_input"
 

@@ -5,6 +5,7 @@ from pathlib import Path
 from agent_service.schemas import Attachment
 from agent_service.task_planner import (
     CapabilityRequirement,
+    TaskPlan,
     TaskKind,
     analyze_task,
     build_task_graph,
@@ -159,3 +160,85 @@ def test_high_risk_temporary_script_node_requires_approval() -> None:
     assert review["riskLevel"] == "high"
     assert review["requiresApproval"] is True
     assert script_nodes[0]["status"] == "needs_permission"
+
+
+def test_document_task_graph_preserves_workflow_with_planner_nodes_and_estimates() -> None:
+    task_plan = analyze_task("Please organize this document into a report PDF.", [_docx_attachment()])
+    task_plan.task_id = "doc-plan"
+
+    graph = build_task_graph(task_plan)
+
+    assert graph["metadata"]["taskKind"] == "document"
+    assert [node["nodeId"] for node in graph["nodes"][:6]] == [
+        "document-input",
+        "document-parse",
+        "content-organize",
+        "report-generate",
+        "typst-export",
+        "file-export",
+    ]
+    planning_nodes = [node for node in graph["nodes"] if node["nodeType"] == "planning"]
+    assert [node["nodeId"] for node in planning_nodes] == [
+        "task-analysis",
+        "capability-analysis",
+        "tool-selection",
+        "execution-order-planning",
+    ]
+    document_nodes = [
+        node
+        for node in graph["nodes"]
+        if node["nodeId"]
+        in {
+            "document-input",
+            "document-parse",
+            "content-organize",
+            "report-generate",
+            "typst-export",
+            "file-export",
+        }
+    ]
+    assert [node["nodeId"] for node in document_nodes] == [
+        "document-input",
+        "document-parse",
+        "content-organize",
+        "report-generate",
+        "typst-export",
+        "file-export",
+    ]
+    executable_nodes = [
+        node
+        for node in document_nodes
+        if node["nodeType"] in {"fixed_tool", "model", "temporary_script"}
+    ]
+    assert executable_nodes
+    assert all(node.get("estimate") for node in executable_nodes)
+    assert all(node.get("resourceUsage") for node in executable_nodes)
+
+
+def test_unsupported_mixed_plan_stops_before_executable_nodes() -> None:
+    task_plan = TaskPlan(
+        kind=TaskKind.CONTENT,
+        summary="Plan a mixed task with one blocked network capability.",
+        requirements=[
+            CapabilityRequirement(
+                capability="model.reasoning",
+                description="Draft a summary.",
+                can_use_model=True,
+            ),
+            CapabilityRequirement(
+                capability="network.fetch",
+                description="Fetch content from the public internet.",
+            ),
+        ],
+    )
+    task_plan.tool_gaps = resolve_tool_gaps(task_plan.requirements, selected_tools=[])
+
+    graph = build_task_graph(task_plan)
+
+    assert graph["nodes"][-1]["nodeId"] == "missing-tool-response"
+    assert graph["nodes"][-1]["nodeType"] == "output"
+    assert [
+        node["nodeId"]
+        for node in graph["nodes"]
+        if node["nodeType"] in {"fixed_tool", "model", "temporary_script"}
+    ] == []
