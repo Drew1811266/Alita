@@ -81,6 +81,26 @@ def test_agent_message_complex_inquiry_research_flow_choice_returns_graph() -> N
     assert events[0]["payload"]["graph"]["graphId"] == "task-research-flow-research-graph"
 
 
+def test_agent_message_stream_research_flow_choice_returns_graph_sse() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/message/stream",
+        json={
+            "task_id": "task-stream-research-flow",
+            "content": "Research and compare current Python packaging tools",
+            "attachments": [],
+            "inquiry_choice": "research_flow",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "node_graph.created" in response.text
+    assert "research-parallel-search" in response.text
+    assert "research.choice_required" not in response.text
+
+
 def test_agent_endpoints_require_sidecar_token_when_configured(monkeypatch) -> None:
     monkeypatch.setenv("ALITA_SIDECAR_TOKEN", "secret-token")
     client = TestClient(app)

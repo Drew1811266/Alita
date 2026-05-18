@@ -296,7 +296,13 @@ pub async fn submit_user_message(
 ) -> Result<Vec<AgentEvent>, String> {
     let client = AgentClient::new(crate::sidecar::agent_base_url())
         .with_auth_token(crate::sidecar::sidecar_auth_token(&app)?);
-    let request = AgentMessageRequest {
+    let request = agent_message_request_from_payload(payload);
+
+    client.send_message(&request).await
+}
+
+pub fn agent_message_request_from_payload(payload: SubmitMessagePayload) -> AgentMessageRequest {
+    AgentMessageRequest {
         task_id: payload.task_id,
         content: payload.content,
         inquiry_choice: payload.inquiry_choice,
@@ -311,9 +317,7 @@ pub async fn submit_user_message(
                 mime_type: attachment.mime_type,
             })
             .collect(),
-    };
-
-    client.send_message(&request).await
+    }
 }
 
 #[tauri::command]

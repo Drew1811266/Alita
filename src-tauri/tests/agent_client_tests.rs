@@ -12,6 +12,7 @@ use std::{
 use agent_client::{
     AgentAttachment, AgentMessageRequest, AsrStatusResponse, AsrTranscriptionRequest,
 };
+use alita_lib::commands::{agent_message_request_from_payload, SubmitMessagePayload};
 
 #[test]
 fn serializes_agent_message_request() {
@@ -50,6 +51,33 @@ fn serializes_agent_message_request_with_inquiry_choice() {
     let json = serde_json::to_value(request).expect("request should serialize");
 
     assert_eq!(json["inquiry_choice"], "research_flow");
+}
+
+#[test]
+fn maps_submit_message_payload_to_agent_request_with_inquiry_choice() {
+    let request = agent_message_request_from_payload(SubmitMessagePayload {
+        task_id: "task-1".to_string(),
+        content: "Research and compare current Python packaging tools".to_string(),
+        attachments: vec![],
+        inquiry_choice: Some("research_flow".to_string()),
+    });
+
+    assert_eq!(request.task_id, "task-1");
+    assert_eq!(request.inquiry_choice.as_deref(), Some("research_flow"));
+    assert!(request.attachments.is_empty());
+}
+
+#[test]
+fn maps_submit_message_payload_to_agent_request_without_inquiry_choice() {
+    let request = agent_message_request_from_payload(SubmitMessagePayload {
+        task_id: "task-1".to_string(),
+        content: "hello".to_string(),
+        attachments: vec![],
+        inquiry_choice: None,
+    });
+
+    assert_eq!(request.task_id, "task-1");
+    assert_eq!(request.inquiry_choice, None);
 }
 
 #[test]
