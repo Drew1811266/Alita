@@ -321,6 +321,17 @@ def test_research_search_fails_after_retry_budget_is_exhausted(tmp_path: Path) -
     node_failed = next(event for event in events if event.type == "node.failed")
     assert node_failed.payload["nodeId"] == "research-parallel-search"
     assert node_failed.payload["errorCode"] == "web_search_failed"
+    node_run_recorded = next(
+        event
+        for event in events
+        if event.type == "node.run_recorded"
+        and event.payload["record"]["nodeId"] == "research-parallel-search"
+    )
+    assert node_run_recorded.payload["record"]["errorCode"] == "web_search_failed"
+    journal = RunJournal(project_path=request.project_path, run_id=request.run_id)
+    assert journal.read_node("research-parallel-search")["errorCode"] == (
+        "web_search_failed"
+    )
     assert events[-1].type == "task.failed"
 
 

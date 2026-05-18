@@ -204,10 +204,23 @@ export function reduceBackendEvents(
     }
 
     if (event.type === "node.run_recorded") {
+      const node = current.graph?.nodes.find(
+        (candidate) => candidate.nodeId === event.payload.record.nodeId,
+      );
+      const record =
+        event.payload.record.status === "failed" &&
+        node?.lastRun?.errorCode &&
+        !event.payload.record.errorCode
+          ? {
+              ...event.payload.record,
+              errorCode: node.lastRun.errorCode,
+            }
+          : event.payload.record;
+
       return updateNode(current, event.payload.record.nodeId, {
-        status: event.payload.record.status,
-        artifactRefs: event.payload.record.artifactRefs,
-        lastRun: event.payload.record,
+        status: record.status,
+        artifactRefs: record.artifactRefs,
+        lastRun: record,
       });
     }
 
@@ -250,6 +263,19 @@ export function reduceBackendEvents(
       const reportLine = event.payload.reportArtifactPath
         ? `\n${event.payload.reportArtifactPath}`
         : "";
+      const acceptedSources = event.payload.acceptedSources ?? [];
+      const rejectedSources = event.payload.rejectedSources ?? [];
+      const message = {
+        ...createAssistantMessage(`${summary}${reportLine}`),
+        sources: acceptedSources,
+        rejectedSources,
+        sourceMetadata: {
+          answerStatus:
+            acceptedSources.length > 0 ? "answered" : "no-reliable-sources",
+          accepted: acceptedSources,
+          rejected: rejectedSources,
+        },
+      } satisfies ChatMessage;
       const existingArtifacts = current.artifacts ?? [];
       const artifacts =
         artifact &&
@@ -264,10 +290,7 @@ export function reduceBackendEvents(
       return {
         ...current,
         artifacts,
-        messages: [
-          ...current.messages,
-          createAssistantMessage(`${summary}${reportLine}`),
-        ],
+        messages: [...current.messages, message],
         dirty: true,
       };
     }

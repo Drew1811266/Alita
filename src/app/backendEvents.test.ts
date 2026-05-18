@@ -468,6 +468,26 @@ describe("reduceBackendEvents", () => {
   });
 
   it("adds research completion artifact and chat summary", () => {
+    const acceptedSources = [
+      {
+        ref: "[1]",
+        title: "Python docs",
+        url: "https://docs.python.org/3/",
+        snippet: "Official docs.",
+        sourceType: "official_docs",
+        accepted: true,
+        rejectionReason: null,
+      },
+    ];
+    const rejectedSources = [
+      {
+        ref: "[2]",
+        title: "Top10 Python",
+        url: "https://top10.example/python",
+        accepted: false,
+        rejectionReason: "content_farm",
+      },
+    ];
     const result = reduceBackendEvents(
       {
         messages: [],
@@ -484,26 +504,8 @@ describe("reduceBackendEvents", () => {
             reportArtifactId: "research-report-abc123",
             reportArtifactPath: "D:\\Project\\artifacts\\research\\research-report-abc123.md",
             summary: "Research completed for Python packaging.",
-            acceptedSources: [
-              {
-                ref: "[1]",
-                title: "Python docs",
-                url: "https://docs.python.org/3/",
-                snippet: "Official docs.",
-                sourceType: "official_docs",
-                accepted: true,
-                rejectionReason: null,
-              },
-            ],
-            rejectedSources: [
-              {
-                ref: "[2]",
-                title: "Top10 Python",
-                url: "https://top10.example/python",
-                accepted: false,
-                rejectionReason: "content_farm",
-              },
-            ],
+            acceptedSources,
+            rejectedSources,
           },
         },
       ],
@@ -522,6 +524,13 @@ describe("reduceBackendEvents", () => {
         path: "D:\\Project\\artifacts\\research\\research-report-abc123.md",
       }),
     ]);
+    expect(result.messages[0].sources).toEqual(acceptedSources);
+    expect(result.messages[0].rejectedSources).toEqual(rejectedSources);
+    expect(result.messages[0].sourceMetadata).toEqual({
+      answerStatus: "answered",
+      accepted: acceptedSources,
+      rejected: rejectedSources,
+    });
     expect(result.dirty).toBe(true);
   });
 
@@ -609,6 +618,50 @@ describe("reduceBackendEvents", () => {
     expect(result.graph?.nodes[0].lastRun?.runId).toBe("run-1");
     expect(result.graph?.nodes[0].lastRun?.error).toBe("tool disabled");
     expect(result.graph?.nodes[0].lastRun?.errorCode).toBe("tool_disabled");
+  });
+
+  it("keeps error codes when failed nodes are later recorded", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: graphWithNode,
+        dirty: false,
+        activeRunId: "run-1",
+      },
+      [
+        {
+          type: "node.failed",
+          payload: {
+            nodeId: "document-parse",
+            taskId: "task-1",
+            runId: "run-1",
+            error: "Search failed.",
+            errorCode: "web_search_failed",
+          },
+        },
+        {
+          type: "node.run_recorded",
+          payload: {
+            record: {
+              nodeRunId: "run-1-document-parse",
+              runId: "run-1",
+              nodeId: "document-parse",
+              status: "failed",
+              startedAt: "2026-05-10T00:00:00.000Z",
+              completedAt: "2026-05-10T00:00:01.000Z",
+              artifactRefs: [],
+              error: "Search failed.",
+            },
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.graph?.nodes[0].status).toBe("failed");
+    expect(result.graph?.nodes[0].lastRun?.errorCode).toBe(
+      "web_search_failed",
+    );
   });
 
   it("adds completed runs to run history", () => {

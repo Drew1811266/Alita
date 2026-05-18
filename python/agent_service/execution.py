@@ -534,6 +534,7 @@ def run_graph_events(
                     "completedAt": completed_at,
                     "artifactRefs": [],
                     "error": str(error),
+                    "errorCode": payload.get("errorCode"),
                     "values": {},
                 }
                 journal.write_node(node.nodeId, record)
@@ -635,6 +636,7 @@ def run_graph_events(
                     "completedAt": completed_at,
                     "artifactRefs": partial_output.artifacts,
                     "error": str(error),
+                    "errorCode": payload.get("errorCode"),
                     "values": partial_output.values,
                 }
                 journal.write_node(node.nodeId, record)
@@ -927,6 +929,7 @@ def _event_record(record: dict) -> dict:
         "completedAt": record.get("completedAt"),
         "artifactRefs": record.get("artifactRefs", []),
         "error": record.get("error"),
+        **({"errorCode": record["errorCode"]} if record.get("errorCode") else {}),
     }
 
 
