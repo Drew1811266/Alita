@@ -173,6 +173,8 @@ def _is_document_request(content: str) -> bool:
 def _is_polite_task_request(content: str) -> bool:
     if not _contains_any(content, _TASK_ACTIONS):
         return False
+    if _is_instructional_inquiry(content):
+        return False
 
     normalized = content.strip().lower()
     return normalized.startswith(
@@ -185,6 +187,24 @@ def _is_polite_task_request(content: str) -> bool:
             "能不能",
             "可以帮我",
         )
+    )
+
+
+def _is_instructional_inquiry(content: str) -> bool:
+    return _contains_any(
+        content,
+        [
+            "how do i",
+            "how can i",
+            "how should i",
+            "how to",
+            "explain how",
+            "tell me how",
+            "如何",
+            "怎么",
+            "解释一下怎么",
+            "告诉我怎么",
+        ],
     )
 
 

@@ -123,6 +123,9 @@ def test_classifies_empty_or_missing_document_input_as_need_input(content: str) 
     [
         "How do I update Python?",
         "How do I fix this error?",
+        "Can you explain how to update Python?",
+        "Could you tell me how to fix this error?",
+        "Please explain how to update Python.",
     ],
 )
 def test_classifies_how_to_questions_with_task_verbs_as_local_inquiry(
