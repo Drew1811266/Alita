@@ -238,13 +238,8 @@ def resolve_tool_gaps(
 
 
 def build_task_graph(task_plan: TaskPlan) -> dict:
-    if task_plan.kind == TaskKind.DOCUMENT:
-        return _document_task_graph(task_plan)
-
     nodes = _planning_nodes(task_plan)
     edges = _sequential_edges([node["nodeId"] for node in nodes])
-    executable_dependencies = ["execution-order-planning"]
-    final_dependencies: list[str] = []
     unsupported_gaps = [gap for gap in task_plan.tool_gaps if gap.user_message]
 
     if unsupported_gaps:
@@ -262,6 +257,12 @@ def build_task_graph(task_plan: TaskPlan) -> dict:
         )
         edges.append(_edge("execution-order-planning", node_id))
         return _graph_payload(task_plan, nodes, edges)
+
+    if task_plan.kind == TaskKind.DOCUMENT:
+        return _document_task_graph(task_plan)
+
+    executable_dependencies = ["execution-order-planning"]
+    final_dependencies: list[str] = []
 
     for requirement in task_plan.requirements:
         if not requirement.can_use_model:

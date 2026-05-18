@@ -242,3 +242,38 @@ def test_unsupported_mixed_plan_stops_before_executable_nodes() -> None:
         for node in graph["nodes"]
         if node["nodeType"] in {"fixed_tool", "model", "temporary_script"}
     ] == []
+
+
+def test_unsupported_document_plan_stops_before_document_executable_nodes() -> None:
+    task_plan = TaskPlan(
+        kind=TaskKind.DOCUMENT,
+        summary="Plan a document task with a missing renderer.",
+        requirements=[
+            CapabilityRequirement(
+                capability="document_input",
+                description="Receive the user-provided attachment.",
+            ),
+            CapabilityRequirement(
+                capability="document.render.unavailable",
+                description="Render the document with an unavailable renderer.",
+            ),
+        ],
+    )
+    task_plan.tool_gaps = resolve_tool_gaps(task_plan.requirements, selected_tools=[])
+
+    graph = build_task_graph(task_plan)
+    planning_nodes = [node for node in graph["nodes"] if node["nodeType"] == "planning"]
+
+    assert [node["nodeId"] for node in planning_nodes] == [
+        "task-analysis",
+        "capability-analysis",
+        "tool-selection",
+        "execution-order-planning",
+    ]
+    assert graph["nodes"][-1]["nodeId"] == "missing-tool-response"
+    assert graph["nodes"][-1]["nodeType"] == "output"
+    assert [
+        node["nodeId"]
+        for node in graph["nodes"]
+        if node["nodeType"] in {"fixed_tool", "model", "temporary_script"}
+    ] == []
