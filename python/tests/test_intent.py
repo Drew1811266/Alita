@@ -7,7 +7,7 @@ from agent_service.intent import (
     IntentKind,
     classify_route,
 )
-from agent_service.schemas import UserMessage
+from agent_service.schemas import Attachment, UserMessage
 
 
 @pytest.mark.parametrize(
@@ -138,3 +138,28 @@ def test_route_payload_does_not_leak_local_paths_into_external_query_fields() ->
     assert local_path not in repr(payload)
     assert project_path not in repr(payload)
     assert model_path not in repr(payload)
+
+
+def test_attachment_document_processing_request_is_structured_task_without_path_leak() -> None:
+    attachment_path = r"C:\Users\Drew\Projects\Alita\inputs\notes.docx"
+    decision = classify_route(
+        UserMessage(
+            task_id="attached-document-task",
+            content="请整理这个文档",
+            attachments=[
+                Attachment(
+                    attachment_id="doc-1",
+                    name="notes.docx",
+                    path=attachment_path,
+                    size_bytes=128,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            ],
+        )
+    )
+
+    assert decision.intent.kind == IntentKind.TASK
+    assert decision.inquiry is None
+    assert decision.missing_inputs == []
+    assert attachment_path not in decision.reason
+    assert attachment_path not in repr(decision.to_payload())

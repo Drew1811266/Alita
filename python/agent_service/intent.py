@@ -61,10 +61,15 @@ def classify_route(message: UserMessage) -> RouteDecision:
     has_attachments = bool(message.attachments)
 
     if not content:
+        if has_attachments:
+            return _route(IntentKind.TASK, "attached document task")
         return _route(IntentKind.NEED_INPUT, "empty input needs user content", ["document_file"])
 
     has_document_reference = _contains_any(content, _DOCUMENT_REFERENCES)
     has_document_action = _contains_any(content, _DOCUMENT_ACTIONS)
+
+    if has_attachments and (has_document_reference or has_document_action):
+        return _route(IntentKind.TASK, "attached document task")
 
     if not has_attachments and has_document_reference and has_document_action:
         return _route(
@@ -112,6 +117,21 @@ def classify_route(message: UserMessage) -> RouteDecision:
     return _route(IntentKind.CHAT, "conversation")
 
 
+def should_route_document_task(
+    message: UserMessage,
+    decision: RouteDecision | None = None,
+) -> bool:
+    route_decision = decision or classify_route(message)
+    if route_decision.intent.kind != IntentKind.TASK or not message.attachments:
+        return False
+
+    content = message.content.strip()
+    if not content:
+        return True
+
+    return _is_document_request(content)
+
+
 def _route(
     intent: IntentKind,
     reason: str,
@@ -138,6 +158,13 @@ def _contains_keyword(normalized_content: str, normalized_keyword: str) -> bool:
         pattern = rf"(?<![a-z0-9_]){re.escape(normalized_keyword)}(?![a-z0-9_])"
         return re.search(pattern, normalized_content) is not None
     return normalized_keyword in normalized_content
+
+
+def _is_document_request(content: str) -> bool:
+    return _contains_any(content, _DOCUMENT_ACTIONS) or _contains_any(
+        content,
+        _DOCUMENT_REFERENCES,
+    )
 
 
 _QUESTION_MARKERS = [
@@ -250,6 +277,19 @@ _DOCUMENT_ACTIONS = [
     "translate",
     "rewrite",
     "analyze",
+    "generate",
+    "export",
+    "处理",
+    "整理",
+    "总结",
+    "摘要",
+    "提取",
+    "分析",
+    "改写",
+    "翻译",
+    "生成",
+    "导出",
+    "转换",
     "总结",
     "整理",
     "摘要",
@@ -274,6 +314,12 @@ _DOCUMENT_REFERENCES = [
     "file",
     "attachment",
     "attached",
+    "material",
+    "report",
+    "image",
+    "audio",
+    "video",
+    "spreadsheet",
     "pdf",
     "doc",
     "docx",

@@ -3,7 +3,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from agent_service.graph import _node, build_graph, run_agent, stream_agent_events
+from agent_service.graph import (
+    _classify_message,
+    _node,
+    build_graph,
+    run_agent,
+    stream_agent_events,
+)
+from agent_service.intent import IntentKind, classify_route
 from agent_service.model_client import ChatMessage
 from agent_service.schemas import Attachment, GraphNode, RunGraph, UserMessage
 
@@ -173,6 +180,31 @@ def test_attachment_generates_node_graph_for_document_task() -> None:
         "source": "typst-export",
         "target": "file-export",
     } in graph["edges"]
+
+
+def test_attachment_document_task_route_decision_matches_document_graph_route() -> None:
+    message = UserMessage(
+        task_id="task-attached-route",
+        content="请整理这个文档",
+        attachments=[
+            Attachment(
+                attachment_id="a1",
+                name="input.docx",
+                path="workspace/inputs/input.docx",
+                size_bytes=100,
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        ],
+    )
+
+    decision = classify_route(message)
+    result = build_graph().invoke({"message": message, "events": []})
+    events = result["events"]
+
+    assert decision.intent.kind == IntentKind.TASK
+    assert result["route_decision"]["intent"]["kind"] == "task"
+    assert _classify_message(message) == "document_task"
+    assert events[0].type == "node_graph.created"
 
 
 def test_temporary_placeholder_node_gets_default_script_review_state() -> None:

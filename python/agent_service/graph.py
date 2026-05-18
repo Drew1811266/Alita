@@ -7,7 +7,12 @@ from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
 
-from agent_service.intent import IntentKind, RouteDecision, classify_route
+from agent_service.intent import (
+    IntentKind,
+    RouteDecision,
+    classify_route,
+    should_route_document_task,
+)
 from agent_service.model_client import (
     ChatMessage as ModelChatMessage,
     LlamaCppModelClient,
@@ -213,62 +218,13 @@ def _compatible_intent(
     message: UserMessage,
     decision: RouteDecision,
 ) -> AgentIntent:
-    content = message.content.strip()
-    has_attachments = bool(message.attachments)
-    has_task_action = _contains_any(
-        content,
-        [
-            "处理",
-            "整理",
-            "总结",
-            "摘要",
-            "提取",
-            "分析",
-            "改写",
-            "翻译",
-            "生成",
-            "导出",
-            "转换",
-            "压缩",
-            "剪辑",
-            "识别",
-        ],
-    )
-    has_file_reference = _contains_any(
-        content,
-        [
-            "文档",
-            "文件",
-            "附件",
-            "资料",
-            "报告",
-            "图片",
-            "图像",
-            "音频",
-            "视频",
-            "表格",
-            "pdf",
-            "doc",
-            "docx",
-            "ppt",
-            "pptx",
-            "xls",
-            "xlsx",
-        ],
-    )
-
-    if has_attachments and (not content or has_task_action or has_file_reference):
+    if should_route_document_task(message, decision):
         return "document_task"
 
     if decision.intent.kind == IntentKind.NEED_INPUT:
         return "missing_input"
 
     return "chat"
-
-
-def _contains_any(content: str, keywords: list[str]) -> bool:
-    normalized = content.lower()
-    return any(keyword.lower() in normalized for keyword in keywords)
 
 
 def _build_model_messages(message: UserMessage) -> list[ModelChatMessage]:
