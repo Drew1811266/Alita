@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -69,6 +70,14 @@ def classify_graph_feedback(
             reason="single node mentioned",
         )
 
+    ordinal_step_node_id = _ordinal_step_node_id(normalized, current_graph)
+    if ordinal_step_node_id is not None:
+        return GraphFeedbackDecision(
+            GraphFeedbackKind.LOCAL_MODIFICATION,
+            node_id=ordinal_step_node_id,
+            reason="ordinal step mentioned",
+        )
+
     if any(keyword in normalized for keyword in _CONSTRAINT_KEYWORDS):
         return GraphFeedbackDecision(GraphFeedbackKind.CONSTRAINT_UPDATE, reason="constraint keyword")
 
@@ -132,6 +141,18 @@ def _mentioned_node_ids(normalized_message: str, graph: RunGraph) -> list[str]:
         if node.nodeId.lower() in normalized_message or node.displayName.lower() in normalized_message:
             matches.append(node.nodeId)
     return matches
+
+
+def _ordinal_step_node_id(normalized_message: str, graph: RunGraph) -> str | None:
+    match = re.search(r"\bstep\s+(\d+)\b", normalized_message)
+    if match is None:
+        return None
+
+    step_number = int(match.group(1))
+    executable_nodes = [node for node in graph.nodes if node.nodeType != "planning"]
+    if step_number < 1 or step_number > len(executable_nodes):
+        return None
+    return executable_nodes[step_number - 1].nodeId
 
 
 def _needs_overwrite_confirmation(
@@ -222,9 +243,28 @@ def _apply_constraint_update(message: UserMessage, graph: RunGraph) -> RunGraph:
         target = next((node for node in updated.nodes if node.nodeType == "planning"), None)
     if target is not None:
         target.summary = _append_unique_note(target.summary, f"Constraint: {message.content}")
+
+    regenerated_node_ids: list[str] = []
+    selection_node = next((node for node in updated.nodes if node.nodeId == "tool-selection"), None)
+    if selection_node is not None:
+        selection_node.summary = _append_unique_note(
+            selection_node.summary,
+            f"Regenerated selection for constraint: {message.content}",
+        )
+        regenerated_node_ids.append(selection_node.nodeId)
+
+    order_node = next((node for node in updated.nodes if node.nodeId == "execution-order-planning"), None)
+    if order_node is not None:
+        order_node.summary = _append_unique_note(
+            order_node.summary,
+            f"Regenerated execution order for constraint: {message.content}",
+        )
+        regenerated_node_ids.append(order_node.nodeId)
+
     updated.metadata = {
         **updated.metadata,
         "constraints": [*updated.metadata.get("constraints", []), message.content],
+        "feedbackRegeneratedPlanningNodeIds": sorted(regenerated_node_ids),
     }
     return updated
 

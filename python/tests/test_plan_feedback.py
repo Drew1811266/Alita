@@ -43,6 +43,13 @@ def _graph() -> RunGraph:
         graphId="graph-1",
         nodes=[
             _node("task-analysis", "Task Analysis", "Understand the task.", node_type="planning"),
+            _node("tool-selection", "Tool Selection", "Choose tools for the workflow.", node_type="planning"),
+            _node(
+                "execution-order-planning",
+                "Execution Order Planning",
+                "Order the workflow steps.",
+                node_type="planning",
+            ),
             _node("extract-data", "Extract Data", "Extract rows from the source."),
             _node(
                 "summarize-data",
@@ -114,6 +121,15 @@ def test_classifies_feedback_kinds() -> None:
     )
 
 
+def test_classifies_ordinal_step_feedback_as_local_modification() -> None:
+    graph = _graph()
+
+    decision = classify_graph_feedback("Change step 2 to use the safer parser.", graph)
+
+    assert decision.kind == GraphFeedbackKind.LOCAL_MODIFICATION
+    assert decision.node_id == "summarize-data"
+
+
 def test_ambiguous_feedback_can_use_model_hook() -> None:
     graph = _graph()
 
@@ -142,6 +158,33 @@ def test_local_modification_preserves_unaffected_nodes_and_marks_downstream() ->
     assert "Upstream feedback changed extract-data." in nodes["summarize-data"].summary
     assert "Upstream feedback changed extract-data." in nodes["write-output"].summary
     assert updated.graphId == graph.graphId
+
+
+def test_constraint_update_regenerates_selection_planning_and_preserves_execution_nodes() -> None:
+    graph = _graph()
+    original_nodes = {node.nodeId: node for node in graph.nodes}
+
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Use only CSV sources and keep extraction before summary."),
+        graph,
+    )
+
+    assert event.type == "graph.replanned"
+    updated = RunGraph.model_validate(event.payload["graph"])
+    nodes = {node.nodeId: node for node in updated.nodes}
+    assert "Constraint: Use only CSV sources and keep extraction before summary." in nodes["task-analysis"].summary
+    assert nodes["tool-selection"].summary != original_nodes["tool-selection"].summary
+    assert "Regenerated selection for constraint" in nodes["tool-selection"].summary
+    assert nodes["execution-order-planning"].summary != original_nodes["execution-order-planning"].summary
+    assert "Regenerated execution order for constraint" in nodes["execution-order-planning"].summary
+    assert nodes["extract-data"] == original_nodes["extract-data"]
+    assert nodes["summarize-data"] == original_nodes["summarize-data"]
+    assert nodes["write-output"] == original_nodes["write-output"]
+    assert updated.metadata["constraints"] == ["Use only CSV sources and keep extraction before summary."]
+    assert updated.metadata["feedbackRegeneratedPlanningNodeIds"] == [
+        "execution-order-planning",
+        "tool-selection",
+    ]
 
 
 def test_full_replan_replaces_graph() -> None:
