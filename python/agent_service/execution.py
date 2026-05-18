@@ -899,7 +899,6 @@ def _runtime_notice_for_node(node: GraphNode, actual_duration_ms: int) -> dict |
             f"{actual_duration_ms}ms actual vs {estimate_duration_ms}ms estimated."
         ),
         "actualDurationMs": actual_duration_ms,
-        "estimateDurationMs": estimate_duration_ms,
     }
 
 

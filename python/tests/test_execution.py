@@ -342,9 +342,13 @@ def test_emits_runtime_notice_when_node_exceeds_estimate(tmp_path: Path) -> None
 
     notice = next(event for event in events if event.type == "node.runtime_notice")
     assert notice.payload["nodeId"] == "document-input"
+    assert set(notice.payload["notice"].keys()) == {
+        "kind",
+        "message",
+        "actualDurationMs",
+    }
     assert notice.payload["notice"]["kind"] == "duration_exceeded"
     assert notice.payload["notice"]["actualDurationMs"] >= 0
-    assert "estimateDurationMs" not in notice.payload
 
 
 
