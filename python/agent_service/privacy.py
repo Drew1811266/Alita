@@ -221,6 +221,10 @@ def _extended_match_end(match: re.Match[str], text: str) -> int:
     if boundary_index is not None:
         return tokens[boundary_index - 1][1] if boundary_index > 0 else match.end()
 
+    local_tail_index = _local_tail_noun_index(tokens)
+    if local_tail_index is not None:
+        return tokens[local_tail_index][1]
+
     if _tokens_reach_query_end(tokens, text) and _looks_like_path_tail_at_end(tokens):
         return tokens[-1][1]
 
@@ -246,6 +250,13 @@ def _following_words(text: str, start: int) -> list[tuple[str, int]]:
 def _boundary_token_index(tokens: list[tuple[str, int]]) -> int | None:
     for index, (word, _end) in enumerate(tokens):
         if word.lower() in _PATH_BOUNDARY_PREPOSITIONS:
+            return index
+    return None
+
+
+def _local_tail_noun_index(tokens: list[tuple[str, int]]) -> int | None:
+    for index, (word, _end) in enumerate(tokens):
+        if word.lower() in _LOCAL_TAIL_NOUNS:
             return index
     return None
 

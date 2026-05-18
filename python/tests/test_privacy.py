@@ -142,6 +142,19 @@ def test_redacts_arbitrary_spaced_windows_directory_before_for_phrase() -> None:
     assert result.blocked is False
 
 
+def test_redacts_spaced_windows_directory_before_latest_usage_query() -> None:
+    local_path = r"C:\Users\Drew\Private Repo"
+
+    result = sanitize_for_web_search(f"Search {local_path} latest official usage")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] latest official usage"
+    assert local_path not in result.sanitizedText
+    assert "Repo" not in result.sanitizedText
+    assert "latest official usage" in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_redacts_multiword_windows_directory_before_preposition() -> None:
     local_path = r"C:\Users\Drew\Very Secret Folder"
 
@@ -167,6 +180,20 @@ def test_redacts_multiword_windows_directory_at_end_of_query() -> None:
     assert "Very" not in result.sanitizedText
     assert "Secret" not in result.sanitizedText
     assert "Folder" not in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
+def test_redacts_lowercase_multiword_windows_directory_before_latest_usage_query() -> None:
+    local_path = r"C:\Users\Drew\very secret folder"
+
+    result = sanitize_for_web_search(f"Search {local_path} latest official usage")
+
+    assert result.sanitizedText == "Search [LOCAL_PATH] latest official usage"
+    assert local_path not in result.sanitizedText
+    assert "secret" not in result.sanitizedText
+    assert "folder" not in result.sanitizedText
+    assert "latest official usage" in result.sanitizedText
     assert result.removedCategories == ["LOCAL_PATH"]
     assert result.blocked is False
 
