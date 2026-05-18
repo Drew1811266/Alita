@@ -80,6 +80,18 @@ def test_redacts_windows_directory_path_without_file_extension() -> None:
     assert result.blocked is False
 
 
+def test_redacts_windows_directory_path_with_spaced_final_segment() -> None:
+    local_path = r"C:\Users\Drew\My Project"
+
+    result = sanitize_for_web_search(f"Search issues in {local_path} about LangGraph")
+
+    assert result.sanitizedText == "Search issues in [LOCAL_PATH] about LangGraph"
+    assert local_path not in result.sanitizedText
+    assert "Project" not in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_PATH"]
+    assert result.blocked is False
+
+
 def test_redacts_model_paths_and_model_filenames() -> None:
     model_path = r"C:\models\qwen\qwen2.5-coder.gguf"
     model_name = "Qwen3-ASR-1.7B"
@@ -126,6 +138,18 @@ def test_redacts_model_directory_path_without_model_file_extension() -> None:
     assert result.blocked is False
 
 
+def test_redacts_model_directory_path_with_spaced_final_segment() -> None:
+    model_path = r"C:\models\my model"
+
+    result = sanitize_for_web_search(f"Find setup notes for {model_path}")
+
+    assert result.sanitizedText == "Find setup notes for [MODEL_PATH]"
+    assert model_path not in result.sanitizedText
+    assert "model" not in result.sanitizedText
+    assert result.removedCategories == ["MODEL_PATH"]
+    assert result.blocked is False
+
+
 def test_redacts_multiline_file_like_pasted_content() -> None:
     pasted_content = """Here is the traceback:
 Traceback (most recent call last):
@@ -164,6 +188,21 @@ print(Path.cwd())"""
     assert "import os" not in result.sanitizedText
     assert "from pathlib" not in result.sanitizedText
     assert "print(" not in result.sanitizedText
+    assert result.removedCategories == ["LOCAL_FILE_CONTENT"]
+    assert result.blocked is False
+
+
+def test_redacts_timestamp_prefixed_log_block_after_public_intent() -> None:
+    pasted_content = """Search public HTTP 500 cause
+2026-05-18 10:00:01 ERROR request failed
+2026-05-18 10:00:02 INFO retrying"""
+
+    result = sanitize_for_web_search(pasted_content)
+
+    assert result.sanitizedText == "Search public HTTP 500 cause [LOCAL_FILE_CONTENT]"
+    assert "2026-05-18" not in result.sanitizedText
+    assert "request failed" not in result.sanitizedText
+    assert "retrying" not in result.sanitizedText
     assert result.removedCategories == ["LOCAL_FILE_CONTENT"]
     assert result.blocked is False
 

@@ -20,8 +20,14 @@ _EMAIL_LABEL = "[EMAIL]"
 
 _WINDOWS_PATH_RE = re.compile(
     r"(?<![\w])(?:[A-Za-z]:\\(?:[^\r\n\\/:*?\"<>|]+\\)+"
-    r"(?:[^\r\n\\/:*?\"<>|]*?\.[A-Za-z0-9][A-Za-z0-9_-]*|"
-    r"[^\s\r\n\\/:*?\"<>|.,;:!?)]*)(?=$|[\s,;:!?)]|\.(?:$|\s)))"
+    r"(?:"
+    r"[^\r\n\\/:*?\"<>|]*?\.[A-Za-z0-9][A-Za-z0-9_-]*"
+    r"(?=$|[\s,;:!?)]|\.(?:$|\s))|"
+    r"[^\s\r\n\\/:*?\"<>|.,;:!?)]*"
+    r"(?: (?!about\b|and\b|for\b|from\b|in\b|on\b|using\b|with\b)"
+    r"[^\s\r\n\\/:*?\"<>|.,;:!?)]*)?"
+    r"(?=$|[\s,;:!?)]|\.(?:$|\s))"
+    r"))"
 )
 _POSIX_PATH_RE = re.compile(r"(?<![\w:/])/(?:[^\s/]+/)+[^\s/]+")
 _MODEL_NAME_RE = re.compile(
@@ -123,6 +129,13 @@ def _looks_like_file_content_line(line: str) -> bool:
     return (
         line.startswith(("Traceback", "File ", "def ", "class ", "return ", "KeyError"))
         or bool(re.match(r"^(?:INFO|DEBUG|WARN|WARNING|ERROR|CRITICAL)\b", line))
+        or bool(
+            re.match(
+                r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\s+"
+                r"(?:INFO|DEBUG|WARN|WARNING|ERROR|CRITICAL)\b",
+                line,
+            )
+        )
         or bool(re.match(r"^(?:import|from)\s+\w+", line))
         or bool(re.match(r"^print\s*\(", line))
         or bool(re.match(r"^\s*(?:if|for|while|try|except|with)\b.*:", line))
