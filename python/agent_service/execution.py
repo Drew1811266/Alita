@@ -692,6 +692,7 @@ def run_graph_events(
                     "nodeId": permission_node.nodeId,
                     "taskId": request.task_id,
                     "runId": request.run_id,
+                    "permissions": review_payload.get("permissions", []),
                     "scriptReview": review_payload,
                     **payload,
                 },
@@ -991,9 +992,14 @@ def is_executable_node(node: GraphNode) -> bool:
 
 def _permission_blocking_node(nodes: list[GraphNode]) -> GraphNode | None:
     for node in nodes:
-        if _script_requires_permission(node):
+        should_check = _should_check_permission_before_run(node)
+        if should_check and _script_requires_permission(node):
             return node
     return None
+
+
+def _should_check_permission_before_run(node: GraphNode) -> bool:
+    return node.status not in {"completed", "needs_user_input", "skipped"}
 
 
 def _script_requires_permission(node: GraphNode) -> bool:
@@ -1002,9 +1008,11 @@ def _script_requires_permission(node: GraphNode) -> bool:
     review = node.scriptReview
     if review is not None and _has_valid_script_approval(review):
         return False
-    return node.status == "needs_permission" or (
-        review is not None and review.requiresApproval
-    )
+    if node.status == "needs_permission":
+        return True
+    if review is None:
+        return False
+    return review.riskLevel == "high" or review.requiresApproval
 
 
 def _has_valid_script_approval(review: ScriptReviewState) -> bool:

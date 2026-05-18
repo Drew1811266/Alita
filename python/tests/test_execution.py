@@ -250,6 +250,10 @@ def test_high_risk_temporary_script_blocks_before_any_node_runs(
         event for event in events if event.type == "node.needs_permission"
     )
     assert permission_event.payload["nodeId"] == "temp-script"
+    assert permission_event.payload["permissions"] == [
+        "read_project_files",
+        "write_project_files",
+    ]
     assert permission_event.payload["scriptReview"]["status"] == "not_reviewed"
     assert permission_event.payload["scriptReview"]["riskLevel"] == "high"
     assert events[-1].type == "task.failed"
@@ -314,6 +318,53 @@ def test_changed_approved_script_fingerprint_returns_to_not_reviewed_and_blocks(
     assert permission_event.payload["scriptReview"]["status"] == "not_reviewed"
     assert permission_event.payload["scriptReview"]["approvalFingerprint"] is None
     assert events[-1].type == "task.failed"
+
+
+def test_stale_high_risk_script_blocks_even_when_requires_approval_is_false(
+    tmp_path: Path,
+) -> None:
+    review = script_review(risk_level="high", requires_approval=False)
+    review["status"] = "approved"
+    review["approvalFingerprint"] = script_review_fingerprint(review)
+    review["codePreview"] = "print('changed high risk script')\n"
+    request = build_planner_request(tmp_path, script_review=review)
+
+    events = list(run_graph_events(request))
+
+    assert "node.running" not in [event.type for event in events]
+    permission_event = next(
+        event for event in events if event.type == "node.needs_permission"
+    )
+    assert permission_event.payload["nodeId"] == "temp-script"
+    assert permission_event.payload["permissions"] == [
+        "read_project_files",
+        "write_project_files",
+    ]
+    assert permission_event.payload["scriptReview"]["status"] == "not_reviewed"
+    assert permission_event.payload["scriptReview"]["approvalFingerprint"] is None
+    assert events[-1].type == "task.failed"
+
+
+def test_completed_stale_high_risk_script_does_not_block_downstream_execution(
+    tmp_path: Path,
+) -> None:
+    review = script_review(risk_level="high", requires_approval=True)
+    review["status"] = "approved"
+    review["approvalFingerprint"] = script_review_fingerprint(review)
+    review["codePreview"] = "print('changed high risk script')\n"
+    request = build_planner_request(
+        tmp_path,
+        script_review=review,
+        script_status="completed",
+    )
+
+    events = list(run_graph_events(request))
+
+    assert "node.needs_permission" not in [event.type for event in events]
+    assert [
+        event.payload["nodeId"] for event in events if event.type == "node.running"
+    ] == ["task-output"]
+    assert events[-1].type == "task.completed"
 
 
 def test_research_graph_executes_nodes_and_writes_markdown_report(tmp_path: Path) -> None:
@@ -1063,13 +1114,19 @@ def build_request(tmp_path: Path, *, nodes: list[dict]) -> RunGraphRequest:
     )
 
 
-def build_planner_request(tmp_path: Path, *, script_review: dict) -> RunGraphRequest:
+def build_planner_request(
+    tmp_path: Path,
+    *,
+    script_review: dict,
+    script_status: str = "waiting",
+) -> RunGraphRequest:
     temp_script = build_node(
         "temp-script",
         "temporary_script",
         ["execution-order-planning"],
     )
     temp_script["scriptReview"] = script_review
+    temp_script["status"] = script_status
     return build_request(
         tmp_path,
         nodes=[
