@@ -431,15 +431,34 @@ def _should_handle_graph_feedback(
 
 def _is_explicit_graph_constraint_feedback(content: str) -> bool:
     normalized = content.lower()
-    return "constraint" in normalized or any(
+    graph_referential = any(
         phrase in normalized
         for phrase in (
             "for this graph",
             "for the graph",
+            "for the current graph",
             "current graph",
+            "this flow",
+            "in this flow",
+            "for this flow",
             "this plan",
+            "for this plan",
             "the plan",
             "workflow",
+        )
+    )
+    if graph_referential:
+        return True
+
+    return any(
+        phrase in normalized
+        for phrase in (
+            "add a constraint",
+            "add this constraint",
+            "set a constraint",
+            "set this constraint",
+            "apply this constraint to the graph",
+            "apply a constraint to the graph",
         )
     )
 

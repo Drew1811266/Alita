@@ -259,6 +259,9 @@ def test_sources_question_after_graph_exists_uses_web_inquiry_router() -> None:
     [
         "What is the order of operations in Python?",
         "What style guide does Python use?",
+        "What is a constraint?",
+        "What constraints apply in Python packaging?",
+        "Can you explain what a constraint means?",
     ],
 )
 def test_local_questions_with_constraint_words_after_graph_exists_use_inquiry_router(
