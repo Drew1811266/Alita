@@ -4,9 +4,14 @@ import hashlib
 import json
 import tempfile
 from pathlib import Path
+from time import sleep
 
 from agent_service.intent import classify_route
-from agent_service.execution import NodeOutput, run_graph_events
+from agent_service.execution import (
+    NodeOutput,
+    _runtime_notice_for_node,
+    run_graph_events,
+)
 from agent_service.graph import run_agent
 from agent_service.model_client import ChatMessage
 from agent_service.run_journal import RunJournal
@@ -560,7 +565,35 @@ def test_failed_only_research_retry_reuses_successful_query_units(
     assert retry_events[-1].type == "task.completed"
 
 
-def test_emits_runtime_notice_when_node_exceeds_estimate(tmp_path: Path) -> None:
+def test_runtime_notice_uses_strict_exceeded_threshold(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "zero-estimate",
+                "fixed_tool",
+                [],
+                tool_ref="document.receive_attachment",
+                estimate={"durationMs": 0},
+            ),
+            build_node(
+                "equal-estimate",
+                "fixed_tool",
+                [],
+                tool_ref="document.receive_attachment",
+                estimate={"durationMs": 25},
+            ),
+        ],
+    )
+    zero_estimate, equal_estimate = request.graph.nodes
+
+    assert _runtime_notice_for_node(zero_estimate, 0) is None
+    assert _runtime_notice_for_node(equal_estimate, 25) is None
+
+
+def test_emits_and_persists_runtime_notice_when_node_exceeds_estimate(
+    tmp_path: Path,
+) -> None:
     request = build_request(
         tmp_path,
         nodes=[
@@ -569,12 +602,17 @@ def test_emits_runtime_notice_when_node_exceeds_estimate(tmp_path: Path) -> None
                 "fixed_tool",
                 [],
                 tool_ref="document.receive_attachment",
-                estimate={"durationMs": 0},
+                estimate={"durationMs": 1},
             )
         ],
     )
 
-    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+    class SlowExecutor(FakeNodeExecutor):
+        def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+            sleep(0.02)
+            return super().run(node_id, inputs)
+
+    events = list(run_graph_events(request, executor=SlowExecutor()))
 
     notice = next(event for event in events if event.type == "node.runtime_notice")
     assert set(notice.payload.keys()) == {"nodeId", "notice"}

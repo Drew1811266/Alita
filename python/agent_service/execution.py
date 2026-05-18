@@ -1200,12 +1200,7 @@ def _runtime_notice_for_node(node: GraphNode, actual_duration_ms: int) -> dict |
     if node.estimate is None or node.estimate.durationMs is None:
         return None
     estimate_duration_ms = node.estimate.durationMs
-    exceeded = (
-        actual_duration_ms >= 0
-        if estimate_duration_ms <= 0
-        else actual_duration_ms > estimate_duration_ms
-    )
-    if not exceeded:
+    if actual_duration_ms <= estimate_duration_ms:
         return None
     return {
         "kind": "duration_exceeded",
