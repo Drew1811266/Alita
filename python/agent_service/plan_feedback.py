@@ -365,28 +365,42 @@ def _regenerated_plan_changes_executable_shape(
     current_graph: RunGraph,
     regenerated_graph: RunGraph,
 ) -> bool:
-    current_node_ids = {node.nodeId for node in current_graph.nodes}
-    regenerated_missing_tool = _node_summary(regenerated_graph, "missing-tool-response")
-    if regenerated_missing_tool:
-        return _node_summary(current_graph, "missing-tool-response") != regenerated_missing_tool
-
-    regenerated_capability_summary = _node_summary(regenerated_graph, "capability-analysis")
-    regenerated_tool_summary = _node_summary(regenerated_graph, "tool-selection")
-    current_text = " ".join(node.summary for node in current_graph.nodes)
-    regenerated_text = f"{regenerated_capability_summary} {regenerated_tool_summary}"
-
-    if "network.fetch" in regenerated_text and "network.fetch" not in current_text:
-        return True
-
-    return any(
-        node.nodeType == "temporary_placeholder" and node.nodeId not in current_node_ids
-        for node in regenerated_graph.nodes
+    return _executable_shape_signature(current_graph) != _executable_shape_signature(
+        regenerated_graph
     )
 
 
-def _node_summary(graph: RunGraph, node_id: str) -> str:
-    node = next((candidate for candidate in graph.nodes if candidate.nodeId == node_id), None)
-    return node.summary if node is not None else ""
+def _executable_shape_signature(graph: RunGraph) -> list[dict[str, Any]]:
+    signature: list[dict[str, Any]] = []
+    for node in graph.nodes:
+        if node.nodeType == "planning":
+            continue
+        signature.append(
+            {
+                "nodeId": node.nodeId,
+                "nodeType": node.nodeType,
+                "toolRef": node.toolRef,
+                "modelRef": node.modelRef,
+                "dependencies": sorted(node.dependencies),
+                "inputPorts": node.inputPorts,
+                "outputPorts": node.outputPorts,
+                "scriptReview": _script_review_signature(node.scriptReview),
+            }
+        )
+    return sorted(signature, key=lambda item: item["nodeId"])
+
+
+def _script_review_signature(script_review: Any) -> dict[str, Any] | None:
+    if script_review is None:
+        return None
+    return {
+        "riskLevel": script_review.riskLevel,
+        "requiresApproval": script_review.requiresApproval,
+        "permissions": sorted(script_review.permissions),
+        "codePreview": script_review.codePreview,
+        "inputContract": script_review.inputContract,
+        "outputContract": script_review.outputContract,
+    }
 
 
 def _planning_node_ids(graph: RunGraph) -> list[str]:

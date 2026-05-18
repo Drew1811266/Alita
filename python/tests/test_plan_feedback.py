@@ -172,31 +172,46 @@ def test_local_modification_preserves_unaffected_nodes_and_marks_downstream() ->
     assert updated.graphId == graph.graphId
 
 
-def test_constraint_update_regenerates_selection_planning_and_preserves_execution_nodes() -> None:
+def test_constraint_update_regenerates_planning_and_replaces_changed_shape() -> None:
     graph = _graph()
-    original_nodes = {node.nodeId: node for node in graph.nodes}
 
     event = apply_graph_feedback(
-        UserMessage(task_id="task-1", content="Use only CSV sources and keep extraction before summary."),
+        UserMessage(task_id="task-1", content="Use a concise style and keep extraction before summary."),
         graph,
     )
 
     assert event.type == "graph.replanned"
     updated = RunGraph.model_validate(event.payload["graph"])
     nodes = {node.nodeId: node for node in updated.nodes}
-    assert "Constraint: Use only CSV sources and keep extraction before summary." in nodes["task-analysis"].summary
-    assert nodes["tool-selection"].summary != original_nodes["tool-selection"].summary
-    assert "Regenerated selection for constraint" in nodes["tool-selection"].summary
-    assert nodes["execution-order-planning"].summary != original_nodes["execution-order-planning"].summary
-    assert "Regenerated execution order for constraint" in nodes["execution-order-planning"].summary
-    assert nodes["extract-data"] == original_nodes["extract-data"]
-    assert nodes["summarize-data"] == original_nodes["summarize-data"]
-    assert nodes["write-output"] == original_nodes["write-output"]
-    assert updated.metadata["constraints"] == ["Use only CSV sources and keep extraction before summary."]
+    assert "Prior constraint: Use a concise style and keep extraction before summary." in nodes["task-analysis"].summary
+    assert "tool-selection" in nodes
+    assert "execution-order-planning" in nodes
+    assert [node.nodeId for node in updated.nodes] != [node.nodeId for node in graph.nodes]
+    assert updated.metadata["constraints"] == ["Use a concise style and keep extraction before summary."]
     assert updated.metadata["feedbackRegeneratedPlanningNodeIds"] == [
+        "capability-analysis",
         "execution-order-planning",
+        "task-analysis",
         "tool-selection",
     ]
+
+
+def test_constraint_update_replaces_graph_when_planner_adds_temporary_script() -> None:
+    graph = _graph()
+
+    event = apply_graph_feedback(
+        UserMessage(task_id="task-1", content="Constraint: inspect a local CSV file and count rows."),
+        graph,
+    )
+
+    assert event.type == "graph.replanned"
+    updated = RunGraph.model_validate(event.payload["graph"])
+    temporary_script_nodes = [
+        node for node in updated.nodes if node.nodeType == "temporary_script"
+    ]
+    assert temporary_script_nodes
+    assert temporary_script_nodes[0].scriptReview is not None
+    assert "extract-data" not in {node.nodeId for node in updated.nodes}
 
 
 def test_constraint_update_reruns_planner_and_can_change_graph_shape() -> None:
