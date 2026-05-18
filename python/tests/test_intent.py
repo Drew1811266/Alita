@@ -85,6 +85,8 @@ def test_classifies_research_and_design_questions_as_complex_web_inquiry(
 @pytest.mark.parametrize(
     "content",
     [
+        "Can you create a Python script?",
+        "Can you update graph.py?",
         "Create a Python script that summarizes these notes.",
         "帮我修改 graph.py 并生成测试。",
     ],
@@ -138,6 +140,21 @@ def test_classifies_how_to_questions_with_task_verbs_as_local_inquiry(
 def test_classifies_how_to_question_with_current_marker_as_simple_web_inquiry() -> None:
     decision = classify_route(
         UserMessage(task_id="how-to-web", content="How do I update to the latest Python?")
+    )
+
+    assert decision.intent.kind == IntentKind.INQUIRY
+    assert decision.inquiry is not None
+    assert decision.inquiry.mode == InquiryMode.WEB_SIMPLE
+    assert decision.inquiry.requires_web is True
+    assert decision.missing_inputs == []
+
+
+def test_classifies_latest_stable_release_question_as_simple_web_inquiry() -> None:
+    decision = classify_route(
+        UserMessage(
+            task_id="latest-release",
+            content="What is the latest stable Python release?",
+        )
     )
 
     assert decision.intent.kind == IntentKind.INQUIRY

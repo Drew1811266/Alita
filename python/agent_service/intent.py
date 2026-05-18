@@ -78,6 +78,9 @@ def classify_route(message: UserMessage) -> RouteDecision:
             ["document_file"],
         )
 
+    if _is_polite_task_request(content):
+        return _route(IntentKind.TASK, "user requested creation, modification, or execution")
+
     if _contains_any(content, _QUESTION_MARKERS):
         if _contains_any(content, _COMPLEX_WEB_MARKERS):
             return _route(
@@ -164,6 +167,24 @@ def _is_document_request(content: str) -> bool:
     return _contains_any(content, _DOCUMENT_ACTIONS) or _contains_any(
         content,
         _DOCUMENT_REFERENCES,
+    )
+
+
+def _is_polite_task_request(content: str) -> bool:
+    if not _contains_any(content, _TASK_ACTIONS):
+        return False
+
+    normalized = content.strip().lower()
+    return normalized.startswith(
+        (
+            "can you ",
+            "could you ",
+            "please ",
+            "帮我",
+            "请你",
+            "能不能",
+            "可以帮我",
+        )
     )
 
 
