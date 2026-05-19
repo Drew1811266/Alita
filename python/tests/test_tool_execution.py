@@ -129,6 +129,99 @@ def test_tool_executor_routes_typst_pdf_compilation(monkeypatch, tmp_path):
     ]
 
 
+def test_tool_executor_uses_registered_adapter_for_manifest_operation(tmp_path):
+    calls = []
+
+    def fake_adapter(invocation):
+        calls.append(invocation)
+        return ToolResult(values={"ok": "true"})
+
+    executor = ToolExecutor(
+        adapters={
+            ("document.markitdown_convert", "convert_local_file"): fake_adapter,
+        }
+    )
+    invocation = ToolInvocation(
+        tool_id="document.markitdown_convert",
+        operation="convert_local_file",
+        arguments={
+            "input_path": str(tmp_path / "source.docx"),
+            "output_path": str(tmp_path / "converted.md"),
+        },
+        project_path=str(tmp_path),
+    )
+
+    result = executor.run(invocation)
+
+    assert result.values == {"ok": "true"}
+    assert calls == [invocation]
+
+
+def test_tool_executor_rejects_known_tool_without_adapter(tmp_path):
+    package_root = tmp_path / "tool-packages"
+    tool_root = package_root / "custom"
+    tool_root.mkdir(parents=True)
+    (tool_root / "manifest.json").write_text(
+        """
+{
+  "tool_id": "custom.echo",
+  "name": "Custom Echo",
+  "description": "Test-only manifest tool.",
+  "version": "0.1.0",
+  "source_type": "external_python_package",
+  "license": "internal",
+  "runtime": "python_sidecar",
+  "capabilities": [],
+  "operations": [
+    {
+      "name": "send_message",
+      "description": "Send input."
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": ["operation", "message"],
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["send_message"]
+      },
+      "message": {
+        "type": "string"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object"
+  },
+  "permissions": [],
+  "error_codes": [],
+  "timeout_policy": {},
+  "artifact_policy": {},
+  "security_policy": {},
+  "examples": [],
+  "node_templates": []
+}
+""",
+        encoding="utf-8",
+    )
+    executor = ToolExecutor(registry=ToolRegistry.from_packages_root(package_root))
+
+    with pytest.raises(HarnessError) as exc_info:
+        executor.run(
+            ToolInvocation(
+                tool_id="custom.echo",
+                operation="send_message",
+                arguments={"message": "hello"},
+                project_path=str(tmp_path),
+            )
+        )
+
+    assert exc_info.value.code == "unsupported_tool"
+    assert "custom.echo" in exc_info.value.message
+    assert "send_message" in exc_info.value.message
+
+
 def test_tool_executor_default_registry_finds_tools_from_python_cwd(monkeypatch):
     monkeypatch.chdir(PYTHON_ROOT)
 

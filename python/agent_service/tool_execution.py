@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 
 from agent_service.harness_errors import HarnessError
 from agent_service.schema_validation import validate_json_schema_subset
@@ -71,11 +71,58 @@ class ToolResult:
     metadata: dict[str, str] = field(default_factory=dict)
 
 
+ToolAdapter = Callable[[ToolInvocation], ToolResult]
+ToolAdapterKey = tuple[str, str]
+
+
+def _run_markitdown(invocation: ToolInvocation) -> ToolResult:
+    result = convert_markitdown_local_file(
+        input_path=str(invocation.arguments["input_path"]),
+        output_path=str(invocation.arguments["output_path"]),
+        project_path=invocation.project_path,
+        allowed_roots=invocation.allowed_roots,
+    )
+
+    return ToolResult(
+        values={"text": result.text},
+        artifacts=result.artifacts,
+        metadata=result.metadata,
+    )
+
+
+def _run_typst(invocation: ToolInvocation) -> ToolResult:
+    result = compile_typst_report_pdf(
+        title=str(invocation.arguments["title"]),
+        outline=str(invocation.arguments["outline"]),
+        report=str(invocation.arguments["report"]),
+        source_output_path=str(invocation.arguments["source_output_path"]),
+        pdf_output_path=str(invocation.arguments["pdf_output_path"]),
+        project_path=invocation.project_path,
+        allowed_roots=invocation.allowed_roots,
+    )
+
+    return ToolResult(
+        values={"source": result.source_path, "artifact": result.pdf_path},
+        artifacts=result.artifacts,
+        metadata=result.metadata,
+    )
+
+
 class ToolExecutor:
-    def __init__(self, *, registry: ToolRegistry | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        registry: ToolRegistry | None = None,
+        adapters: Mapping[ToolAdapterKey, ToolAdapter] | None = None,
+    ) -> None:
         self.registry = registry or ToolRegistry.from_packages_root(
             _default_tool_packages_root()
         )
+        self.adapters: dict[ToolAdapterKey, ToolAdapter] = {
+            ("document.markitdown_convert", "convert_local_file"): _run_markitdown,
+            ("document.typst_compile", "compile_report_pdf"): _run_typst,
+        }
+        self.adapters.update(adapters or {})
 
     def run(self, invocation: ToolInvocation) -> ToolResult:
         try:
@@ -97,52 +144,13 @@ class ToolExecutor:
         except ValueError as exc:
             raise HarnessError("invalid_tool_input", str(exc)) from exc
 
-        if invocation.tool_id == "document.markitdown_convert":
-            return self._run_markitdown(invocation)
-        if invocation.tool_id == "document.typst_compile":
-            return self._run_typst(invocation)
-
-        raise HarnessError("unsupported_tool", f"unsupported tool: {invocation.tool_id}")
-
-    def _run_markitdown(self, invocation: ToolInvocation) -> ToolResult:
-        if invocation.operation != "convert_local_file":
+        adapter_key = (invocation.tool_id, invocation.operation)
+        try:
+            adapter = self.adapters[adapter_key]
+        except KeyError as exc:
             raise HarnessError(
-                "unsupported_operation",
-                f"unsupported operation for {invocation.tool_id}: {invocation.operation}",
-            )
+                "unsupported_tool",
+                f"unsupported tool operation: {invocation.tool_id} {invocation.operation}",
+            ) from exc
 
-        result = convert_markitdown_local_file(
-            input_path=str(invocation.arguments["input_path"]),
-            output_path=str(invocation.arguments["output_path"]),
-            project_path=invocation.project_path,
-            allowed_roots=invocation.allowed_roots,
-        )
-
-        return ToolResult(
-            values={"text": result.text},
-            artifacts=result.artifacts,
-            metadata=result.metadata,
-        )
-
-    def _run_typst(self, invocation: ToolInvocation) -> ToolResult:
-        if invocation.operation != "compile_report_pdf":
-            raise HarnessError(
-                "unsupported_operation",
-                f"unsupported operation for {invocation.tool_id}: {invocation.operation}",
-            )
-
-        result = compile_typst_report_pdf(
-            title=str(invocation.arguments["title"]),
-            outline=str(invocation.arguments["outline"]),
-            report=str(invocation.arguments["report"]),
-            source_output_path=str(invocation.arguments["source_output_path"]),
-            pdf_output_path=str(invocation.arguments["pdf_output_path"]),
-            project_path=invocation.project_path,
-            allowed_roots=invocation.allowed_roots,
-        )
-
-        return ToolResult(
-            values={"source": result.source_path, "artifact": result.pdf_path},
-            artifacts=result.artifacts,
-            metadata=result.metadata,
-        )
+        return adapter(invocation)
