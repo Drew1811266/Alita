@@ -1281,6 +1281,23 @@ button:focus-visible {
   cursor: pointer;
 }
 
+.nodePopoverCodePreview {
+  max-height: 160px;
+  max-width: 100%;
+  margin: 6px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid #d7dee7;
+  border-radius: 6px;
+  color: #111827;
+  background: #f8fafc;
+  font-family:
+    "Cascadia Mono", "Consolas", "Microsoft YaHei", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre;
+}
+
 .nodePopoverPermissionActions {
   display: flex;
   flex-wrap: wrap;

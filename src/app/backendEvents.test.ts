@@ -709,6 +709,83 @@ describe("reduceBackendEvents", () => {
     });
   });
 
+  it("preserves the real run start time when a task completes", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: graphWithNode,
+        dirty: false,
+        activeRunId: null,
+        runHistory: [],
+      },
+      [
+        {
+          type: "run.started",
+          payload: {
+            runId: "run-1",
+            taskId: "task-1",
+            startedAt: "2026-05-10T00:00:00.000Z",
+          },
+        },
+        {
+          type: "task.completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-1",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.runHistory?.[0]).toMatchObject({
+      runId: "run-1",
+      startedAt: "2026-05-10T00:00:00.000Z",
+      status: "completed",
+    });
+    expect(result.runHistory?.[0].completedAt).not.toBe(
+      result.runHistory?.[0].startedAt,
+    );
+  });
+
+  it("preserves the real run start time when a run is cancelled", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: graphWithNode,
+        dirty: false,
+        activeRunId: null,
+        runHistory: [],
+      },
+      [
+        {
+          type: "run.started",
+          payload: {
+            runId: "run-1",
+            taskId: "task-1",
+            startedAt: "2026-05-10T00:00:00.000Z",
+          },
+        },
+        {
+          type: "run.cancelled",
+          payload: {
+            runId: "run-1",
+            taskId: "task-1",
+            completedAt: "2026-05-10T00:00:05.000Z",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.runHistory?.[0]).toMatchObject({
+      runId: "run-1",
+      startedAt: "2026-05-10T00:00:00.000Z",
+      completedAt: "2026-05-10T00:00:05.000Z",
+      status: "cancelled",
+    });
+  });
+
   it("adds research completion artifact and chat summary", () => {
     const acceptedSources = [
       {

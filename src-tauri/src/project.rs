@@ -45,7 +45,7 @@ pub struct ToolSnapshotEntry {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RunHistoryEntry {
     pub run_id: String,
@@ -57,6 +57,15 @@ pub struct RunHistoryEntry {
     pub node_run_ids: Vec<String>,
     #[serde(default)]
     pub artifact_refs: Vec<String>,
+    #[serde(default)]
+    pub runtime_notices: Vec<RunHistoryRuntimeNotice>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RunHistoryRuntimeNotice {
+    pub node_id: String,
+    pub notice: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

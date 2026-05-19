@@ -83,6 +83,15 @@ fn saves_and_loads_run_history_node_runs_and_artifacts() {
         summary: "流程执行完成。".to_string(),
         node_run_ids: vec!["node-run-1".to_string()],
         artifact_refs: vec!["D:\\Project\\artifacts\\report.md".to_string()],
+        runtime_notices: vec![serde_json::from_value(serde_json::json!({
+            "nodeId": "document-parse",
+            "notice": {
+                "kind": "duration_exceeded",
+                "message": "Node exceeded estimated duration.",
+                "actualDurationMs": 1200
+            }
+        }))
+        .unwrap()],
     });
 
     save_project_to_path(&project_path, &project).unwrap();
@@ -95,6 +104,15 @@ fn saves_and_loads_run_history_node_runs_and_artifacts() {
     assert_eq!(
         result.project.run_history[0].artifact_refs,
         vec!["D:\\Project\\artifacts\\report.md"]
+    );
+    assert_eq!(result.project.run_history[0].runtime_notices.len(), 1);
+    assert_eq!(
+        result.project.run_history[0].runtime_notices[0].node_id,
+        "document-parse"
+    );
+    assert_eq!(
+        result.project.run_history[0].runtime_notices[0].notice["actualDurationMs"],
+        1200
     );
 }
 

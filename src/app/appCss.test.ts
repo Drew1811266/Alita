@@ -22,4 +22,15 @@ describe("app workbench layout CSS", () => {
     expect(appCss).toContain(".agentNodeEstimateChips");
     expect(appCss).toContain("grid-template-rows: auto auto 1fr auto;");
   });
+
+  it("bounds popover code previews", () => {
+    const codePreviewRule = appCss.match(
+      /\.nodePopoverCodePreview\s*\{[\s\S]*?\}/,
+    )?.[0];
+
+    expect(codePreviewRule).toBeDefined();
+    expect(codePreviewRule).toContain("max-height:");
+    expect(codePreviewRule).toContain("overflow: auto;");
+    expect(codePreviewRule).toContain("font-family:");
+  });
 });

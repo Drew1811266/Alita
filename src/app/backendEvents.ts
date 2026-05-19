@@ -92,6 +92,7 @@ export function reduceBackendEvents(
     }
 
     if (event.type === "run.cancelled") {
+      const existingRun = findRunHistoryEntry(current, event.payload.runId);
       const runtimeNotices = collectRuntimeNoticesForRun(
         current,
         event.payload.runId,
@@ -105,12 +106,12 @@ export function reduceBackendEvents(
         ),
         runHistory: appendRunHistory(current, {
           runId: event.payload.runId,
-          startedAt: event.payload.completedAt,
+          startedAt: existingRun?.startedAt ?? event.payload.completedAt,
           completedAt: event.payload.completedAt,
           status: "cancelled",
           summary: "流程已停止。",
-          nodeRunIds: [],
-          artifactRefs: [],
+          nodeRunIds: existingRun?.nodeRunIds ?? [],
+          artifactRefs: existingRun?.artifactRefs ?? [],
           ...(runtimeNotices.length > 0 ? { runtimeNotices } : {}),
         }),
         messages: [...current.messages, createAssistantMessage("流程已停止。")],
@@ -413,6 +414,8 @@ export function reduceBackendEvents(
 
     if (event.type === "task.completed") {
       const runId = event.payload.runId ?? current.activeRunId;
+      const existingRun = runId ? findRunHistoryEntry(current, runId) : null;
+      const artifactRefs = collectArtifactRefs(current, existingRun);
       const runtimeNotices = runId
         ? collectRuntimeNoticesForRun(current, runId)
         : [];
@@ -425,12 +428,12 @@ export function reduceBackendEvents(
         runHistory: runId
           ? appendRunHistory(current, {
               runId,
-              startedAt: new Date(0).toISOString(),
+              startedAt: existingRun?.startedAt ?? new Date(0).toISOString(),
               completedAt: new Date().toISOString(),
               status: "completed",
               summary: "流程执行完成。",
-              nodeRunIds: [],
-              artifactRefs: current.artifacts?.map((artifact) => artifact.path) ?? [],
+              nodeRunIds: existingRun?.nodeRunIds ?? [],
+              artifactRefs,
               ...(runtimeNotices.length > 0 ? { runtimeNotices } : {}),
             })
           : current.runHistory,
@@ -441,6 +444,8 @@ export function reduceBackendEvents(
 
     if (event.type === "task.failed") {
       const runId = event.payload.runId ?? current.activeRunId;
+      const existingRun = runId ? findRunHistoryEntry(current, runId) : null;
+      const artifactRefs = collectArtifactRefs(current, existingRun);
       const runtimeNotices = runId
         ? collectRuntimeNoticesForRun(current, runId)
         : [];
@@ -453,12 +458,12 @@ export function reduceBackendEvents(
         runHistory: runId
           ? appendRunHistory(current, {
               runId,
-              startedAt: new Date(0).toISOString(),
+              startedAt: existingRun?.startedAt ?? new Date(0).toISOString(),
               completedAt: new Date().toISOString(),
               status: "failed",
               summary: event.payload.error,
-              nodeRunIds: [],
-              artifactRefs: current.artifacts?.map((artifact) => artifact.path) ?? [],
+              nodeRunIds: existingRun?.nodeRunIds ?? [],
+              artifactRefs,
               ...(runtimeNotices.length > 0 ? { runtimeNotices } : {}),
             })
           : current.runHistory,
@@ -538,6 +543,23 @@ function appendRunHistory(
     ...(state.runHistory ?? []).filter((run) => run.runId !== entry.runId),
     entry,
   ];
+}
+
+function findRunHistoryEntry(
+  state: BackendEventState,
+  runId: string,
+): RunHistoryEntry | undefined {
+  return state.runHistory?.find((entry) => entry.runId === runId);
+}
+
+function collectArtifactRefs(
+  state: BackendEventState,
+  existingRun: RunHistoryEntry | null | undefined,
+): string[] {
+  const currentArtifactRefs = state.artifacts?.map((artifact) => artifact.path);
+  return currentArtifactRefs && currentArtifactRefs.length > 0
+    ? currentArtifactRefs
+    : existingRun?.artifactRefs ?? [];
 }
 
 function appendRuntimeNoticeToRunHistory(
