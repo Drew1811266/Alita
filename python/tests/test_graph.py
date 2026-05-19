@@ -151,6 +151,27 @@ def test_attachment_generates_node_graph_for_document_task() -> None:
     } in graph["edges"]
 
 
+def test_attachment_with_latest_keyword_still_generates_node_graph() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="task-latest-doc",
+            content="请总结这个文档里的最新内容",
+            attachments=[
+                Attachment(
+                    attachment_id="a-latest",
+                    name="latest.docx",
+                    path="workspace/inputs/latest.docx",
+                    size_bytes=100,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            ],
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].type == "node_graph.created"
+
+
 def test_temporary_placeholder_node_gets_default_script_review_state() -> None:
     node = _node(
         node_id="temp-script",

@@ -55,6 +55,15 @@ def test_document_task_without_attachment_requests_missing_document_file() -> No
     assert spec.needs_user_confirmation is False
 
 
+def test_english_profile_summary_remains_chat() -> None:
+    spec = parse_goal_spec(
+        UserMessage(task_id="task-chat", content="please summarize my profile")
+    )
+
+    assert spec.task_type == "chat"
+    assert spec.deliverable == "chat_answer"
+
+
 def test_explicit_network_request_requires_web_confirmation() -> None:
     spec = parse_goal_spec(
         UserMessage(task_id="task-research", content="联网搜索最新的 Tauri 发布版本")

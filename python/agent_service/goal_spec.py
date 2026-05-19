@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -111,19 +112,6 @@ def parse_goal_spec(message: UserMessage) -> GoalSpec:
     has_document_action = _contains_any(content, DOCUMENT_ACTION_KEYWORDS)
     has_document_reference = _contains_any(content, DOCUMENT_REFERENCE_KEYWORDS)
 
-    if has_web_request:
-        return GoalSpec(
-            goal=goal,
-            task_type="research",
-            deliverable="research_answer",
-            success_criteria=["回答包含联网检索得到的信息"],
-            risk_level="network",
-            permissions_required=["network"],
-            needs_web=True,
-            needs_user_confirmation=True,
-            confidence=0.8,
-        )
-
     if has_attachments and (not content or has_document_action or has_document_reference):
         deliverable = "pdf_report" if "pdf" in content.lower() else "markdown_report"
         return GoalSpec(
@@ -149,6 +137,19 @@ def parse_goal_spec(message: UserMessage) -> GoalSpec:
             confidence=0.75,
         )
 
+    if has_web_request:
+        return GoalSpec(
+            goal=goal,
+            task_type="research",
+            deliverable="research_answer",
+            success_criteria=["回答包含联网检索得到的信息"],
+            risk_level="network",
+            permissions_required=["network"],
+            needs_web=True,
+            needs_user_confirmation=True,
+            confidence=0.8,
+        )
+
     return GoalSpec(
         goal=goal,
         task_type="chat",
@@ -161,4 +162,11 @@ def parse_goal_spec(message: UserMessage) -> GoalSpec:
 
 def _contains_any(content: str, keywords: list[str]) -> bool:
     normalized = content.lower()
-    return any(keyword.lower() in normalized for keyword in keywords)
+    return any(_contains_keyword(normalized, keyword.lower()) for keyword in keywords)
+
+
+def _contains_keyword(normalized_content: str, keyword: str) -> bool:
+    if keyword.isascii() and keyword.replace("_", "").isalnum():
+        return re.search(rf"\b{re.escape(keyword)}\b", normalized_content) is not None
+
+    return keyword in normalized_content
