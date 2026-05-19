@@ -117,6 +117,7 @@ def test_attachment_generates_node_graph_for_document_task() -> None:
     assert len(events) == 1
     assert events[0].type == "node_graph.created"
     graph = events[0].payload["graph"]
+    assert set(graph) == {"graphId", "nodes", "edges"}
     assert graph["graphId"] == "task-2-graph"
     assert graph["nodes"][0]["nodeId"] == "document-input"
     assert graph["nodes"][0]["displayName"] == "文档输入"
@@ -144,6 +145,8 @@ def test_attachment_generates_node_graph_for_document_task() -> None:
     assert typst_node["nodeType"] == "fixed_tool"
     assert typst_node["toolRef"] == "document.typst_compile"
     assert typst_node["dependencies"] == ["content-organize", "report-generate"]
+    assert graph["nodes"][2]["modelRef"] == "local-content-organizer"
+    assert graph["nodes"][3]["modelRef"] == "local-report-writer"
     assert {
         "id": "typst-export-file-export",
         "source": "typst-export",

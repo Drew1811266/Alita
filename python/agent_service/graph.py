@@ -8,6 +8,7 @@ from uuid import uuid4
 from langgraph.graph import END, StateGraph
 
 from agent_service.goal_spec import GoalSpec, parse_goal_spec
+from agent_service.graph_compiler import compile_task_graph_to_node_graph
 from agent_service.model_client import (
     ChatMessage as ModelChatMessage,
     LlamaCppModelClient,
@@ -15,6 +16,7 @@ from agent_service.model_client import (
     ModelRuntimeRequestFailed,
 )
 from agent_service.schemas import AgentEvent, UserMessage
+from agent_service.task_graph import build_document_task_graph
 
 
 AgentIntent = Literal["chat", "missing_input", "document_task"]
@@ -78,7 +80,10 @@ def plan_node_graph(state: AgentState) -> AgentState:
             AgentEvent(
                 type="node_graph.created",
                 payload={
-                    "graph": _create_document_graph(state["message"].task_id),
+                    "graph": _create_document_graph(
+                        state["message"].task_id,
+                        state["goal_spec"],
+                    ),
                 },
             )
         ],
@@ -249,121 +254,9 @@ def _assistant_message(content: str) -> dict:
     }
 
 
-def _create_document_graph(task_id: str) -> dict:
-    return {
-        "graphId": f"{task_id}-graph",
-        "nodes": [
-            _node(
-                node_id="document-input",
-                node_type="fixed_tool",
-                display_name="文档输入",
-                status="completed",
-                input_ports=[],
-                output_ports=[_port("document-output", "文档", "document")],
-                dependencies=[],
-                summary="接收用户在聊天区提供的文档附件。",
-                position={"x": 260, "y": 20},
-                tool_ref="document.receive_attachment",
-            ),
-            _node(
-                node_id="document-parse",
-                node_type="fixed_tool",
-                display_name="文档转 Markdown",
-                status="waiting",
-                input_ports=[_port("document-input", "文档", "document")],
-                output_ports=[_port("markdown-output", "Markdown", "text")],
-                dependencies=["document-input"],
-                summary="把用户提供的本地文档转换为适合模型读取的 Markdown 正文。",
-                position={"x": 260, "y": 190},
-                tool_ref="document.markitdown_convert",
-            ),
-            _node(
-                node_id="content-organize",
-                node_type="model",
-                display_name="整理内容",
-                status="waiting",
-                input_ports=[_port("text-input", "正文", "text")],
-                output_ports=[_port("outline-output", "提纲", "json")],
-                dependencies=["document-parse"],
-                summary="提炼文档要点，形成结构化提纲。",
-                position={"x": 90, "y": 370},
-                model_ref="local-content-organizer",
-            ),
-            _node(
-                node_id="report-generate",
-                node_type="model",
-                display_name="生成报告",
-                status="waiting",
-                input_ports=[_port("text-input", "正文", "text")],
-                output_ports=[_port("report-output", "报告", "text")],
-                dependencies=["document-parse"],
-                summary="根据提取的正文生成报告初稿。",
-                position={"x": 430, "y": 370},
-                model_ref="local-report-writer",
-            ),
-            _node(
-                node_id="typst-export",
-                node_type="fixed_tool",
-                display_name="Typst PDF 导出",
-                status="waiting",
-                input_ports=[
-                    _port("outline-input", "提纲", "json"),
-                    _port("report-input", "报告", "text"),
-                ],
-                output_ports=[
-                    _port("typst-output", "Typst 源文件", "artifact"),
-                    _port("pdf-output", "PDF 文件", "artifact"),
-                ],
-                dependencies=["content-organize", "report-generate"],
-                summary="把整理结果和报告正文排版为 Typst 源文件，并编译为 PDF。",
-                position={"x": 260, "y": 560},
-                tool_ref="document.typst_compile",
-            ),
-            _node(
-                node_id="file-export",
-                node_type="output",
-                display_name="导出文件",
-                status="waiting",
-                input_ports=[_port("artifact-input", "PDF 文件", "artifact")],
-                output_ports=[_port("artifact-output", "产物", "artifact")],
-                dependencies=["typst-export"],
-                summary="汇总 Typst 源文件和 PDF，输出最终文件。",
-                position={"x": 260, "y": 750},
-            ),
-        ],
-        "edges": [
-            {
-                "id": "document-input-document-parse",
-                "source": "document-input",
-                "target": "document-parse",
-            },
-            {
-                "id": "document-parse-content-organize",
-                "source": "document-parse",
-                "target": "content-organize",
-            },
-            {
-                "id": "document-parse-report-generate",
-                "source": "document-parse",
-                "target": "report-generate",
-            },
-            {
-                "id": "content-organize-typst-export",
-                "source": "content-organize",
-                "target": "typst-export",
-            },
-            {
-                "id": "report-generate-typst-export",
-                "source": "report-generate",
-                "target": "typst-export",
-            },
-            {
-                "id": "typst-export-file-export",
-                "source": "typst-export",
-                "target": "file-export",
-            },
-        ],
-    }
+def _create_document_graph(task_id: str, goal_spec: GoalSpec) -> dict:
+    task_graph = build_document_task_graph(task_id, goal_spec)
+    return compile_task_graph_to_node_graph(task_graph)
 
 
 def _node(
