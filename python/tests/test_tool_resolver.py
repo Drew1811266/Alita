@@ -12,6 +12,10 @@ from agent_service.tool_resolver import (
 )
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TOOL_PACKAGES_ROOT = PROJECT_ROOT / "tool-packages"
+
+
 def write_manifest(
     root: Path,
     tool_id: str = "document.markitdown_convert",
@@ -57,21 +61,20 @@ def write_manifest(
     return manifest_path
 
 
-def test_resolves_markitdown_by_capability_and_operation(tmp_path: Path) -> None:
-    write_manifest(tmp_path)
-    registry = ToolRegistry.from_packages_root(tmp_path)
+def test_resolves_markitdown_by_capability_and_operation() -> None:
+    registry = ToolRegistry.from_packages_root(TOOL_PACKAGES_ROOT)
 
     binding = resolve_tool_binding(
         registry=registry,
-        required_capability="document_conversion",
+        required_capability="document.convert.markdown",
         operation="convert_local_file",
     )
 
     assert binding.tool_id == "document.markitdown_convert"
     assert binding.operation == "convert_local_file"
     assert binding.arguments_template == {}
-    assert binding.required_permissions == ["read_project_files"]
-    assert "document_conversion" in binding.binding_reason
+    assert "write_project_outputs" in binding.required_permissions
+    assert "document.convert.markdown" in binding.binding_reason
     assert "document.markitdown_convert" in binding.binding_reason
 
 
