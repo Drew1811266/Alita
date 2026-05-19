@@ -31,6 +31,9 @@ class ModelBinding(BaseModel):
 
 class TaskNodeUi(BaseModel):
     display_name: str
+    summary: str
+    input_ports: list[dict] = Field(default_factory=list)
+    output_ports: list[dict] = Field(default_factory=list)
     position: dict[str, float] = Field(default_factory=dict)
 
 
@@ -51,9 +54,13 @@ class TaskNode(BaseModel):
 
 
 class TaskEdge(BaseModel):
-    edge_id: str
+    id: str
     source: str
     target: str
+
+    @property
+    def edge_id(self) -> str:
+        return self.id
 
 
 class TaskGraph(BaseModel):
@@ -92,8 +99,15 @@ def build_document_task_graph(task_id: str, goal_spec: GoalSpec) -> TaskGraph:
                 success_criteria=["Document attachment is available to the task."],
                 risk_level="read_only",
                 permissions_required=["read_attachment"],
+                tool_binding=ToolBinding(
+                    tool_id="document.receive_attachment",
+                    operation="receive_attachment",
+                ),
                 ui=TaskNodeUi(
-                    display_name="Document input",
+                    display_name="文档输入",
+                    summary="接收用户在聊天区提供的文档附件。",
+                    input_ports=[],
+                    output_ports=[_port("document-output", "文档", "document")],
                     position={"x": 260, "y": 20},
                 ),
             ),
@@ -112,7 +126,10 @@ def build_document_task_graph(task_id: str, goal_spec: GoalSpec) -> TaskGraph:
                     operation="convert_local_file",
                 ),
                 ui=TaskNodeUi(
-                    display_name="Document to Markdown",
+                    display_name="文档转 Markdown",
+                    summary="把用户提供的本地文档转换为适合模型读取的 Markdown 正文。",
+                    input_ports=[_port("document-input", "文档", "document")],
+                    output_ports=[_port("markdown-output", "Markdown", "text")],
                     position={"x": 260, "y": 190},
                 ),
             ),
@@ -130,7 +147,10 @@ def build_document_task_graph(task_id: str, goal_spec: GoalSpec) -> TaskGraph:
                     purpose="organize_document_content",
                 ),
                 ui=TaskNodeUi(
-                    display_name="Organize content",
+                    display_name="整理内容",
+                    summary="提炼文档要点，形成结构化提纲。",
+                    input_ports=[_port("text-input", "正文", "text")],
+                    output_ports=[_port("outline-output", "提纲", "json")],
                     position={"x": 90, "y": 370},
                 ),
             ),
@@ -138,9 +158,9 @@ def build_document_task_graph(task_id: str, goal_spec: GoalSpec) -> TaskGraph:
                 node_id="report-generate",
                 objective="Write the report body from the extracted document content.",
                 kind="model",
-                inputs=["markdown", "outline"],
+                inputs=["markdown"],
                 outputs=["report_markdown"],
-                dependencies=["document-parse", "content-organize"],
+                dependencies=["document-parse"],
                 success_criteria=["A report draft satisfies the requested goal."],
                 risk_level="read_only",
                 model_binding=ModelBinding(
@@ -148,7 +168,10 @@ def build_document_task_graph(task_id: str, goal_spec: GoalSpec) -> TaskGraph:
                     purpose="write_document_report",
                 ),
                 ui=TaskNodeUi(
-                    display_name="Generate report",
+                    display_name="生成报告",
+                    summary="根据提取的正文生成报告初稿。",
+                    input_ports=[_port("text-input", "正文", "text")],
+                    output_ports=[_port("report-output", "报告", "text")],
                     position={"x": 430, "y": 370},
                 ),
             ),
@@ -167,7 +190,16 @@ def build_document_task_graph(task_id: str, goal_spec: GoalSpec) -> TaskGraph:
                     operation="compile_report_pdf",
                 ),
                 ui=TaskNodeUi(
-                    display_name="Typst PDF export",
+                    display_name="Typst PDF 导出",
+                    summary="把整理结果和报告正文排版为 Typst 源文件，并编译为 PDF。",
+                    input_ports=[
+                        _port("outline-input", "提纲", "json"),
+                        _port("report-input", "报告", "text"),
+                    ],
+                    output_ports=[
+                        _port("typst-output", "Typst 源文件", "artifact"),
+                        _port("pdf-output", "PDF 文件", "artifact"),
+                    ],
                     position={"x": 260, "y": 560},
                 ),
             ),
@@ -182,44 +214,42 @@ def build_document_task_graph(task_id: str, goal_spec: GoalSpec) -> TaskGraph:
                 risk_level=goal_spec.risk_level,
                 permissions_required=list(goal_spec.permissions_required),
                 ui=TaskNodeUi(
-                    display_name="Export files",
+                    display_name="导出文件",
+                    summary="汇总 Typst 源文件和 PDF，输出最终文件。",
+                    input_ports=[_port("artifact-input", "PDF 文件", "artifact")],
+                    output_ports=[_port("artifact-output", "产物", "artifact")],
                     position={"x": 260, "y": 750},
                 ),
             ),
         ],
         edges=[
             TaskEdge(
-                edge_id="document-input-document-parse",
+                id="document-input-document-parse",
                 source="document-input",
                 target="document-parse",
             ),
             TaskEdge(
-                edge_id="document-parse-content-organize",
+                id="document-parse-content-organize",
                 source="document-parse",
                 target="content-organize",
             ),
             TaskEdge(
-                edge_id="document-parse-report-generate",
+                id="document-parse-report-generate",
                 source="document-parse",
                 target="report-generate",
             ),
             TaskEdge(
-                edge_id="content-organize-report-generate",
-                source="content-organize",
-                target="report-generate",
-            ),
-            TaskEdge(
-                edge_id="content-organize-typst-export",
+                id="content-organize-typst-export",
                 source="content-organize",
                 target="typst-export",
             ),
             TaskEdge(
-                edge_id="report-generate-typst-export",
+                id="report-generate-typst-export",
                 source="report-generate",
                 target="typst-export",
             ),
             TaskEdge(
-                edge_id="typst-export-file-export",
+                id="typst-export-file-export",
                 source="typst-export",
                 target="file-export",
             ),
@@ -246,11 +276,11 @@ def validate_task_graph(task_graph: TaskGraph) -> None:
     for edge in task_graph.edges:
         if edge.source not in known_node_ids:
             raise TaskGraphValidationError(
-                f"missing edge source '{edge.source}' for edge '{edge.edge_id}'"
+                f"missing edge source '{edge.source}' for edge '{edge.id}'"
             )
         if edge.target not in known_node_ids:
             raise TaskGraphValidationError(
-                f"missing edge target '{edge.target}' for edge '{edge.edge_id}'"
+                f"missing edge target '{edge.target}' for edge '{edge.id}'"
             )
 
     visiting: set[str] = set()
@@ -277,3 +307,11 @@ def validate_task_graph(task_graph: TaskGraph) -> None:
 
     for node in task_graph.nodes:
         visit(node.node_id, [])
+
+
+def _port(port_id: str, label: str, data_type: str) -> dict:
+    return {
+        "id": port_id,
+        "label": label,
+        "dataType": data_type,
+    }

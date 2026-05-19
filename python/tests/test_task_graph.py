@@ -54,6 +54,20 @@ def test_build_document_task_graph_preserves_existing_node_ids() -> None:
         "typst-export",
         "file-export",
     ]
+    assert graph.edges[0].id == "document-input-document-parse"
+    assert "content-organize-report-generate" not in [
+        edge.id for edge in graph.edges
+    ]
+    assert graph.node_by_id("report-generate").dependencies == ["document-parse"]
+
+    assert graph.node_by_id("document-input").tool_binding is not None
+    assert (
+        graph.node_by_id("document-input").tool_binding.tool_id
+        == "document.receive_attachment"
+    )
+    assert graph.node_by_id("document-input").tool_binding.operation == (
+        "receive_attachment"
+    )
     assert graph.node_by_id("document-parse").tool_binding is not None
     assert (
         graph.node_by_id("document-parse").tool_binding.tool_id
@@ -72,6 +86,25 @@ def test_build_document_task_graph_preserves_existing_node_ids() -> None:
         == "local.report_writer"
     )
     assert graph.node_by_id("file-export").risk_level == "local_write"
+
+    document_parse_ui = graph.node_by_id("document-parse").ui
+    assert document_parse_ui is not None
+    assert (
+        document_parse_ui.summary
+        == "把用户提供的本地文档转换为适合模型读取的 Markdown 正文。"
+    )
+    assert document_parse_ui.input_ports == [
+        {"id": "document-input", "label": "文档", "dataType": "document"}
+    ]
+    assert document_parse_ui.output_ports == [
+        {"id": "markdown-output", "label": "Markdown", "dataType": "text"}
+    ]
+
+    typst_export_ui = graph.node_by_id("typst-export").ui
+    assert typst_export_ui is not None
+    assert {"id": "pdf-output", "label": "PDF 文件", "dataType": "artifact"} in (
+        typst_export_ui.output_ports
+    )
 
     validate_task_graph(graph)
 
