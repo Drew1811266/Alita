@@ -301,6 +301,44 @@ def test_scripts_approve_rejects_mismatched_fingerprint() -> None:
     assert response.status_code == 409
 
 
+def test_scripts_approve_rejects_stale_fingerprint_when_summary_changes() -> None:
+    client = TestClient(app)
+    graph = _temporary_script_graph()
+    stale_fingerprint = _script_review_fingerprint(graph["nodes"][0]["scriptReview"])
+    graph["nodes"][0]["scriptReview"]["summary"] = "Changed visible review summary."
+
+    response = client.post(
+        "/agent/scripts/approve",
+        json={
+            "task_id": "task-script",
+            "node_id": "temporary-script",
+            "current_graph": graph,
+            "approval_fingerprint": stale_fingerprint,
+        },
+    )
+
+    assert response.status_code == 409
+
+
+def test_scripts_approve_rejects_stale_fingerprint_when_requires_approval_changes() -> None:
+    client = TestClient(app)
+    graph = _temporary_script_graph()
+    stale_fingerprint = _script_review_fingerprint(graph["nodes"][0]["scriptReview"])
+    graph["nodes"][0]["scriptReview"]["requiresApproval"] = False
+
+    response = client.post(
+        "/agent/scripts/approve",
+        json={
+            "task_id": "task-script",
+            "node_id": "temporary-script",
+            "current_graph": graph,
+            "approval_fingerprint": stale_fingerprint,
+        },
+    )
+
+    assert response.status_code == 409
+
+
 def test_scripts_approve_rejects_unknown_node() -> None:
     client = TestClient(app)
 

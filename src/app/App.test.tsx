@@ -136,7 +136,7 @@ describe("App", () => {
         codePreview: "print('preview')",
         inputContract: { path: "string" },
         outputContract: { result: "string" },
-        approvalFingerprint: null,
+        approvalFingerprint: "backend-review-token",
       },
     };
 
@@ -152,7 +152,7 @@ describe("App", () => {
       taskId: "task-1",
       nodeId: "temporary-script",
       decision: "approve",
-      approvalFingerprint: "e9885c7b40367139e05d1bfad930153222416183c89874c496a09a413d26d3ed",
+      approvalFingerprint: "backend-review-token",
       currentGraph: graph,
     });
 
@@ -170,6 +170,39 @@ describe("App", () => {
       decision: "reject",
       currentGraph: graph,
     });
+  });
+
+  it("fails closed when approving without a backend review fingerprint", () => {
+    const node: AgentNode = {
+      nodeId: "temporary-script",
+      nodeType: "temporary_script",
+      displayName: "Temporary script",
+      status: "needs_permission",
+      inputPorts: [],
+      outputPorts: [],
+      dependencies: [],
+      summary: "Inspect project files.",
+      createdBy: "agent",
+      artifactRefs: [],
+      retryCount: 0,
+      position: { x: 0, y: 0 },
+      scriptReview: {
+        status: "reviewing",
+        summary: "Needs review before execution.",
+        permissions: ["read_project_files"],
+        riskLevel: "high",
+        requiresApproval: true,
+        approvalFingerprint: null,
+      },
+    };
+
+    expect(() =>
+      buildTemporaryScriptPermissionSubmitPayload({
+        taskId: "task-1",
+        node,
+        decision: "approve",
+      }),
+    ).toThrow("temporary script approval fingerprint is missing");
   });
 
   it("wires temporary script review callbacks into the app canvas", () => {

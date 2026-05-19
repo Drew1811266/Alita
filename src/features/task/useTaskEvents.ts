@@ -182,6 +182,10 @@ export async function cancelNodeGraphRun(
 export async function submitTemporaryScriptPermission(
   payload: TemporaryScriptPermissionPayload,
 ): Promise<BackendEvent[]> {
+  if (payload.decision === "approve" && !payload.approvalFingerprint) {
+    throw new Error("temporary script approval fingerprint is missing");
+  }
+
   const command =
     payload.decision === "approve" ? "scripts/approve" : "scripts/reject";
   const response = await fetch(`${SIDECAR_URL}/agent/${command}`, {

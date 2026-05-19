@@ -9,8 +9,10 @@ from agent_service.schemas import ScriptReviewState
 def script_review_fingerprint(review: ScriptReviewState) -> str:
     payload = {
         "codePreview": review.codePreview,
+        "summary": review.summary,
         "permissions": review.permissions,
         "riskLevel": review.riskLevel,
+        "requiresApproval": review.requiresApproval,
         "inputContract": review.inputContract,
         "outputContract": review.outputContract,
     }
