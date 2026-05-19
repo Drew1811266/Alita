@@ -269,7 +269,7 @@ def test_high_risk_temporary_script_blocks_execution_until_approved(
     assert approved_events[-1].type == "task.completed"
 
 
-def test_graph_feedback_updates_single_node_and_preserves_unaffected_nodes() -> None:
+def test_graph_feedback_updates_target_and_downstream_nodes_preserving_unaffected_nodes() -> None:
     graph = _feedback_graph()
 
     events = run_agent(
@@ -283,9 +283,15 @@ def test_graph_feedback_updates_single_node_and_preserves_unaffected_nodes() -> 
     assert [event.type for event in events] == ["graph.replanned"]
     updated = RunGraph.model_validate(events[0].payload["graph"])
     nodes = {node.nodeId: node for node in updated.nodes}
+    assert updated.metadata["feedbackUpdatedNodeIds"] == [
+        "extract-data",
+        "summarize-data",
+    ]
     assert "read JSON files" in nodes["extract-data"].summary
+    assert "Upstream feedback changed extract-data." in nodes["summarize-data"].summary
     assert nodes["task-analysis"].summary == "Understand the task."
     assert nodes["independent-output"].summary == "Leave this output unchanged."
+    assert nodes["independent-output"].status == "completed"
     assert nodes["independent-output"].lastRun == {
         "runId": "run-independent",
         "completedAt": "2026-05-19T00:00:00Z",
