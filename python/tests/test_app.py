@@ -1,3 +1,6 @@
+import hashlib
+import json
+
 from fastapi.testclient import TestClient
 
 from agent_service.app import app
@@ -79,6 +82,25 @@ def test_agent_message_complex_inquiry_research_flow_choice_returns_graph() -> N
     events = response.json()
     assert [event["type"] for event in events] == ["node_graph.created"]
     assert events[0]["payload"]["graph"]["graphId"] == "task-research-flow-research-graph"
+
+
+def test_research_choose_accepts_choice_request() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/research/choose",
+        json={
+            "task_id": "task-research-command",
+            "content": "Research and compare current Python packaging tools",
+            "attachments": [],
+            "inquiry_choice": "research_flow",
+        },
+    )
+
+    assert response.status_code == 200
+    events = response.json()
+    assert [event["type"] for event in events] == ["node_graph.created"]
+    assert events[0]["payload"]["graph"]["graphId"] == "task-research-command-research-graph"
 
 
 def test_agent_message_stream_research_flow_choice_returns_graph_sse() -> None:
@@ -197,3 +219,115 @@ def test_cancel_graph_run_returns_cancelled_flag() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"cancelled": False}
+
+
+def test_scripts_reject_keeps_graph_blocked() -> None:
+    client = TestClient(app)
+    graph = _temporary_script_graph()
+
+    response = client.post(
+        "/agent/scripts/reject",
+        json={
+            "task_id": "task-script",
+            "node_id": "temporary-script",
+            "current_graph": graph,
+            "reason": "Needs narrower file access.",
+        },
+    )
+
+    assert response.status_code == 200
+    events = response.json()
+    assert [event["type"] for event in events] == ["graph.replanned"]
+    updated_node = events[0]["payload"]["graph"]["nodes"][0]
+    assert updated_node["nodeId"] == "temporary-script"
+    assert updated_node["status"] == "needs_permission"
+    assert updated_node["scriptReview"]["status"] == "rejected"
+    assert updated_node["scriptReview"]["approvalFingerprint"] is None
+
+
+def test_scripts_approve_persists_fingerprint_and_unblocks_graph() -> None:
+    client = TestClient(app)
+    graph = _temporary_script_graph()
+    expected_fingerprint = _script_review_fingerprint(
+        graph["nodes"][0]["scriptReview"],
+    )
+
+    response = client.post(
+        "/agent/scripts/approve",
+        json={
+            "task_id": "task-script",
+            "node_id": "temporary-script",
+            "current_graph": graph,
+            "approval_fingerprint": expected_fingerprint,
+        },
+    )
+
+    assert response.status_code == 200
+    events = response.json()
+    assert [event["type"] for event in events] == ["graph.replanned"]
+    updated_node = events[0]["payload"]["graph"]["nodes"][0]
+    assert updated_node["status"] == "ready"
+    assert updated_node["scriptReview"]["status"] == "approved"
+    assert updated_node["scriptReview"]["approvalFingerprint"] == expected_fingerprint
+
+
+def test_scripts_approve_rejects_unknown_node() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/scripts/approve",
+        json={
+            "task_id": "task-script",
+            "node_id": "missing",
+            "current_graph": _temporary_script_graph(),
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def _temporary_script_graph() -> dict:
+    return {
+        "graphId": "graph-script-review",
+        "nodes": [
+            {
+                "nodeId": "temporary-script",
+                "nodeType": "temporary_script",
+                "displayName": "Temporary script",
+                "status": "needs_permission",
+                "inputPorts": [],
+                "outputPorts": [],
+                "dependencies": [],
+                "summary": "Inspect project files.",
+                "createdBy": "agent",
+                "artifactRefs": [],
+                "retryCount": 0,
+                "scriptReview": {
+                    "status": "not_reviewed",
+                    "summary": "Needs review before execution.",
+                    "permissions": ["read_project_files"],
+                    "riskLevel": "high",
+                    "requiresApproval": True,
+                    "codePreview": "print('preview')",
+                    "inputContract": {"path": "string"},
+                    "outputContract": {"result": "string"},
+                    "approvalFingerprint": None,
+                },
+                "position": {"x": 0, "y": 0},
+            }
+        ],
+        "edges": [],
+        "metadata": {"preserve": True},
+    }
+
+
+def _script_review_fingerprint(script_review: dict) -> str:
+    payload = {
+        "codePreview": script_review["codePreview"],
+        "permissions": script_review["permissions"],
+        "riskLevel": script_review["riskLevel"],
+        "inputContract": script_review["inputContract"],
+        "outputContract": script_review["outputContract"],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()

@@ -71,6 +71,7 @@ import {
   cancelNodeGraphRun,
   createTemporaryScriptPermissionPayload,
   runNodeGraphStream,
+  submitResearchChoice,
   type RunNodeGraphMode,
   type SubmitMessagePayload,
   submitUserMessage,
@@ -898,7 +899,10 @@ export function App() {
     setDirty(true);
 
     try {
-      await submitAgentMessagePayload(payload);
+      const events = await submitResearchChoice(payload);
+      for (const event of events) {
+        applyBackendEvent(event);
+      }
     } catch (error) {
       setMessages((current) => [
         ...current,
@@ -1265,7 +1269,7 @@ export function buildResearchChoiceSubmitPayload({
 }: {
   pendingChoice: PendingResearchChoice;
   choiceId: ResearchChoiceId;
-}): SubmitMessagePayload | null {
+}): (SubmitMessagePayload & { inquiryChoice: ResearchChoiceId }) | null {
   if (!pendingChoice.submittedPayload) {
     return null;
   }

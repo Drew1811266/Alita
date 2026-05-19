@@ -60,6 +60,22 @@ export async function submitUserMessage(
   return submitViaHttpSidecar(payload);
 }
 
+export async function submitResearchChoice(
+  payload: SubmitMessagePayload & { inquiryChoice: ResearchChoiceId },
+): Promise<BackendEvent[]> {
+  const response = await fetch(`${SIDECAR_URL}/agent/research/choose`, {
+    method: "POST",
+    headers: await sidecarJsonHeaders(),
+    body: JSON.stringify(toSidecarMessage(payload)),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Agent sidecar returned ${response.status}`);
+  }
+
+  return (await response.json()) as BackendEvent[];
+}
+
 export function createResearchQuickAnswerPayload(
   payload: ResearchChoiceSubmitActionPayload,
 ): SubmitMessagePayload {
@@ -166,14 +182,13 @@ export async function cancelNodeGraphRun(
 export async function submitTemporaryScriptPermission(
   payload: TemporaryScriptPermissionPayload,
 ): Promise<BackendEvent[]> {
-  const response = await fetch(
-    `${SIDECAR_URL}/agent/temporary-script/permission`,
-    {
-      method: "POST",
-      headers: await sidecarJsonHeaders(),
-      body: JSON.stringify(toSidecarTemporaryScriptPermission(payload)),
-    },
-  );
+  const command =
+    payload.decision === "approve" ? "scripts/approve" : "scripts/reject";
+  const response = await fetch(`${SIDECAR_URL}/agent/${command}`, {
+    method: "POST",
+    headers: await sidecarJsonHeaders(),
+    body: JSON.stringify(toSidecarTemporaryScriptPermission(payload)),
+  });
 
   if (!response.ok) {
     throw new Error(`Agent sidecar returned ${response.status}`);
@@ -314,7 +329,6 @@ function toSidecarTemporaryScriptPermission(
   return {
     task_id: payload.taskId,
     node_id: payload.nodeId,
-    decision: payload.decision,
     ...(payload.approvalFingerprint !== undefined
       ? { approval_fingerprint: payload.approvalFingerprint }
       : {}),

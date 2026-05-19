@@ -15,14 +15,18 @@ from agent_service.asr import (
     TranscriptionResponse,
     get_asr_status,
 )
-from agent_service.execution import run_graph_events
+from agent_service.execution import _script_review_fingerprint, run_graph_events
 from agent_service.graph import run_agent, stream_agent_events
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY
 from agent_service.schemas import (
     AgentEvent,
     AgentMessageRequest,
     CancelRunRequest,
+    GraphNode,
+    ResearchChoiceRequest,
     RunGraphRequest,
+    ScriptApprovalRequest,
+    ScriptRejectionRequest,
 )
 
 
@@ -91,6 +95,21 @@ def agent_message(
     )
 
 
+@app.post("/agent/research/choose", response_model=list[AgentEvent])
+def research_choose(
+    request: ResearchChoiceRequest,
+    _auth: None = Depends(require_sidecar_token),
+) -> list[AgentEvent]:
+    return run_agent(
+        request.to_user_message(),
+        inquiry_choice=request.inquiry_choice,
+        current_graph=request.currentGraph,
+        has_run_history=bool(request.hasRunHistory),
+        artifact_refs=request.artifactRefs,
+        pending_choice=request.pendingChoice,
+    )
+
+
 @app.post("/agent/message/stream")
 def agent_message_stream(
     request: AgentMessageRequest,
@@ -121,6 +140,50 @@ def cancel_graph_run(
     return {"cancelled": DEFAULT_RUN_REGISTRY.cancel(request.run_id)}
 
 
+@app.post("/agent/scripts/approve", response_model=list[AgentEvent])
+def approve_temporary_script(
+    request: ScriptApprovalRequest,
+    _auth: None = Depends(require_sidecar_token),
+) -> list[AgentEvent]:
+    graph = request.currentGraph.model_copy(deep=True)
+    node = _script_node_for_request(graph.nodes, request.node_id)
+    review = node.scriptReview
+    if review is None:
+        raise HTTPException(status_code=400, detail="temporary script has no review state")
+
+    expected_fingerprint = _script_review_fingerprint(review)
+    if (
+        request.approvalFingerprint is not None
+        and request.approvalFingerprint != expected_fingerprint
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="approval fingerprint does not match script review state",
+        )
+
+    review.status = "approved"
+    review.approvalFingerprint = expected_fingerprint
+    node.status = _status_after_permission_approval(node, graph.nodes)
+    return [_graph_snapshot_event(graph, "Temporary script approved.")]
+
+
+@app.post("/agent/scripts/reject", response_model=list[AgentEvent])
+def reject_temporary_script(
+    request: ScriptRejectionRequest,
+    _auth: None = Depends(require_sidecar_token),
+) -> list[AgentEvent]:
+    graph = request.currentGraph.model_copy(deep=True)
+    node = _script_node_for_request(graph.nodes, request.node_id)
+    review = node.scriptReview
+    if review is None:
+        raise HTTPException(status_code=400, detail="temporary script has no review state")
+
+    review.status = "rejected"
+    review.approvalFingerprint = None
+    node.status = "needs_permission"
+    return [_graph_snapshot_event(graph, "Temporary script rejected.")]
+
+
 def _serialize_sse_events(request: AgentMessageRequest):
     for event in stream_agent_events(
         request.to_user_message(),
@@ -136,3 +199,36 @@ def _serialize_sse_events(request: AgentMessageRequest):
 def _serialize_graph_sse_events(request: RunGraphRequest):
     for event in run_graph_events(request, registry=DEFAULT_RUN_REGISTRY):
         yield f"data: {event.model_dump_json()}\n\n"
+
+
+def _script_node_for_request(nodes: list[GraphNode], node_id: str) -> GraphNode:
+    for node in nodes:
+        if node.nodeId == node_id:
+            if node.nodeType != "temporary_script":
+                raise HTTPException(
+                    status_code=400,
+                    detail="node is not a temporary script",
+                )
+            return node
+    raise HTTPException(status_code=404, detail="temporary script node not found")
+
+
+def _status_after_permission_approval(
+    node: GraphNode,
+    nodes: list[GraphNode],
+) -> str:
+    completed = {candidate.nodeId for candidate in nodes if candidate.status == "completed"}
+    if all(dependency in completed for dependency in node.dependencies):
+        return "ready"
+    return "waiting"
+
+
+def _graph_snapshot_event(graph, summary: str) -> AgentEvent:
+    return AgentEvent(
+        type="graph.replanned",
+        payload={
+            "graph": graph.model_dump(),
+            "previousGraphId": graph.graphId,
+            "summary": summary,
+        },
+    )

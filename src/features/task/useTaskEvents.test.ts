@@ -8,6 +8,7 @@ import {
   createSseEventParser,
   createTemporaryScriptPermissionPayload,
   runNodeGraphStream,
+  submitResearchChoice,
   submitTemporaryScriptPermission,
   submitUserMessage,
 } from "./useTaskEvents";
@@ -71,6 +72,34 @@ describe("runNodeGraphStream", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:8765/agent/message",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          task_id: "task-1",
+          content: "Research and compare current Python packaging tools",
+          attachments: [],
+          inquiry_choice: "research_flow",
+        }),
+      }),
+    );
+  });
+
+  it("posts research choices to the sidecar command endpoint", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await submitResearchChoice({
+      taskId: "task-1",
+      content: "Research and compare current Python packaging tools",
+      attachments: [],
+      inquiryChoice: "research_flow",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/agent/research/choose",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
@@ -400,13 +429,12 @@ describe("frontend action payload helpers", () => {
     );
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8765/agent/temporary-script/permission",
+      "http://127.0.0.1:8765/agent/scripts/approve",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
           task_id: "task-1",
           node_id: "temporary-script",
-          decision: "approve",
           approval_fingerprint: "sha256:abc123",
           current_graph: graph,
         }),
@@ -430,10 +458,15 @@ describe("frontend action payload helpers", () => {
       }),
     );
 
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/agent/scripts/reject",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       task_id: "task-1",
       node_id: "temporary-script",
-      decision: "reject",
       reason: "Needs narrower file access.",
     });
   });

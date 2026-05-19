@@ -37,6 +37,10 @@ class AgentMessageRequest(UserMessage):
         )
 
 
+class ResearchChoiceRequest(AgentMessageRequest):
+    inquiry_choice: Literal["quick_answer", "research_flow"]
+
+
 class AgentEvent(BaseModel):
     type: str
     payload: dict
@@ -130,6 +134,24 @@ class RunMode(BaseModel):
 
 class CancelRunRequest(BaseModel):
     run_id: str
+
+
+class ScriptApprovalRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    task_id: str
+    node_id: str
+    currentGraph: RunGraph = Field(alias="current_graph")
+    approvalFingerprint: str | None = Field(default=None, alias="approval_fingerprint")
+
+
+class ScriptRejectionRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    task_id: str
+    node_id: str
+    currentGraph: RunGraph = Field(alias="current_graph")
+    reason: str | None = None
 
 
 class RunGraphRequest(BaseModel):
