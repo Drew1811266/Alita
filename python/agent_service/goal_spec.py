@@ -86,9 +86,13 @@ DOCUMENT_REFERENCE_KEYWORDS = [
     "xlsx",
     "document",
     "file",
+    "files",
     "attachment",
+    "attachments",
     "spreadsheet",
+    "spreadsheets",
     "presentation",
+    "presentations",
 ]
 
 WEB_KEYWORDS = [
@@ -103,16 +107,30 @@ WEB_KEYWORDS = [
     "latest",
 ]
 
+EXPLICIT_WEB_KEYWORDS = [
+    "联网",
+    "搜索",
+    "查一下",
+    "github",
+    "search",
+]
+
 
 def parse_goal_spec(message: UserMessage) -> GoalSpec:
     content = message.content.strip()
     goal = content or "继续当前对话"
     has_attachments = bool(message.attachments)
     has_web_request = _contains_any(content, WEB_KEYWORDS)
+    has_explicit_web_request = _contains_any(content, EXPLICIT_WEB_KEYWORDS)
     has_document_action = _contains_any(content, DOCUMENT_ACTION_KEYWORDS)
     has_document_reference = _contains_any(content, DOCUMENT_REFERENCE_KEYWORDS)
 
-    if has_attachments and (not content or has_document_action or has_document_reference):
+    if has_attachments and (
+        not content
+        or has_document_action
+        or has_document_reference
+        or not has_explicit_web_request
+    ):
         deliverable = "pdf_report" if "pdf" in content.lower() else "markdown_report"
         return GoalSpec(
             goal=goal,

@@ -64,6 +64,15 @@ def test_english_profile_summary_remains_chat() -> None:
     assert spec.deliverable == "chat_answer"
 
 
+def test_english_files_summary_requests_missing_document_file() -> None:
+    spec = parse_goal_spec(
+        UserMessage(task_id="task-document", content="please summarize my files")
+    )
+
+    assert spec.task_type == "document_processing"
+    assert spec.missing_inputs == ["document_file"]
+
+
 def test_explicit_network_request_requires_web_confirmation() -> None:
     spec = parse_goal_spec(
         UserMessage(task_id="task-research", content="联网搜索最新的 Tauri 发布版本")
