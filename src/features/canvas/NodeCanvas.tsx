@@ -16,6 +16,7 @@ import {
 } from "@xyflow/react";
 
 import { NodePopover } from "./NodePopover";
+import { layoutGraphForCanvas } from "./nodeLayout";
 import type { AgentNode, NodeGraph } from "../../shared/types";
 
 type AgentNodeData = {
@@ -127,13 +128,17 @@ export function NodeCanvas({
   onRejectTemporaryScript,
 }: NodeCanvasProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const laidOutGraph = useMemo(
+    () => (graph ? layoutGraphForCanvas(graph) : null),
+    [graph],
+  );
 
   const nodes = useMemo<AgentFlowNode[]>(() => {
-    if (!graph) {
+    if (!laidOutGraph) {
       return [];
     }
 
-    return graph.nodes.map((node) => ({
+    return laidOutGraph.nodes.map((node) => ({
       id: node.nodeId,
       type: "agent",
       data: { agentNode: node },
@@ -142,7 +147,7 @@ export function NodeCanvas({
       sourcePosition: Position.Bottom,
       draggable: false,
     }));
-  }, [graph]);
+  }, [laidOutGraph]);
 
   const edges = useMemo<Edge[]>(() => {
     if (!graph) {
@@ -166,7 +171,7 @@ export function NodeCanvas({
   }, [graph]);
 
   const selectedNode =
-    graph?.nodes.find((node) => node.nodeId === selectedNodeId) ?? null;
+    laidOutGraph?.nodes.find((node) => node.nodeId === selectedNodeId) ?? null;
 
   const handleNodeClick: NodeMouseHandler<AgentFlowNode> = (_event, node) => {
     setSelectedNodeId(node.id);

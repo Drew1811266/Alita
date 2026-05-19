@@ -377,7 +377,9 @@ def test_web_complex_research_flow_choice_creates_research_graph() -> None:
         "research-query-plan",
         "research-parallel-search",
         "research-source-review",
+        "research-source-reading",
         "research-report-synthesis",
+        "research-report-quality-check",
         "research-markdown-output",
     ]
     assert len(
@@ -388,6 +390,41 @@ def test_web_complex_research_flow_choice_creates_research_graph() -> None:
             and node.get("toolRef") == "web.search.parallel"
         ]
     ) == 1
+    assert len(
+        [
+            node
+            for node in graph["nodes"]
+            if node["nodeType"] == "fixed_tool"
+            and node.get("toolRef") == "web.fetch.sources"
+        ]
+    ) == 1
+
+
+def test_chinese_github_research_with_context_attachment_asks_for_research_choice() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="github-research",
+            content=(
+                "\u5e2e\u6211\u67e5\u8be2\u4eca\u5929GitHub\u7f51\u7ad9"
+                "\u4e0a\u9762\u6709\u54ea\u4e9b\u70ed\u95e8\u7684\u9879\u76ee\uff0c"
+                "\u7136\u540e\u7814\u7a76\u4e00\u4e0b\u6bcf\u4e00\u4e2a"
+                "\u9879\u76ee\u5177\u4f53\u662f\u5e72\u4ec0\u4e48\u7684\uff0c"
+                "\u7136\u540e\u6700\u540e\u5e2e\u6211\u603b\u7ed3\u4e00\u4e0b\uff0c"
+                "\u5199\u6210\u4e00\u4e2a\u6587\u6863\u3002"
+            ),
+            attachments=[
+                Attachment(
+                    attachment_id="old-doc",
+                    name="old-context.docx",
+                    path=r"C:\Users\Drew\Desktop\old-context.docx",
+                    size_bytes=128,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            ],
+        )
+    )
+
+    assert [event.type for event in events] == ["research.choice_required"]
 
 
 def test_missing_attachment_requests_input_for_document_task() -> None:
@@ -522,10 +559,16 @@ def test_attachment_document_task_graph_has_planner_nodes_and_executable_estimat
 
     assert [node["nodeId"] for node in planning_nodes] == [
         "task-analysis",
+        "context-gathering",
+        "evidence-summary",
+        "plan-draft",
         "capability-analysis",
         "tool-selection",
+        "plan-review",
         "execution-order-planning",
     ]
+    assert graph["metadata"]["planningMode"] == "deep"
+    assert graph["metadata"]["planningTrace"]["context"]["attachmentCount"] == 1
     assert [node["nodeId"] for node in graph["nodes"][:6]] == [
         "document-input",
         "document-parse",
@@ -556,8 +599,22 @@ def test_general_task_classification_creates_planner_graph_instead_of_answer() -
     assert graph["graphId"] == "task-general-graph"
     assert [node["nodeId"] for node in graph["nodes"][:4]] == [
         "task-analysis",
+        "context-gathering",
+        "evidence-summary",
+        "plan-draft",
+    ]
+    assert [
+        node["nodeId"]
+        for node in graph["nodes"]
+        if node["nodeType"] == "planning"
+    ] == [
+        "task-analysis",
+        "context-gathering",
+        "evidence-summary",
+        "plan-draft",
         "capability-analysis",
         "tool-selection",
+        "plan-review",
         "execution-order-planning",
     ]
 

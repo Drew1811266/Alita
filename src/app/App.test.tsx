@@ -5,6 +5,7 @@ import {
   App,
   buildResearchChoiceSubmitPayload,
   buildTemporaryScriptPermissionSubmitPayload,
+  selectAgentAttachments,
   shouldRefreshAsrForPreferencesUpdate,
 } from "./App";
 import type { AgentNode, ChatAttachment, NodeGraph } from "../shared/types";
@@ -110,6 +111,42 @@ describe("App", () => {
         choiceId: "quick_answer",
       }),
     ).toBeNull();
+  });
+
+  it("does not reuse context attachments for a new web research request", () => {
+    const oldAttachment: ChatAttachment = {
+      attachmentId: "old-1",
+      name: "old.docx",
+      path: "D:\\Project\\old.docx",
+      sizeBytes: 100,
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    };
+
+    expect(
+      selectAgentAttachments({
+        content: "Research current GitHub trending projects and write a document.",
+        sentAttachments: [],
+        contextAttachments: [oldAttachment],
+      }),
+    ).toEqual([]);
+  });
+
+  it("reuses context attachments when the message explicitly references them", () => {
+    const oldAttachment: ChatAttachment = {
+      attachmentId: "old-1",
+      name: "old.docx",
+      path: "D:\\Project\\old.docx",
+      sizeBytes: 100,
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    };
+
+    expect(
+      selectAgentAttachments({
+        content: "Please summarize the attached document.",
+        sentAttachments: [],
+        contextAttachments: [oldAttachment],
+      }),
+    ).toEqual([oldAttachment]);
   });
 
   it("builds temporary script approval and rejection payloads from app state", () => {

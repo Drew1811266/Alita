@@ -122,6 +122,21 @@ def request_required_inputs(state: AgentState) -> AgentState:
 
 def plan_task_graph(state: AgentState) -> AgentState:
     message = state["message"]
+    graph_payload = _build_task_graph_payload(message)
+    return {
+        **state,
+        "events": [
+            AgentEvent(
+                type="node_graph.created",
+                payload={
+                    "graph": graph_payload,
+                },
+            )
+        ],
+    }
+
+
+def _build_task_graph_payload(message: UserMessage) -> dict:
     task_plan = analyze_task(message.content, message.attachments)
     task_plan.task_id = message.task_id
     registry = ToolRegistry.from_packages_root(default_tool_packages_root())
@@ -133,17 +148,34 @@ def plan_task_graph(state: AgentState) -> AgentState:
         task_plan.requirements,
         task_plan.selected_tools,
     )
-    return {
-        **state,
-        "events": [
-            AgentEvent(
-                type="node_graph.created",
-                payload={
-                    "graph": build_task_graph(task_plan),
-                },
-            )
-        ],
-    }
+    return build_task_graph(task_plan)
+
+
+def _task_planning_progress_events(
+    message: UserMessage,
+    graph_payload: dict,
+) -> list[AgentEvent]:
+    planning_nodes = [
+        node
+        for node in graph_payload.get("nodes", [])
+        if node.get("nodeType") == "planning"
+    ]
+    total = len(planning_nodes)
+    return [
+        AgentEvent(
+            type="planning.progress",
+            payload={
+                "taskId": message.task_id,
+                "stageId": node.get("nodeId", ""),
+                "label": node.get("displayName", ""),
+                "summary": node.get("summary", ""),
+                "status": node.get("status", ""),
+                "sequence": index + 1,
+                "total": total,
+            },
+        )
+        for index, node in enumerate(planning_nodes)
+    ]
 
 
 def choose_research_mode(state: AgentState) -> AgentState:
@@ -351,6 +383,15 @@ def stream_agent_events(
 
     decision = classify_route(message)
     intent = _compatible_intent(message, decision, inquiry_choice=inquiry_choice)
+    if intent == "task":
+        graph_payload = _build_task_graph_payload(message)
+        yield from _task_planning_progress_events(message, graph_payload)
+        yield AgentEvent(
+            type="node_graph.created",
+            payload={"graph": graph_payload},
+        )
+        return
+
     if intent not in {"chat", "local_inquiry"}:
         yield from run_agent(
             message,

@@ -40,8 +40,28 @@ class ResultVerifier:
                 )
 
         for artifact in output.artifacts:
-            if not Path(artifact).is_file():
+            artifact_path = Path(artifact)
+            if not artifact_path.is_file():
                 raise HarnessError(
                     "missing_artifact",
                     f"artifact does not exist: {artifact}",
                 )
+            if node_id in {"file-export", "research-markdown-output"}:
+                self._verify_text_artifact_has_body(node_id, artifact_path)
+
+    def _verify_text_artifact_has_body(self, node_id: str, artifact_path: Path) -> None:
+        if artifact_path.suffix.lower() not in {".md", ".txt"}:
+            return
+
+        content = artifact_path.read_text(encoding="utf-8", errors="ignore")
+        body_lines = [
+            line.strip()
+            for line in content.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        body = "\n".join(body_lines).strip()
+        if not body:
+            raise HarnessError(
+                "empty_artifact_content",
+                f"{node_id} artifact has no body content: {artifact_path}",
+            )

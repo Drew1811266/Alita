@@ -253,7 +253,11 @@ def test_constraint_update_regenerates_planning_and_replaces_changed_shape() -> 
     assert updated.metadata["constraints"] == ["Use a concise style and keep extraction before summary."]
     assert updated.metadata["feedbackRegeneratedPlanningNodeIds"] == [
         "capability-analysis",
+        "context-gathering",
+        "evidence-summary",
         "execution-order-planning",
+        "plan-draft",
+        "plan-review",
         "task-analysis",
         "tool-selection",
     ]

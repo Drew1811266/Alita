@@ -68,6 +68,13 @@ def classify_route(message: UserMessage) -> RouteDecision:
     has_document_reference = _contains_any(content, _DOCUMENT_REFERENCES)
     has_document_action = _contains_any(content, _DOCUMENT_ACTIONS)
 
+    if _is_complex_web_request(content):
+        return _route(
+            IntentKind.INQUIRY,
+            "request needs web research and report synthesis",
+            inquiry=InquiryDecision(InquiryMode.WEB_COMPLEX, True),
+        )
+
     if has_attachments and (has_document_reference or has_document_action):
         return _route(IntentKind.TASK, "attached document task")
 
@@ -170,6 +177,15 @@ def _is_document_request(content: str) -> bool:
     )
 
 
+def _is_complex_web_request(content: str) -> bool:
+    if not _contains_any(content, [*_WEB_NEEDED_MARKERS, *_ADDITIONAL_WEB_NEEDED_MARKERS]):
+        return False
+    return _contains_any(
+        content,
+        [*_COMPLEX_WEB_MARKERS, *_ADDITIONAL_COMPLEX_WEB_MARKERS],
+    )
+
+
 def _is_polite_task_request(content: str) -> bool:
     if not _contains_any(content, _TASK_ACTIONS):
         return False
@@ -231,6 +247,27 @@ _QUESTION_MARKERS = [
     "是否",
     "吗",
     "？",
+]
+
+_ADDITIONAL_WEB_NEEDED_MARKERS = [
+    "\u4eca\u5929",
+    "\u5f53\u524d",
+    "\u6700\u65b0",
+    "\u70ed\u95e8",
+    "\u6392\u884c",
+    "\u6392\u540d",
+]
+
+_ADDITIONAL_COMPLEX_WEB_MARKERS = [
+    "\u7814\u7a76",
+    "\u8c03\u7814",
+    "\u5206\u6790",
+    "\u6bd4\u8f83",
+    "\u5bf9\u6bd4",
+    "\u603b\u7ed3",
+    "\u6587\u6863",
+    "\u62a5\u544a",
+    "\u9879\u76ee",
 ]
 
 _WEB_NEEDED_MARKERS = [

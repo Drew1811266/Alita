@@ -203,10 +203,16 @@ def test_task_message_creates_graph_with_planning_and_executable_nodes() -> None
     ]
     assert [node["nodeId"] for node in planning_nodes] == [
         "task-analysis",
+        "context-gathering",
+        "evidence-summary",
+        "plan-draft",
         "capability-analysis",
         "tool-selection",
+        "plan-review",
         "execution-order-planning",
     ]
+    assert graph["metadata"]["planningMode"] == "deep"
+    assert graph["metadata"]["planningTrace"]["review"]["hardBlockerCount"] == 0
     assert [node["nodeId"] for node in executable_nodes] == [
         "temporary-script-file-inspect",
         "task-output",

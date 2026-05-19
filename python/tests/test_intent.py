@@ -217,3 +217,41 @@ def test_attachment_document_processing_request_is_structured_task_without_path_
     assert decision.missing_inputs == []
     assert attachment_path not in decision.reason
     assert attachment_path not in repr(decision.to_payload())
+
+
+@pytest.mark.parametrize("with_attachment", [False, True])
+def test_chinese_web_research_document_output_routes_to_complex_web_before_document_task(
+    with_attachment: bool,
+) -> None:
+    attachments = []
+    if with_attachment:
+        attachments.append(
+            Attachment(
+                attachment_id="old-doc",
+                name="old-context.docx",
+                path=r"C:\Users\Drew\Desktop\old-context.docx",
+                size_bytes=128,
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        )
+
+    decision = classify_route(
+        UserMessage(
+            task_id="github-research",
+            content=(
+                "\u5e2e\u6211\u67e5\u8be2\u4eca\u5929GitHub\u7f51\u7ad9"
+                "\u4e0a\u9762\u6709\u54ea\u4e9b\u70ed\u95e8\u7684\u9879\u76ee\uff0c"
+                "\u7136\u540e\u7814\u7a76\u4e00\u4e0b\u6bcf\u4e00\u4e2a"
+                "\u9879\u76ee\u5177\u4f53\u662f\u5e72\u4ec0\u4e48\u7684\uff0c"
+                "\u7136\u540e\u6700\u540e\u5e2e\u6211\u603b\u7ed3\u4e00\u4e0b\uff0c"
+                "\u5199\u6210\u4e00\u4e2a\u6587\u6863\u3002"
+            ),
+            attachments=attachments,
+        )
+    )
+
+    assert decision.intent.kind == IntentKind.INQUIRY
+    assert decision.inquiry is not None
+    assert decision.inquiry.mode == InquiryMode.WEB_COMPLEX
+    assert decision.inquiry.requires_web is True
+    assert decision.missing_inputs == []

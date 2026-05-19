@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import socket
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Protocol
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from agent_service.harness_errors import HarnessError, harness_error_payload
@@ -65,6 +69,11 @@ class ModelClient(Protocol):
         ...
 
 
+class SourceContentFetcher(Protocol):
+    def fetch(self, url: str) -> str:
+        ...
+
+
 DOCUMENT_FLOW_NODE_IDS = {
     "document-input",
     "document-parse",
@@ -73,6 +82,20 @@ DOCUMENT_FLOW_NODE_IDS = {
     "typst-export",
     "file-export",
 }
+
+DATA_DEPENDENT_NODE_IDS = {
+    *DOCUMENT_FLOW_NODE_IDS.difference({"document-input"}),
+    "research-privacy-guard",
+    "research-query-plan",
+    "research-parallel-search",
+    "research-source-review",
+    "research-source-reading",
+    "research-report-synthesis",
+    "research-report-quality-check",
+    "research-markdown-output",
+}
+SUPPORTED_PLANNED_MODEL_REFS = {"local-task-reasoner"}
+SOURCE_CONTENT_LIMIT = 4000
 
 
 @dataclass(frozen=True)
@@ -83,6 +106,26 @@ class PartialNodeOutputError(HarnessError):
 class EmptyNodeExecutor:
     def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
         return NodeOutput(values={"text": node_id})
+
+
+class UrlSourceContentFetcher:
+    def __init__(self, *, timeout: float = 8.0, max_bytes: int = 250_000) -> None:
+        self.timeout = timeout
+        self.max_bytes = max_bytes
+
+    def fetch(self, url: str) -> str:
+        request = Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; alita-research/1.0)"},
+        )
+        with urlopen(request, timeout=self.timeout) as response:
+            raw = response.read(self.max_bytes)
+            content_type = response.headers.get("Content-Type", "")
+            charset = response.headers.get_content_charset() or "utf-8"
+        text = raw.decode(charset, errors="replace")
+        if "html" in content_type.lower() or "<html" in text[:1000].lower():
+            return _extract_text_from_html(text)
+        return _normalize_source_text(text)
 
 
 class DocumentFlowExecutor:
@@ -250,6 +293,7 @@ class PlannedTaskExecutor:
     ) -> None:
         self.request = request
         self.nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
+        self.model_client = model_client or LlamaCppModelClient()
         self.document_executor = DocumentFlowExecutor(
             request,
             model_client=model_client,
@@ -289,25 +333,42 @@ class PlannedTaskExecutor:
             )
 
         if node.nodeType == "model":
+            if node.modelRef not in SUPPORTED_PLANNED_MODEL_REFS:
+                raise HarnessError(
+                    "unsupported_runtime",
+                    f"model node {node_id} has no bound runtime: {node.modelRef or '<missing>'}",
+                )
+            content = self.model_client.chat(
+                [
+                    ModelChatMessage(
+                        role="system",
+                        content=(
+                            "Execute the planned model step. Return only the useful "
+                            "task result, not a description of the plan."
+                        ),
+                    ),
+                    ModelChatMessage(
+                        role="user",
+                        content=_planned_model_prompt(node, inputs),
+                    ),
+                ],
+                temperature=0.2,
+                max_tokens=1536,
+            )
             return NodeOutput(
                 values={
                     "mode": "planned_task",
                     "nodeType": node.nodeType,
                     "summary": node.summary,
                     "modelRef": node.modelRef or "",
-                    "text": f"Planned model step: {node.summary}",
+                    "text": content,
                 }
             )
 
         if node.nodeType == "fixed_tool":
-            return NodeOutput(
-                values={
-                    "mode": "planned_task",
-                    "nodeType": node.nodeType,
-                    "summary": node.summary,
-                    "toolRef": node.toolRef or "",
-                    "text": f"Planned tool step: {node.summary}",
-                }
+            raise HarnessError(
+                "unsupported_runtime",
+                f"tool node {node_id} has no bound runtime: {node.toolRef or '<missing>'}",
             )
 
         if node.nodeType == "output":
@@ -340,10 +401,12 @@ class ResearchFlowExecutor:
         request: RunGraphRequest,
         *,
         search_provider: SearchProvider | None = None,
+        source_fetcher: SourceContentFetcher | None = None,
         max_search_attempts: int = 3,
     ) -> None:
         self.request = request
         self.search_provider = search_provider or DuckDuckGoHtmlSearchProvider()
+        self.source_fetcher = source_fetcher or UrlSourceContentFetcher()
         self.max_search_attempts = max(1, max_search_attempts)
         self.project_dir = Path(request.project_path).parent
         self.artifact_dir = self.project_dir / "artifacts" / "research"
@@ -379,13 +442,7 @@ class ResearchFlowExecutor:
             sanitized_question = str(_input_value(inputs, "sanitizedQuestion") or "")
             if not sanitized_question.strip():
                 raise HarnessError("empty_node_output", "research query is empty")
-            queries = [
-                {"query": sanitized_question, "purpose": "primary"},
-                {
-                    "query": f"{sanitized_question} official sources",
-                    "purpose": "official_sources",
-                },
-            ]
+            queries = _research_queries_for_question(sanitized_question)
             return NodeOutput(
                 values={
                     "sanitizedQuestion": sanitized_question,
@@ -493,9 +550,81 @@ class ResearchFlowExecutor:
                 }
             )
 
+        if node_id == "research-source-reading":
+            accepted_sources = [
+                dict(source)
+                for source in (_input_value(inputs, "acceptedSources") or [])
+            ]
+            rejected_sources = [
+                dict(source)
+                for source in (_input_value(inputs, "rejectedSources") or [])
+            ]
+            enriched_sources: list[dict[str, Any]] = []
+            source_contents: list[dict[str, Any]] = []
+            failed_reads: list[dict[str, str]] = []
+
+            for source in accepted_sources:
+                url = str(source.get("url") or "")
+                content = ""
+                status = "skipped"
+                error_message = ""
+                if url:
+                    try:
+                        content = _truncate_source_content(
+                            self.source_fetcher.fetch(url)
+                        )
+                        status = "read" if content else "empty"
+                    except (HTTPError, URLError, TimeoutError, socket.timeout, OSError) as error:
+                        status = "failed"
+                        error_message = str(error)
+                    except Exception as error:
+                        status = "failed"
+                        error_message = str(error)
+
+                enriched = {
+                    **source,
+                    "sourceContent": content,
+                    "readStatus": status,
+                    "contentChars": len(content),
+                }
+                if error_message:
+                    enriched["readError"] = error_message
+                    failed_reads.append(
+                        {
+                            "ref": str(source.get("ref") or ""),
+                            "url": url,
+                            "error": error_message,
+                        }
+                    )
+                enriched_sources.append(enriched)
+                source_contents.append(
+                    {
+                        "ref": str(source.get("ref") or ""),
+                        "title": str(source.get("title") or ""),
+                        "url": url,
+                        "status": status,
+                        "content": content,
+                    }
+                )
+
+            return NodeOutput(
+                values={
+                    "acceptedSources": enriched_sources,
+                    "rejectedSources": rejected_sources,
+                    "sourceContents": source_contents,
+                    "readSourceCount": sum(
+                        1 for source in enriched_sources
+                        if source.get("readStatus") == "read"
+                    ),
+                    "failedSourceReads": failed_reads,
+                }
+            )
+
         if node_id == "research-report-synthesis":
             accepted_sources = list(_input_value(inputs, "acceptedSources") or [])
             rejected_sources = list(_input_value(inputs, "rejectedSources") or [])
+            failed_source_reads = list(_input_value(inputs, "failedSourceReads") or [])
+            read_source_count = int(_input_value(inputs, "readSourceCount") or 0)
             summary = self._summary(accepted_sources)
             markdown = _synthesize_research_markdown(
                 self._question(),
@@ -510,7 +639,29 @@ class ResearchFlowExecutor:
                     "summary": summary,
                     "acceptedSources": accepted_sources,
                     "rejectedSources": rejected_sources,
+                    "readSourceCount": read_source_count,
+                    "failedSourceReads": failed_source_reads,
                     "sectionOrder": self._section_order(),
+                }
+            )
+
+        if node_id == "research-report-quality-check":
+            markdown = str(_input_value(inputs, "markdown") or "")
+            accepted_sources = list(_input_value(inputs, "acceptedSources") or [])
+            rejected_sources = list(_input_value(inputs, "rejectedSources") or [])
+            failed_source_reads = list(_input_value(inputs, "failedSourceReads") or [])
+            issues = _research_quality_issues(markdown, accepted_sources)
+            return NodeOutput(
+                values={
+                    "markdown": markdown,
+                    "summary": _input_value(inputs, "summary") or "",
+                    "acceptedSources": accepted_sources,
+                    "rejectedSources": rejected_sources,
+                    "readSourceCount": _input_value(inputs, "readSourceCount") or 0,
+                    "failedSourceReads": failed_source_reads,
+                    "qualityStatus": "passed" if not issues else "needs_review",
+                    "qualityIssues": issues,
+                    "checkedReferenceCount": len(accepted_sources),
                 }
             )
 
@@ -526,6 +677,10 @@ class ResearchFlowExecutor:
                     "summary": _input_value(inputs, "summary") or "",
                     "acceptedSources": _input_value(inputs, "acceptedSources") or [],
                     "rejectedSources": _input_value(inputs, "rejectedSources") or [],
+                    "readSourceCount": _input_value(inputs, "readSourceCount") or 0,
+                    "failedSourceReads": _input_value(inputs, "failedSourceReads") or [],
+                    "qualityStatus": _input_value(inputs, "qualityStatus") or "",
+                    "qualityIssues": _input_value(inputs, "qualityIssues") or [],
                 },
             )
 
@@ -580,6 +735,7 @@ def run_graph_events(
     model_client: ModelClient | None = None,
     tool_executor: ToolExecutor | None = None,
     search_provider: SearchProvider | None = None,
+    source_fetcher: SourceContentFetcher | None = None,
     registry: RunRegistry | None = None,
     tool_registry: ToolRegistry | None = None,
     result_verifier: ResultVerifier | None = None,
@@ -607,7 +763,11 @@ def run_graph_events(
     if executor is not None:
         node_executor = executor
     elif _is_research_graph(request):
-        node_executor = ResearchFlowExecutor(request, search_provider=search_provider)
+        node_executor = ResearchFlowExecutor(
+            request,
+            search_provider=search_provider,
+            source_fetcher=source_fetcher,
+        )
     elif _is_planned_task_graph(request):
         node_executor = PlannedTaskExecutor(
             request,
@@ -801,6 +961,19 @@ def run_graph_events(
             yield AgentEvent(type="node.running", payload={"nodeId": node.nodeId})
             node_perf_started = perf_counter()
             try:
+                missing_dependencies = _missing_required_dependency_outputs(
+                    node,
+                    request.graph.nodes,
+                    outputs,
+                )
+                if missing_dependencies:
+                    raise HarnessError(
+                        "missing_dependency_output",
+                        (
+                            f"node {node.nodeId} is missing dependency output(s): "
+                            + ", ".join(missing_dependencies)
+                        ),
+                    )
                 dependency_outputs = {
                     dependency: outputs[dependency]
                     for dependency in node.dependencies
@@ -808,6 +981,15 @@ def run_graph_events(
                 }
                 if node.nodeId in outputs:
                     dependency_outputs[node.nodeId] = outputs[node.nodeId]
+                unsatisfied_ports = _unsatisfied_input_ports(node, dependency_outputs)
+                if unsatisfied_ports:
+                    raise HarnessError(
+                        "input_contract_unsatisfied",
+                        (
+                            f"node {node.nodeId} input port(s) are not satisfied: "
+                            + ", ".join(unsatisfied_ports)
+                        ),
+                    )
                 output = node_executor.run(node.nodeId, dependency_outputs)
                 verifier.verify(node.nodeId, output)
             except Exception as error:
@@ -931,6 +1113,14 @@ def run_graph_events(
                         "rejectedSources": final_output.values.get(
                             "rejectedSources", []
                         ),
+                        "readSourceCount": final_output.values.get(
+                            "readSourceCount", 0
+                        ),
+                        "failedSourceReads": final_output.values.get(
+                            "failedSourceReads", []
+                        ),
+                        "qualityStatus": final_output.values.get("qualityStatus", ""),
+                        "qualityIssues": final_output.values.get("qualityIssues", []),
                     },
                 )
         journal.write_run(
@@ -990,6 +1180,73 @@ def is_executable_node(node: GraphNode) -> bool:
     return True
 
 
+def _missing_required_dependency_outputs(
+    node: GraphNode,
+    graph_nodes: list[GraphNode],
+    outputs: dict[str, NodeOutput],
+) -> list[str]:
+    if node.nodeId not in DATA_DEPENDENT_NODE_IDS:
+        return []
+
+    nodes_by_id = {candidate.nodeId: candidate for candidate in graph_nodes}
+    missing: list[str] = []
+    for dependency in node.dependencies:
+        dependency_node = nodes_by_id.get(dependency)
+        if dependency_node is not None and dependency_node.nodeType == "planning":
+            continue
+        if dependency not in outputs:
+            missing.append(dependency)
+    return missing
+
+
+def _unsatisfied_input_ports(
+    node: GraphNode,
+    dependency_outputs: dict[str, NodeOutput],
+) -> list[str]:
+    if not node.inputPorts:
+        return []
+
+    unsatisfied: list[str] = []
+    for port in node.inputPorts:
+        port_id = str(port.get("id") or "<unnamed>")
+        data_type = str(port.get("dataType") or "").lower()
+        if not data_type:
+            continue
+        if not any(
+            _node_output_satisfies_data_type(output, data_type)
+            for output in dependency_outputs.values()
+        ):
+            unsatisfied.append(port_id)
+    return unsatisfied
+
+
+def _node_output_satisfies_data_type(output: NodeOutput, data_type: str) -> bool:
+    if data_type in {"artifact", "file"}:
+        return bool(output.artifacts) or _has_nonempty_value(output, {"artifact", "source"})
+    if data_type == "document":
+        return _has_nonempty_value(output, {"paths", "path"}) or bool(output.artifacts)
+    if data_type in {"text", "markdown"}:
+        return _has_nonempty_value(
+            output,
+            {"text", "markdown", "report", "summary"},
+        )
+    if data_type == "json":
+        if _has_nonempty_value(output, {"outline", "queries", "results"}):
+            return True
+        return bool(output.values)
+    return bool(output.values) or bool(output.artifacts)
+
+
+def _has_nonempty_value(output: NodeOutput, keys: set[str]) -> bool:
+    for key in keys:
+        value = output.values.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+        if isinstance(value, (dict, list)) and value:
+            return True
+    return False
+
+
 def _permission_blocking_node(nodes: list[GraphNode]) -> GraphNode | None:
     for node in nodes:
         should_check = _should_check_permission_before_run(node)
@@ -1043,7 +1300,10 @@ def _validate_graph_tools(request: RunGraphRequest, registry: ToolRegistry) -> N
     for node in request.graph.nodes:
         if node.nodeType != "fixed_tool" or not node.toolRef:
             continue
-        if _is_research_graph(request) and node.toolRef == "web.search.parallel":
+        if _is_research_graph(request) and node.toolRef in {
+            "web.search.parallel",
+            "web.fetch.sources",
+        }:
             continue
         try:
             registry.get(node.toolRef)
@@ -1077,6 +1337,8 @@ def _selected_nodes_for_mode(
 
     if request.mode.type == "from_node" and request.mode.node_id:
         selected = {request.mode.node_id, *downstream.get(request.mode.node_id, set())}
+        if not request.mode.source_run_id:
+            selected.update(_upstream_node_ids(request).get(request.mode.node_id, set()))
         return [node for node in ordered_nodes if node.nodeId in selected]
 
     if request.mode.type == "failed_only" and request.mode.source_run_id:
@@ -1107,6 +1369,26 @@ def _downstream_node_ids(request: RunGraphRequest) -> dict[str, set[str]]:
             downstream[node_id].add(child)
             pending.extend(direct.get(child, set()))
     return downstream
+
+
+def _upstream_node_ids(request: RunGraphRequest) -> dict[str, set[str]]:
+    reverse: dict[str, set[str]] = {node.nodeId: set() for node in request.graph.nodes}
+    for edge in request.graph.edges:
+        reverse.setdefault(edge.target, set()).add(edge.source)
+    for node in request.graph.nodes:
+        for dependency in node.dependencies:
+            reverse.setdefault(node.nodeId, set()).add(dependency)
+
+    upstream: dict[str, set[str]] = {node.nodeId: set() for node in request.graph.nodes}
+    for node_id in upstream:
+        pending = list(reverse.get(node_id, set()))
+        while pending:
+            parent = pending.pop()
+            if parent in upstream[node_id]:
+                continue
+            upstream[node_id].add(parent)
+            pending.extend(reverse.get(parent, set()))
+    return upstream
 
 
 def _failed_node_ids_from_journal(request: RunGraphRequest) -> list[str]:
@@ -1154,6 +1436,17 @@ def _first_input_value(inputs: dict[str, NodeOutput], key: str) -> str:
         if key in output.values:
             return str(output.values[key])
     return ""
+
+
+def _planned_model_prompt(node: GraphNode, inputs: dict[str, NodeOutput]) -> str:
+    dependency_payload = {
+        dependency: output.values for dependency, output in inputs.items()
+    }
+    return (
+        f"Node: {node.displayName}\n"
+        f"Goal: {node.summary}\n"
+        f"Dependency outputs: {json.dumps(dependency_payload, ensure_ascii=False)}"
+    )
 
 
 def _input_value(inputs: dict[str, NodeOutput], key: str) -> Any:
@@ -1235,6 +1528,36 @@ def _search_failure_payload(query: str, failure: SearchFailure) -> dict[str, Any
     }
 
 
+def _research_queries_for_question(question: str) -> list[dict[str, str]]:
+    normalized = question.lower()
+    if "github" in normalized and any(
+        marker in question for marker in ("热门", "趋势", "排行榜", "trending", "popular")
+    ):
+        return [
+            {"query": question, "purpose": "primary"},
+            {
+                "query": "GitHub Trending repositories today",
+                "purpose": "project_discovery",
+            },
+            {
+                "query": "GitHub trending repositories developers daily",
+                "purpose": "project_discovery",
+            },
+            {
+                "query": "GitHub trending repositories official",
+                "purpose": "official_sources",
+            },
+        ]
+
+    return [
+        {"query": question, "purpose": "primary"},
+        {
+            "query": f"{question} official sources",
+            "purpose": "official_sources",
+        },
+    ]
+
+
 def _synthesize_research_markdown(
     question: str,
     summary: str,
@@ -1245,6 +1568,7 @@ def _synthesize_research_markdown(
     section_renderers = {
         "summary": lambda: f"## Summary\n\n{summary}\n",
         "key_findings": lambda: _key_findings_section(accepted_sources),
+        "project_summaries": lambda: _project_summaries_section(accepted_sources),
         "source_review": lambda: _source_review_section(accepted_sources, rejected_sources),
         "open_questions": lambda: (
             "## Open Questions\n\n"
@@ -1268,9 +1592,22 @@ def _key_findings_section(accepted_sources: list[dict[str, Any]]) -> str:
         lines.append("- No accepted sources were available for synthesis.")
     else:
         for source in accepted_sources:
+            ref = source.get("ref") or "[-]"
             lines.append(
-                f"- {source['title']}: {source.get('snippet') or 'No snippet available.'}"
+                f"- {ref} {source['title']}: {source.get('snippet') or 'No snippet available.'}"
             )
+    return "\n".join(lines) + "\n"
+
+
+def _project_summaries_section(accepted_sources: list[dict[str, Any]]) -> str:
+    lines = ["## Project Summaries", ""]
+    if not accepted_sources:
+        lines.append("- No accepted source content was available for project summaries.")
+    else:
+        for source in accepted_sources:
+            ref = source.get("ref") or "[-]"
+            excerpt = _source_excerpt(source)
+            lines.append(f"- {ref} {source['title']}: {excerpt}")
     return "\n".join(lines) + "\n"
 
 
@@ -1281,9 +1618,13 @@ def _source_review_section(
     lines = ["## Source Review", ""]
     lines.append(f"- Accepted sources: {len(accepted_sources)}")
     lines.append(f"- Rejected sources: {len(rejected_sources)}")
+    for source in accepted_sources:
+        ref = source.get("ref") or "[-]"
+        lines.append(f"- Accepted {ref} {source['title']}: {source.get('sourceType')}")
     for source in rejected_sources:
+        ref = source.get("ref") or "[-]"
         lines.append(
-            f"- Rejected {source['title']}: {source.get('rejectionReason') or 'not accepted'}"
+            f"- Rejected {ref} {source['title']}: {source.get('rejectionReason') or 'not accepted'}"
         )
     return "\n".join(lines) + "\n"
 
@@ -1297,6 +1638,82 @@ def _references_section(accepted_sources: list[dict[str, Any]]) -> str:
             ref = source.get("ref") or "-"
             lines.append(f"- {ref} {source['title']} - {source['url']}")
     return "\n".join(lines) + "\n"
+
+
+def _source_excerpt(source: dict[str, Any]) -> str:
+    content = str(source.get("sourceContent") or source.get("snippet") or "").strip()
+    if not content:
+        return "No readable source content was available."
+    return _truncate_source_content(content, limit=700)
+
+
+def _truncate_source_content(content: str, *, limit: int = SOURCE_CONTENT_LIMIT) -> str:
+    normalized = _normalize_source_text(content)
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
+def _normalize_source_text(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _extract_text_from_html(html: str) -> str:
+    parser = _HtmlTextExtractor()
+    parser.feed(html)
+    parser.close()
+    return _normalize_source_text(" ".join(parser.parts))
+
+
+class _HtmlTextExtractor(HTMLParser):
+    _SKIPPED_TAGS = {"script", "style", "noscript", "svg"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag.lower() in self._SKIPPED_TAGS:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in self._SKIPPED_TAGS and self._skip_depth:
+            self._skip_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        cleaned = data.strip()
+        if cleaned:
+            self.parts.append(cleaned)
+
+
+def _research_quality_issues(
+    markdown: str,
+    accepted_sources: list[dict[str, Any]],
+) -> list[str]:
+    issues: list[str] = []
+    if not markdown.strip():
+        issues.append("empty_report")
+    if accepted_sources and "## References" not in markdown:
+        issues.append("missing_references_section")
+
+    missing_refs = [
+        str(source.get("ref"))
+        for source in accepted_sources
+        if source.get("ref") and str(source.get("ref")) not in markdown
+    ]
+    if missing_refs:
+        issues.append("missing_source_references:" + ",".join(missing_refs))
+
+    if accepted_sources and not any(
+        str(source.get("sourceContent") or "").strip()
+        for source in accepted_sources
+    ):
+        issues.append("no_read_source_content")
+    return issues
 
 
 def _now_iso() -> str:

@@ -19,6 +19,24 @@ def test_accepts_existing_artifact_and_required_value(tmp_path: Path) -> None:
     )
 
 
+def test_rejects_markdown_artifact_with_only_template_headings(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "empty-template.md"
+    artifact.write_text(
+        "# Document processing result\n\n## Organized result\n\n\n\n## Report body\n\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(HarnessError) as exc_info:
+        ResultVerifier().verify(
+            "file-export",
+            NodeOutput(artifacts=[str(artifact)], values={"artifact": str(artifact)}),
+        )
+
+    assert exc_info.value.code == "empty_artifact_content"
+
+
 def test_rejects_missing_artifact() -> None:
     with pytest.raises(HarnessError) as exc_info:
         ResultVerifier().verify(

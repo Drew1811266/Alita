@@ -31,6 +31,27 @@ def test_agent_message_stream_returns_sse_events() -> None:
     assert "node_graph.created" in response.text
 
 
+def test_agent_message_stream_returns_planning_progress_before_task_graph() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/message/stream",
+        json={
+            "task_id": "task-stream-plan",
+            "content": "Create a Python script that counts rows in a CSV file.",
+            "attachments": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "planning.progress" in response.text
+    assert response.text.index("planning.progress") < response.text.index(
+        "node_graph.created"
+    )
+    assert "context-gathering" in response.text
+    assert "plan-review" in response.text
+
+
 def test_agent_message_complex_inquiry_default_returns_research_choice_payload() -> None:
     client = TestClient(app)
 

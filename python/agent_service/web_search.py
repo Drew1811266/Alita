@@ -365,6 +365,7 @@ def _is_recognized_docs(host: str) -> bool:
         "developer.mozilla.org",
         "docs.python.org",
         "langchain-ai.github.io",
+        "packaging.python.org",
     }
 
 

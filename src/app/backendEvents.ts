@@ -200,6 +200,19 @@ export function reduceBackendEvents(
       };
     }
 
+    if (event.type === "planning.progress") {
+      return {
+        ...current,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(formatPlanningProgress(event.payload)),
+        ],
+        pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
+        dirty: true,
+      };
+    }
+
     if (event.type === "node_graph.created") {
       return {
         ...current,
@@ -501,6 +514,12 @@ function formatResearchChoicePrompt(
     })
     .join("\n");
   return `${payload.prompt}\n\n${choices}`;
+}
+
+function formatPlanningProgress(
+  payload: Extract<BackendEvent, { type: "planning.progress" }>["payload"],
+): string {
+  return `Planning progress ${payload.sequence}/${payload.total}: ${payload.label}\n${payload.summary}`;
 }
 
 function formatPermissionPrompt(

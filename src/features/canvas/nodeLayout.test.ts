@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { SUPPORTED_NODE_TYPES } from "../../shared/types";
 import type { NodeGraph, NodeType } from "../../shared/types";
-import { createDocumentGraph } from "./nodeLayout";
+import {
+  CANVAS_LAYOUT_NODE_HEIGHT,
+  CANVAS_LAYOUT_NODE_WIDTH,
+  createDocumentGraph,
+  layoutGraphForCanvas,
+} from "./nodeLayout";
 
 const validPlanningNodeType: NodeType = "planning";
 // @ts-expect-error NodeType must remain a closed union of supported graph node types.
@@ -14,6 +19,26 @@ function nodeById(graph: ReturnType<typeof createDocumentGraph>, nodeId: string)
     throw new Error(`Missing node ${nodeId}`);
   }
   return node;
+}
+
+function graphNodeById(graph: NodeGraph, nodeId: string) {
+  const node = graph.nodes.find((candidate) => candidate.nodeId === nodeId);
+  if (!node) {
+    throw new Error(`Missing node ${nodeId}`);
+  }
+  return node;
+}
+
+function boundsOverlap(
+  first: { x: number; y: number },
+  second: { x: number; y: number },
+) {
+  return !(
+    first.x + CANVAS_LAYOUT_NODE_WIDTH <= second.x ||
+    second.x + CANVAS_LAYOUT_NODE_WIDTH <= first.x ||
+    first.y + CANVAS_LAYOUT_NODE_HEIGHT <= second.y ||
+    second.y + CANVAS_LAYOUT_NODE_HEIGHT <= first.y
+  );
 }
 
 describe("createDocumentGraph", () => {
@@ -214,4 +239,84 @@ describe("createDocumentGraph", () => {
     expect(graph.nodes[1].scriptReview?.requiresApproval).toBe(true);
     expect(graph.nodes[1].runtimeNotice?.actualDurationMs).toBe(1500);
   });
+
+  it("expands tightly positioned generated graphs so node cards do not overlap", () => {
+    const graph: NodeGraph = {
+      graphId: "tight-research-graph",
+      nodes: [
+        graphNode("research-intent-analysis", [], 260, 20),
+        graphNode("research-privacy-guard", ["research-intent-analysis"], 260, 170),
+        graphNode("research-query-plan", ["research-privacy-guard"], 260, 320),
+        graphNode("research-parallel-search", ["research-query-plan"], 260, 480),
+        graphNode("research-source-review", ["research-parallel-search"], 90, 650),
+        graphNode("research-report-synthesis", ["research-parallel-search"], 430, 650),
+        graphNode(
+          "research-markdown-output",
+          ["research-source-review", "research-report-synthesis"],
+          260,
+          820,
+        ),
+      ],
+      edges: [
+        graphEdge("research-intent-analysis", "research-privacy-guard"),
+        graphEdge("research-privacy-guard", "research-query-plan"),
+        graphEdge("research-query-plan", "research-parallel-search"),
+        graphEdge("research-parallel-search", "research-source-review"),
+        graphEdge("research-parallel-search", "research-report-synthesis"),
+        graphEdge("research-source-review", "research-markdown-output"),
+        graphEdge("research-report-synthesis", "research-markdown-output"),
+      ],
+    };
+
+    const laidOut = layoutGraphForCanvas(graph);
+
+    for (let firstIndex = 0; firstIndex < laidOut.nodes.length; firstIndex += 1) {
+      for (
+        let secondIndex = firstIndex + 1;
+        secondIndex < laidOut.nodes.length;
+        secondIndex += 1
+      ) {
+        expect(
+          boundsOverlap(
+            laidOut.nodes[firstIndex].position,
+            laidOut.nodes[secondIndex].position,
+          ),
+        ).toBe(false);
+      }
+    }
+    expect(graphNodeById(laidOut, "research-markdown-output").position.y).toBeGreaterThan(
+      graphNodeById(laidOut, "research-report-synthesis").position.y,
+    );
+    expect(graph.nodes[1].position).toEqual({ x: 260, y: 170 });
+  });
 });
+
+function graphNode(
+  nodeId: string,
+  dependencies: string[],
+  x: number,
+  y: number,
+) {
+  return {
+    nodeId,
+    nodeType: nodeId === "research-parallel-search" ? "fixed_tool" : "planning",
+    displayName: nodeId,
+    status: "waiting",
+    inputPorts: [],
+    outputPorts: [],
+    dependencies,
+    summary: "Generated graph node.",
+    createdBy: "agent",
+    artifactRefs: [],
+    retryCount: 0,
+    position: { x, y },
+  } satisfies NodeGraph["nodes"][number];
+}
+
+function graphEdge(source: string, target: string) {
+  return {
+    id: `${source}-${target}`,
+    source,
+    target,
+  };
+}

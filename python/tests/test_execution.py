@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import tempfile
 from pathlib import Path
@@ -57,9 +57,9 @@ class FakeModelClient:
         max_tokens: int = 1024,
     ) -> str:
         self.calls.append(messages)
-        if "结构化中文要点" in messages[0].content:
-            return "整理结果：标题和正文内容"
-        return "报告正文：这是一份测试报告"
+        if "outline" in messages[0].content.lower() or "要点" in messages[0].content:
+            return "outline result"
+        return "report result"
 
 
 class FakeToolExecutor:
@@ -72,7 +72,7 @@ class FakeToolExecutor:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("# Markdown\n\nparsed text", encoding="utf-8")
         return ToolResult(
-            values={"text": "# Markdown\n\n正文"},
+            values={"text": "# Markdown\n\n姝ｆ枃"},
             artifacts=[str(output_path)],
             metadata={"converter": "fake"},
         )
@@ -124,6 +124,18 @@ class SequencedSearchProvider:
         if not responses:
             raise AssertionError(f"unexpected search call: {query}")
         return responses.pop(0)
+
+
+class FakeSourceFetcher:
+    def __init__(self, content_by_url: dict[str, str]) -> None:
+        self.content_by_url = dict(content_by_url)
+        self.urls: list[str] = []
+
+    def fetch(self, url: str) -> str:
+        self.urls.append(url)
+        if url not in self.content_by_url:
+            raise AssertionError(f"unexpected source fetch: {url}")
+        return self.content_by_url[url]
 
 
 def test_rejects_graph_with_missing_dependency(tmp_path: Path) -> None:
@@ -411,8 +423,26 @@ def test_research_graph_executes_nodes_and_writes_markdown_report(tmp_path: Path
             ],
         }
     )
+    source_fetcher = FakeSourceFetcher(
+        {
+            "https://packaging.python.org/en/latest/": (
+                "The Python Packaging User Guide explains pip, build backends, "
+                "publishing workflows, and modern project metadata."
+            ),
+            "https://docs.python.org/3/": (
+                "Python documentation describes packaging support, module "
+                "installation, and related standard library references."
+            ),
+        }
+    )
 
-    events = list(run_graph_events(request, search_provider=provider))
+    events = list(
+        run_graph_events(
+            request,
+            search_provider=provider,
+            source_fetcher=source_fetcher,
+        )
+    )
 
     running_node_ids = [
         event.payload["nodeId"] for event in events if event.type == "node.running"
@@ -423,9 +453,15 @@ def test_research_graph_executes_nodes_and_writes_markdown_report(tmp_path: Path
         "research-query-plan",
         "research-parallel-search",
         "research-source-review",
+        "research-source-reading",
         "research-report-synthesis",
+        "research-report-quality-check",
         "research-markdown-output",
     ]
+    assert set(source_fetcher.urls) == {
+        "https://packaging.python.org/en/latest/",
+        "https://docs.python.org/3/",
+    }
     artifact_event = next(event for event in events if event.type == "artifact.created")
     artifact_path = Path(artifact_event.payload["path"])
     assert artifact_path.is_file()
@@ -434,18 +470,28 @@ def test_research_graph_executes_nodes_and_writes_markdown_report(tmp_path: Path
     headings = [
         content.index("## Summary"),
         content.index("## Key Findings"),
+        content.index("## Project Summaries"),
         content.index("## Source Review"),
         content.index("## Open Questions"),
         content.index("## References"),
     ]
     assert headings == sorted(headings)
+    assert "modern project metadata" in content
     completed_event = next(event for event in events if event.type == "research.completed")
     assert completed_event.payload["taskId"] == "task-research"
     assert completed_event.payload["reportArtifactId"] == artifact_event.payload["artifactId"]
     assert completed_event.payload["reportArtifactId"] == artifact_path.stem
     assert completed_event.payload["reportArtifactPath"] == str(artifact_path)
+    assert completed_event.payload["qualityStatus"] == "passed"
+    assert completed_event.payload["qualityIssues"] == []
     assert completed_event.payload["acceptedSources"]
     assert completed_event.payload["rejectedSources"]
+    quality_record = RunJournal(
+        project_path=request.project_path,
+        run_id=request.run_id,
+    ).read_node("research-report-quality-check")
+    assert quality_record["values"]["qualityStatus"] == "passed"
+    assert quality_record["values"]["checkedReferenceCount"] == 2
     assert events[-1].type == "task.completed"
 
 
@@ -588,13 +634,29 @@ def test_failed_only_research_retry_reuses_successful_query_units(
             ],
         }
     )
+    source_fetcher = FakeSourceFetcher(
+        {
+            "https://langchain-ai.github.io/langgraph/": (
+                "LangGraph documentation explains graph-based agent orchestration."
+            ),
+            "https://github.com/langchain-ai/langgraph": (
+                "The LangGraph repository contains the project source and examples."
+            ),
+        }
+    )
     first_request = build_research_flow_request(
         tmp_path,
         question,
         run_id="run-research-first",
     )
 
-    first_events = list(run_graph_events(first_request, search_provider=provider))
+    first_events = list(
+        run_graph_events(
+            first_request,
+            search_provider=provider,
+            source_fetcher=source_fetcher,
+        )
+    )
 
     assert first_events[-1].type == "task.failed"
     retry_request = build_research_flow_request(
@@ -605,7 +667,13 @@ def test_failed_only_research_retry_reuses_successful_query_units(
     retry_request.mode.type = "failed_only"
     retry_request.mode.source_run_id = "run-research-first"
 
-    retry_events = list(run_graph_events(retry_request, search_provider=provider))
+    retry_events = list(
+        run_graph_events(
+            retry_request,
+            search_provider=provider,
+            source_fetcher=source_fetcher,
+        )
+    )
 
     assert provider.queries == [
         question,
@@ -620,7 +688,9 @@ def test_failed_only_research_retry_reuses_successful_query_units(
     assert running == [
         "research-parallel-search",
         "research-source-review",
+        "research-source-reading",
         "research-report-synthesis",
+        "research-report-quality-check",
         "research-markdown-output",
     ]
     assert retry_events[-1].type == "task.completed"
@@ -856,7 +926,7 @@ def test_execution_fails_when_result_verifier_rejects_empty_output(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "input.md"
-    source.write_text("正文", encoding="utf-8")
+    source.write_text("姝ｆ枃", encoding="utf-8")
     request = build_document_flow_request(tmp_path, source)
 
     class EmptyContentExecutor(FakeNodeExecutor):
@@ -873,7 +943,7 @@ def test_execution_fails_when_result_verifier_rejects_empty_output(
 
 def test_document_flow_exports_markdown_artifact(tmp_path: Path) -> None:
     source = tmp_path / "input.md"
-    source.write_text("# 标题\n\n正文内容", encoding="utf-8")
+    source.write_text("# 鏍囬\n\n姝ｆ枃鍐呭", encoding="utf-8")
     request = build_document_flow_request(tmp_path, source)
 
     events = list(
@@ -895,9 +965,177 @@ def test_document_flow_exports_markdown_artifact(tmp_path: Path) -> None:
     assert exported_path.exists()
     assert exported_path.suffix == ".md"
     exported_content = exported_path.read_text(encoding="utf-8")
-    assert "整理结果：标题和正文内容" in exported_content
-    assert "报告正文：这是一份测试报告" in exported_content
+    assert "outline result" in exported_content
+    assert "report result" in exported_content
     assert events[-1].type == "task.completed"
+
+def test_planned_output_node_fails_when_non_planning_dependency_output_is_missing(
+    tmp_path: Path,
+) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            {
+                **build_node("execution-order-planning", "planning", []),
+                "status": "completed",
+            },
+            {
+                **build_node(
+                    "document-input",
+                    "fixed_tool",
+                    ["execution-order-planning"],
+                    tool_ref="document.receive_attachment",
+                ),
+                "status": "completed",
+            },
+            build_node("file-export", "output", ["document-input"]),
+        ],
+    )
+    request.graph.metadata["taskKind"] = "document"
+
+    events = list(run_graph_events(request))
+
+    running = [event.payload["nodeId"] for event in events if event.type == "node.running"]
+    assert running == ["file-export"]
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "missing_dependency_output"
+    assert "document-input" in events[-1].payload["error"]
+
+
+def test_planned_model_node_uses_runtime_model_client_instead_of_placeholder(
+    tmp_path: Path,
+) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node("model-reasoning", "model", [], model_ref="local-task-reasoner"),
+            build_node("task-output", "output", ["model-reasoning"]),
+        ],
+    )
+    request.graph.metadata["taskKind"] = "content"
+    class RuntimeModelClient(FakeModelClient):
+        def chat(
+            self,
+            messages: list[ChatMessage],
+            *,
+            temperature: float = 0.2,
+            max_tokens: int = 1024,
+        ) -> str:
+            self.calls.append(messages)
+            return "real model result"
+
+    client = RuntimeModelClient()
+
+    events = list(run_graph_events(request, model_client=client))
+
+    assert events[-1].type == "task.completed"
+    model_record = RunJournal(
+        project_path=request.project_path,
+        run_id=request.run_id,
+    ).read_node("model-reasoning")
+    assert client.calls
+    assert model_record["values"]["text"] == "real model result"
+    assert "Planned model step" not in model_record["values"]["text"]
+
+
+def test_planned_model_node_fails_without_bound_runtime(
+    tmp_path: Path,
+) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node("model-reasoning", "model", [], model_ref="unknown-model"),
+            build_node("task-output", "output", ["model-reasoning"]),
+        ],
+    )
+    request.graph.metadata["taskKind"] = "content"
+
+    events = list(run_graph_events(request, model_client=FakeModelClient()))
+
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "unsupported_runtime"
+    assert "unknown-model" in events[-1].payload["error"]
+
+
+def test_input_port_contract_rejects_artifact_input_without_artifact_output(
+    tmp_path: Path,
+) -> None:
+    text_node = {
+        **build_node("text-only-model", "model", [], model_ref="local-task-reasoner"),
+        "outputPorts": [{"id": "text-output", "label": "Text", "dataType": "text"}],
+    }
+    file_export = {
+        **build_node("file-export", "output", ["text-only-model"]),
+        "inputPorts": [{"id": "artifact-input", "label": "Artifact", "dataType": "artifact"}],
+    }
+    request = build_request(tmp_path, nodes=[text_node, file_export])
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "input_contract_unsatisfied"
+    assert "artifact-input" in events[-1].payload["error"]
+
+
+def test_github_research_query_plan_expands_project_discovery_queries(
+    tmp_path: Path,
+) -> None:
+    question = (
+        "\u5e2e\u6211\u67e5\u8be2\u4eca\u5929GitHub\u7f51\u7ad9"
+        "\u4e0a\u9762\u6709\u54ea\u4e9b\u70ed\u95e8\u7684\u9879\u76ee\uff0c"
+        "\u7136\u540e\u7814\u7a76\u6bcf\u4e00\u4e2a\u9879\u76ee\u3002"
+    )
+    provider = SequencedSearchProvider(
+        {
+            question: [SearchResponse(results=[])],
+            "GitHub Trending repositories today": [SearchResponse(results=[])],
+            "GitHub trending repositories developers daily": [
+                SearchResponse(results=[])
+            ],
+            "GitHub trending repositories official": [SearchResponse(results=[])],
+        }
+    )
+    request = build_research_flow_request(tmp_path, question)
+
+    events = list(run_graph_events(request, search_provider=provider))
+
+    assert provider.queries == [
+        question,
+        "GitHub Trending repositories today",
+        "GitHub trending repositories developers daily",
+        "GitHub trending repositories official",
+    ]
+    assert events[-1].type == "task.completed"
+
+
+def test_research_report_binds_each_key_finding_to_source_reference(
+    tmp_path: Path,
+) -> None:
+    question = "Research and compare current Python packaging tools"
+    provider = SequencedSearchProvider(
+        {
+            question: [
+                SearchResponse(
+                    results=[
+                        SearchResult(
+                            title="Python packaging docs",
+                            url="https://docs.python.org/3/",
+                            snippet="Official guide to Python packaging tools.",
+                        )
+                    ]
+                )
+            ],
+            f"{question} official sources": [SearchResponse(results=[])],
+        }
+    )
+    request = build_research_flow_request(tmp_path, question)
+
+    events = list(run_graph_events(request, search_provider=provider))
+
+    artifact_event = next(event for event in events if event.type == "artifact.created")
+    content = Path(artifact_event.payload["path"]).read_text(encoding="utf-8")
+    assert "- [1] Python packaging docs:" in content
+    assert "- [1] Python packaging docs - https://docs.python.org/3/" in content
 
 
 def test_generated_markdown_conversion_graph_exports_converted_artifact(
@@ -1035,7 +1273,7 @@ def test_document_parse_uses_unique_output_paths_for_duplicate_attachment_names(
 
 def test_run_emits_started_and_cancelled_between_nodes(tmp_path: Path) -> None:
     source = tmp_path / "input.md"
-    source.write_text("正文", encoding="utf-8")
+    source.write_text("姝ｆ枃", encoding="utf-8")
     request = build_document_flow_request(tmp_path, source, run_id="run-cancel")
     registry = RunRegistry()
 
@@ -1065,7 +1303,7 @@ def test_run_emits_started_and_cancelled_between_nodes(tmp_path: Path) -> None:
 
 def test_failed_only_reruns_failed_node_and_downstream(tmp_path: Path) -> None:
     source = tmp_path / "input.md"
-    source.write_text("正文", encoding="utf-8")
+    source.write_text("姝ｆ枃", encoding="utf-8")
     source_run = "run-original"
     journal = RunJournal(project_path=str(tmp_path / "project.alita"), run_id=source_run)
     journal.write_node(
@@ -1074,7 +1312,7 @@ def test_failed_only_reruns_failed_node_and_downstream(tmp_path: Path) -> None:
     )
     journal.write_node(
         "document-parse",
-        {"nodeId": "document-parse", "status": "completed", "values": {"text": "正文"}},
+        {"nodeId": "document-parse", "status": "completed", "values": {"text": "姝ｆ枃"}},
     )
     journal.write_node(
         "content-organize",
@@ -1092,7 +1330,7 @@ def test_failed_only_reruns_failed_node_and_downstream(tmp_path: Path) -> None:
 
 def test_from_node_reruns_target_and_downstream(tmp_path: Path) -> None:
     source = tmp_path / "input.md"
-    source.write_text("正文", encoding="utf-8")
+    source.write_text("姝ｆ枃", encoding="utf-8")
     request = build_document_flow_request(tmp_path, source, run_id="run-from-node")
     request.mode.type = "from_node"
     request.mode.node_id = "report-generate"
@@ -1100,7 +1338,12 @@ def test_from_node_reruns_target_and_downstream(tmp_path: Path) -> None:
     events = list(run_graph_events(request, executor=FakeNodeExecutor()))
 
     running = [event.payload["nodeId"] for event in events if event.type == "node.running"]
-    assert running == ["report-generate", "file-export"]
+    assert running == [
+        "document-input",
+        "document-parse",
+        "report-generate",
+        "file-export",
+    ]
 
 
 def build_request(tmp_path: Path, *, nodes: list[dict]) -> RunGraphRequest:
@@ -1335,7 +1578,7 @@ def build_node(
         "inputPorts": [],
         "outputPorts": [],
         "dependencies": dependencies,
-        "summary": "测试节点",
+        "summary": "娴嬭瘯鑺傜偣",
         "createdBy": "agent",
         "artifactRefs": [],
         "retryCount": 0,

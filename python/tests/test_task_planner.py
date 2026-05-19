@@ -39,12 +39,20 @@ def test_planner_emits_visible_planning_nodes() -> None:
 
     assert [node["nodeId"] for node in planning_nodes] == [
         "task-analysis",
+        "context-gathering",
+        "evidence-summary",
+        "plan-draft",
         "capability-analysis",
         "tool-selection",
+        "plan-review",
         "execution-order-planning",
     ]
     assert all(node["status"] == "completed" for node in planning_nodes)
     assert all(node["summary"] for node in planning_nodes)
+    assert graph["metadata"]["planningMode"] == "deep"
+    assert graph["metadata"]["planningTrace"]["context"]["attachmentCount"] == 0
+    assert graph["metadata"]["planningTrace"]["draft"]["taskKind"] == "local_file"
+    assert graph["metadata"]["planningTrace"]["review"]["verificationStandards"]
 
 
 def test_analyze_task_detects_document_conversion_requirements() -> None:
@@ -211,10 +219,17 @@ def test_document_task_graph_preserves_workflow_with_planner_nodes_and_estimates
     planning_nodes = [node for node in graph["nodes"] if node["nodeType"] == "planning"]
     assert [node["nodeId"] for node in planning_nodes] == [
         "task-analysis",
+        "context-gathering",
+        "evidence-summary",
+        "plan-draft",
         "capability-analysis",
         "tool-selection",
+        "plan-review",
         "execution-order-planning",
     ]
+    assert graph["metadata"]["planningTrace"]["context"]["attachmentCount"] == 1
+    assert graph["metadata"]["planningTrace"]["context"]["attachmentNames"] == ["notes.docx"]
+    assert "document_input" in graph["metadata"]["planningTrace"]["evidence"][0]
     document_nodes = [
         node
         for node in graph["nodes"]
@@ -264,8 +279,12 @@ def test_markdown_document_conversion_graph_only_parses_and_outputs() -> None:
         "document-parse",
         "file-export",
         "task-analysis",
+        "context-gathering",
+        "evidence-summary",
+        "plan-draft",
         "capability-analysis",
         "tool-selection",
+        "plan-review",
         "execution-order-planning",
     ]
     assert [
@@ -336,8 +355,12 @@ def test_unsupported_document_plan_stops_before_document_executable_nodes() -> N
 
     assert [node["nodeId"] for node in planning_nodes] == [
         "task-analysis",
+        "context-gathering",
+        "evidence-summary",
+        "plan-draft",
         "capability-analysis",
         "tool-selection",
+        "plan-review",
         "execution-order-planning",
     ]
     assert graph["nodes"][-1]["nodeId"] == "missing-tool-response"

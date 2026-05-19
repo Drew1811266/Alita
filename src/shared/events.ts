@@ -74,6 +74,18 @@ export type BackendEvent =
       };
     }
   | {
+      type: "planning.progress";
+      payload: {
+        taskId: string;
+        stageId: string;
+        label: string;
+        summary: string;
+        status: "completed" | "running" | "waiting" | string;
+        sequence: number;
+        total: number;
+      };
+    }
+  | {
       type: "node_graph.created";
       payload: {
         graph: NodeGraph;

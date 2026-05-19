@@ -249,6 +249,48 @@ describe("reduceBackendEvents", () => {
     expect(result.dirty).toBe(true);
   });
 
+  it("adds visible messages for planning progress before the graph appears", () => {
+    const events: BackendEvent[] = [
+      {
+        type: "planning.progress",
+        payload: {
+          taskId: "task-1",
+          stageId: "context-gathering",
+          label: "Context gathering",
+          summary: "No attachments were provided.",
+          status: "completed",
+          sequence: 2,
+          total: 8,
+        },
+      },
+      {
+        type: "node_graph.created",
+        payload: {
+          graph,
+        },
+      },
+    ];
+
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph: null,
+        dirty: false,
+      },
+      events,
+      createAssistantMessage,
+    );
+
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[0].content).toBe(existingMessage.content);
+    expect(result.messages[1].content).toBe(
+      "Planning progress 2/8: Context gathering\nNo attachments were provided.",
+    );
+    expect(result.messages[2].content.length).toBeGreaterThan(0);
+    expect(result.graph).toBe(graph);
+    expect(result.dirty).toBe(true);
+  });
+
   it("adds a chat prompt for research choice events", () => {
     const submittedPayload = {
       taskId: "task-1",

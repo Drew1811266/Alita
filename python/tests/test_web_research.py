@@ -52,6 +52,7 @@ def test_research_models_preserve_report_sections_and_source_decisions() -> None
     assert report.section_order == [
         "summary",
         "key_findings",
+        "project_summaries",
         "source_review",
         "open_questions",
         "references",
@@ -60,7 +61,7 @@ def test_research_models_preserve_report_sections_and_source_decisions() -> None
     assert report.source_set.rejected == [rejected]
 
 
-def test_build_research_graph_contains_expected_nodes_and_single_visible_search_node() -> None:
+def test_build_research_graph_contains_source_reading_and_quality_check_nodes() -> None:
     from agent_service.web_research import build_research_graph
 
     message = UserMessage(
@@ -78,6 +79,7 @@ def test_build_research_graph_contains_expected_nodes_and_single_visible_search_
         "sectionOrder": [
             "summary",
             "key_findings",
+            "project_summaries",
             "source_review",
             "open_questions",
             "references",
@@ -89,24 +91,36 @@ def test_build_research_graph_contains_expected_nodes_and_single_visible_search_
         "research-query-plan",
         "research-parallel-search",
         "research-source-review",
+        "research-source-reading",
         "research-report-synthesis",
+        "research-report-quality-check",
         "research-markdown-output",
     ]
     assert [
-        node.nodeId
+        (node.nodeId, node.toolRef)
         for node in parsed.nodes
-        if node.nodeType == "fixed_tool" and node.toolRef == "web.search.parallel"
-    ] == ["research-parallel-search"]
+        if node.nodeType == "fixed_tool"
+    ] == [
+        ("research-parallel-search", "web.search.parallel"),
+        ("research-source-reading", "web.fetch.sources"),
+    ]
     assert parsed.nodes[0].nodeType == "planning"
     assert parsed.nodes[0].estimate is not None
     assert parsed.nodes[0].estimate.network == "none"
     search_node = parsed.nodes[3]
     assert search_node.estimate is not None
     assert search_node.estimate.network == "required"
-    synthesis_node = parsed.nodes[5]
+    source_reading_node = parsed.nodes[5]
+    assert source_reading_node.toolRef == "web.fetch.sources"
+    assert source_reading_node.estimate is not None
+    assert source_reading_node.estimate.network == "required"
+    synthesis_node = parsed.nodes[6]
     assert synthesis_node.modelRef == "research-report-synthesizer"
     assert synthesis_node.estimate is not None
     assert synthesis_node.estimate.cpu == "medium"
+    quality_node = parsed.nodes[7]
+    assert quality_node.modelRef == "research-report-verifier"
+    assert quality_node.dependencies == ["research-report-synthesis"]
 
 
 def test_simple_web_inquiry_searches_and_returns_concise_answer_with_source_metadata() -> None:

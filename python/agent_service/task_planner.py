@@ -61,6 +61,7 @@ class TaskPlan:
     summary: str
     requirements: list[CapabilityRequirement]
     task_id: str = "task"
+    attachments: list[Attachment] = field(default_factory=list)
     selected_tools: list[SelectedTool] = field(default_factory=list)
     tool_gaps: list[ToolGap] = field(default_factory=list)
 
@@ -173,6 +174,7 @@ def analyze_task(
         kind=kind,
         summary=_task_summary(kind, message),
         requirements=requirements,
+        attachments=list(attachments),
     )
 
 
@@ -379,7 +381,7 @@ def _document_task_graph(task_plan: TaskPlan) -> dict:
                 node_id="document-input",
                 node_type="fixed_tool",
                 display_name="Document input",
-                status="completed",
+                status="waiting",
                 input_ports=[],
                 output_ports=[_port("document-output", "Document", "document")],
                 dependencies=["execution-order-planning"],
@@ -434,7 +436,7 @@ def _document_task_graph(task_plan: TaskPlan) -> dict:
             node_id="document-input",
             node_type="fixed_tool",
             display_name="文档输入",
-            status="completed",
+            status="waiting",
             input_ports=[],
             output_ports=[_port("document-output", "Document", "document")],
             dependencies=["execution-order-planning"],
@@ -540,13 +542,34 @@ def _graph_payload(task_plan: TaskPlan, nodes: list[dict], edges: list[dict]) ->
         "metadata": {
             "taskKind": task_plan.kind.value,
             "summary": task_plan.summary,
+            "planningMode": "deep",
+            "planningTrace": _planning_trace(task_plan),
         },
     }
 
 
 def _planning_nodes(task_plan: TaskPlan) -> list[dict]:
     planning = [
-        ("task-analysis", "Task analysis", task_plan.summary),
+        (
+            "task-analysis",
+            "Task analysis",
+            _task_analysis_summary(task_plan),
+        ),
+        (
+            "context-gathering",
+            "Context gathering",
+            _context_gathering_summary(task_plan),
+        ),
+        (
+            "evidence-summary",
+            "Evidence summary",
+            _evidence_summary(task_plan),
+        ),
+        (
+            "plan-draft",
+            "Plan draft",
+            _plan_draft_summary(task_plan),
+        ),
         (
             "capability-analysis",
             "Capability analysis",
@@ -555,9 +578,14 @@ def _planning_nodes(task_plan: TaskPlan) -> list[dict]:
         ),
         ("tool-selection", "Tool selection", _tool_selection_summary(task_plan)),
         (
+            "plan-review",
+            "Plan review",
+            _plan_review_summary(task_plan),
+        ),
+        (
             "execution-order-planning",
             "Execution-order planning",
-            "Run completed planning first, then executable tool/model/script nodes, then output.",
+            _execution_order_summary(task_plan),
         ),
     ]
     return [
@@ -653,6 +681,205 @@ def _tool_selection_summary(task_plan: TaskPlan) -> str:
     if gaps:
         return f"No enabled integrated tool matched these capabilities: {gaps}."
     return "No integrated tool required; model or output nodes can satisfy the request."
+
+
+def _planning_trace(task_plan: TaskPlan) -> dict:
+    return {
+        "intake": {
+            "summary": task_plan.summary,
+            "taskKind": task_plan.kind.value,
+            "requirementCount": len(task_plan.requirements),
+        },
+        "context": {
+            "attachmentCount": _attachment_count(task_plan),
+            "attachmentNames": _attachment_names(task_plan),
+            "availableToolCount": len(task_plan.selected_tools),
+            "selectedTools": [tool.tool_id for tool in task_plan.selected_tools],
+            "usesModel": any(requirement.can_use_model for requirement in task_plan.requirements),
+        },
+        "evidence": _planning_evidence(task_plan),
+        "draft": {
+            "taskKind": task_plan.kind.value,
+            "capabilities": [
+                requirement.capability for requirement in task_plan.requirements
+            ],
+            "executionShape": _execution_shape(task_plan),
+        },
+        "review": {
+            "toolGapCount": len(task_plan.tool_gaps),
+            "hardBlockerCount": len(
+                [gap for gap in task_plan.tool_gaps if gap.user_message]
+            ),
+            "temporaryScriptCount": len(
+                [gap for gap in task_plan.tool_gaps if gap.temporary_script]
+            ),
+            "riskLevel": _overall_risk_level(task_plan),
+            "verificationStandards": _verification_standards(task_plan),
+        },
+    }
+
+
+def _task_analysis_summary(task_plan: TaskPlan) -> str:
+    return (
+        f"{task_plan.summary}. Expected output: "
+        f"{_expected_output_summary(task_plan)}."
+    )
+
+
+def _context_gathering_summary(task_plan: TaskPlan) -> str:
+    attachment_count = _attachment_count(task_plan)
+    if attachment_count:
+        names = ", ".join(_attachment_names(task_plan)) or "provided attachments"
+        return (
+            f"Use {attachment_count} attachment(s) as task context: {names}. "
+            "Inspect only the files explicitly provided by the user."
+        )
+    return (
+        "No attachments were provided. Use the chat request, enabled tool catalog, "
+        "model library, and project-local context only when needed."
+    )
+
+
+def _evidence_summary(task_plan: TaskPlan) -> str:
+    evidence = _planning_evidence(task_plan)
+    return " Evidence: ".join(["Planning evidence collected."] + evidence)
+
+
+def _plan_draft_summary(task_plan: TaskPlan) -> str:
+    return (
+        f"Draft a {task_plan.kind.value.replace('_', ' ')} workflow with "
+        f"{len(task_plan.requirements)} capability requirement(s): "
+        + ", ".join(requirement.capability for requirement in task_plan.requirements)
+        + "."
+    )
+
+
+def _plan_review_summary(task_plan: TaskPlan) -> str:
+    hard_blockers = [gap for gap in task_plan.tool_gaps if gap.user_message]
+    temporary_scripts = [gap for gap in task_plan.tool_gaps if gap.temporary_script]
+    if hard_blockers:
+        return (
+            "Plan review found missing required tooling and no safe substitute. "
+            "Stop before executable nodes and explain the blocker."
+        )
+    if temporary_scripts:
+        return (
+            "Plan review found bounded tool gaps that can be filled by temporary "
+            "script nodes with the required risk review."
+        )
+    return (
+        "Plan review found no hard blockers. Verification standards are defined "
+        "before creating executable nodes."
+    )
+
+
+def _execution_order_summary(task_plan: TaskPlan) -> str:
+    return (
+        "Build the final graph after planning review: completed planning nodes first, "
+        f"then {_execution_shape(task_plan)}, then output and verification."
+    )
+
+
+def _planning_evidence(task_plan: TaskPlan) -> list[str]:
+    evidence = [
+        "task_kind="
+        + task_plan.kind.value
+        + "; capabilities="
+        + ", ".join(requirement.capability for requirement in task_plan.requirements)
+    ]
+    if _attachment_count(task_plan):
+        evidence.append(
+            "attachments="
+            + ", ".join(_attachment_names(task_plan))
+            + "; document_input is required"
+        )
+    if task_plan.selected_tools:
+        evidence.append(
+            "selected_tools="
+            + ", ".join(tool.tool_id for tool in task_plan.selected_tools)
+        )
+    if task_plan.tool_gaps:
+        evidence.append(
+            "tool_gaps="
+            + ", ".join(gap.requirement.capability for gap in task_plan.tool_gaps)
+        )
+    if any(requirement.can_use_model for requirement in task_plan.requirements):
+        evidence.append("local model reasoning can satisfy at least one requirement")
+    return evidence
+
+
+def _execution_shape(task_plan: TaskPlan) -> str:
+    if any(gap.user_message for gap in task_plan.tool_gaps):
+        return "missing-tool-response"
+
+    steps: list[str] = []
+    if any(requirement.can_use_model for requirement in task_plan.requirements):
+        steps.append("model")
+    if task_plan.selected_tools:
+        steps.append("fixed_tool")
+    if any(gap.temporary_script for gap in task_plan.tool_gaps):
+        steps.append("temporary_script")
+    if task_plan.kind == TaskKind.DOCUMENT:
+        steps.append("document_workflow")
+    if not steps:
+        steps.append("output")
+    return " -> ".join(steps)
+
+
+def _verification_standards(task_plan: TaskPlan) -> list[str]:
+    standards = ["Each executable node must produce the output required by its ports."]
+    if task_plan.kind == TaskKind.DOCUMENT:
+        standards.append("Document tasks must return a non-empty artifact path.")
+    if any(gap.temporary_script for gap in task_plan.tool_gaps):
+        standards.append("Temporary scripts must pass risk review before execution.")
+    if any(gap.user_message for gap in task_plan.tool_gaps):
+        standards.append("Missing-tool plans must stop before executable work.")
+    if any(requirement.can_use_model for requirement in task_plan.requirements):
+        standards.append("Model nodes must use a bound local runtime, not placeholders.")
+    return standards
+
+
+def _overall_risk_level(task_plan: TaskPlan) -> str:
+    if any(
+        gap.temporary_script is not None and gap.temporary_script.risk_level == "high"
+        for gap in task_plan.tool_gaps
+    ):
+        return "high"
+    if task_plan.tool_gaps:
+        return "medium"
+    return "low"
+
+
+def _expected_output_summary(task_plan: TaskPlan) -> str:
+    if task_plan.kind == TaskKind.DOCUMENT:
+        return "document artifact"
+    if task_plan.kind == TaskKind.LOCAL_FILE:
+        return "local file analysis result"
+    if task_plan.kind == TaskKind.SCRIPT:
+        return "reviewed script result"
+    if task_plan.kind == TaskKind.UNSUPPORTED:
+        return "clear unsupported-tool explanation"
+    return "content or task result"
+
+
+def _attachment_count(task_plan: TaskPlan) -> int:
+    if task_plan.attachments:
+        return len(task_plan.attachments)
+    return sum(
+        1
+        for requirement in task_plan.requirements
+        if requirement.capability == "document_input"
+    )
+
+
+def _attachment_names(task_plan: TaskPlan) -> list[str]:
+    if task_plan.attachments:
+        return [attachment.name for attachment in task_plan.attachments]
+    return [
+        requirement.description
+        for requirement in task_plan.requirements
+        if requirement.capability == "document_input"
+    ]
 
 
 def _task_summary(kind: TaskKind, message: str) -> str:

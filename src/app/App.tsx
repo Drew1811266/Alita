@@ -823,8 +823,11 @@ export function App() {
 
     const capturedGraphOverwriteChoice = pendingGraphOverwriteChoiceRef.current;
     const sentAttachments = [...pendingAttachments];
-    const agentAttachments =
-      sentAttachments.length > 0 ? sentAttachments : contextAttachments;
+    const agentAttachments = selectAgentAttachments({
+      content,
+      sentAttachments,
+      contextAttachments,
+    });
     const userMessage = createMessage(
       "user",
       content || "已添加文档。",
@@ -1225,6 +1228,68 @@ function collectProjectAttachments(
   }
 
   return [...byPath.values()];
+}
+
+export function selectAgentAttachments({
+  content,
+  sentAttachments,
+  contextAttachments,
+}: {
+  content: string;
+  sentAttachments: ChatAttachment[];
+  contextAttachments: ChatAttachment[];
+}): ChatAttachment[] {
+  if (sentAttachments.length > 0) {
+    return sentAttachments;
+  }
+  if (contextAttachments.length === 0) {
+    return [];
+  }
+  if (referencesContextAttachment(content, contextAttachments)) {
+    return contextAttachments;
+  }
+  return [];
+}
+
+function referencesContextAttachment(
+  content: string,
+  contextAttachments: ChatAttachment[],
+): boolean {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  const explicitReferences = [
+    "attached",
+    "attachment",
+    "uploaded",
+    "this file",
+    "the file",
+    "this document",
+    "the document",
+    "\u9644\u4ef6",
+    "\u4e0a\u4f20",
+    "\u8fd9\u4e2a\u6587\u4ef6",
+    "\u8fd9\u4efd\u6587\u4ef6",
+    "\u8fd9\u4e2a\u6587\u6863",
+    "\u8fd9\u4efd\u6587\u6863",
+    "\u521a\u624d\u7684\u6587\u4ef6",
+    "\u521a\u624d\u7684\u6587\u6863",
+  ];
+
+  if (explicitReferences.some((reference) => normalized.includes(reference))) {
+    return true;
+  }
+
+  return contextAttachments.some((attachment) => {
+    const name = attachment.name.toLowerCase();
+    const pathName = attachment.path.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+    return Boolean(
+      (name && normalized.includes(name)) ||
+        (pathName && normalized.includes(pathName)),
+    );
+  });
 }
 
 function lastRunHistoryEntry(

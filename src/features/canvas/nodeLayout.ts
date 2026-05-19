@@ -1,7 +1,114 @@
 import type { AgentNode, NodeGraph } from "../../shared/types";
 
+export const CANVAS_LAYOUT_NODE_WIDTH = 236;
+export const CANVAS_LAYOUT_NODE_HEIGHT = 220;
+
+const CANVAS_LAYOUT_ORIGIN_X = 260;
+const CANVAS_LAYOUT_ORIGIN_Y = 40;
+const CANVAS_LAYOUT_COLUMN_STEP = 340;
+const CANVAS_LAYOUT_ROW_STEP = 260;
+
 function createNode(node: AgentNode): AgentNode {
   return node;
+}
+
+export function layoutGraphForCanvas(graph: NodeGraph): NodeGraph {
+  const indexById = new Map(
+    graph.nodes.map((node, index) => [node.nodeId, index] as const),
+  );
+  const dependenciesById = buildDependenciesById(graph);
+  const layerById = new Map<string, number>();
+
+  const getLayer = (nodeId: string, visiting = new Set<string>()): number => {
+    const cached = layerById.get(nodeId);
+    if (cached !== undefined) {
+      return cached;
+    }
+    if (visiting.has(nodeId)) {
+      return 0;
+    }
+
+    visiting.add(nodeId);
+    const dependencies = dependenciesById.get(nodeId) ?? [];
+    const layer =
+      dependencies.length === 0
+        ? 0
+        : Math.max(
+            ...dependencies.map((dependency) => getLayer(dependency, visiting)),
+          ) + 1;
+    visiting.delete(nodeId);
+    layerById.set(nodeId, layer);
+    return layer;
+  };
+
+  for (const node of graph.nodes) {
+    getLayer(node.nodeId);
+  }
+
+  const nodesByLayer = new Map<number, AgentNode[]>();
+  for (const node of graph.nodes) {
+    const layer = layerById.get(node.nodeId) ?? 0;
+    nodesByLayer.set(layer, [...(nodesByLayer.get(layer) ?? []), node]);
+  }
+
+  const positionById = new Map<string, { x: number; y: number }>();
+  for (const [layer, nodes] of [...nodesByLayer.entries()].sort(
+    ([first], [second]) => first - second,
+  )) {
+    const orderedNodes = [...nodes].sort((first, second) => {
+      const xDelta = first.position.x - second.position.x;
+      if (xDelta !== 0) {
+        return xDelta;
+      }
+      const yDelta = first.position.y - second.position.y;
+      if (yDelta !== 0) {
+        return yDelta;
+      }
+      return (indexById.get(first.nodeId) ?? 0) - (indexById.get(second.nodeId) ?? 0);
+    });
+    const layerWidth = (orderedNodes.length - 1) * CANVAS_LAYOUT_COLUMN_STEP;
+
+    for (const [index, node] of orderedNodes.entries()) {
+      positionById.set(node.nodeId, {
+        x: CANVAS_LAYOUT_ORIGIN_X - layerWidth / 2 + index * CANVAS_LAYOUT_COLUMN_STEP,
+        y: CANVAS_LAYOUT_ORIGIN_Y + layer * CANVAS_LAYOUT_ROW_STEP,
+      });
+    }
+  }
+
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => ({
+      ...node,
+      position: positionById.get(node.nodeId) ?? node.position,
+    })),
+  };
+}
+
+function buildDependenciesById(graph: NodeGraph): Map<string, string[]> {
+  const nodeIds = new Set(graph.nodes.map((node) => node.nodeId));
+  const dependenciesById = new Map<string, Set<string>>();
+
+  for (const node of graph.nodes) {
+    dependenciesById.set(
+      node.nodeId,
+      new Set(node.dependencies.filter((dependency) => nodeIds.has(dependency))),
+    );
+  }
+
+  for (const edge of graph.edges) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
+      continue;
+    }
+    dependenciesById.get(edge.target)?.add(edge.source);
+  }
+
+  return new Map(
+    [...dependenciesById.entries()].map(([nodeId, dependencies]) => [
+      nodeId,
+      [...dependencies],
+    ]),
+  );
 }
 
 export function createDocumentGraph(): NodeGraph {
