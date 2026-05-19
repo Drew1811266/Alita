@@ -25,6 +25,7 @@ def compile_task_graph_to_node_graph(task_graph: TaskGraph) -> dict:
 def _compile_node(node: TaskNode) -> dict[str, Any]:
     if node.ui is None:
         raise ValueError(f"missing UI metadata for task node: {node.node_id}")
+    _validate_required_binding(node)
 
     compiled_node: dict[str, Any] = {
         "nodeId": node.node_id,
@@ -50,6 +51,13 @@ def _compile_node(node: TaskNode) -> dict[str, Any]:
         )
 
     return compiled_node
+
+
+def _validate_required_binding(node: TaskNode) -> None:
+    if node.kind in {"input", "fixed_tool"} and node.tool_binding is None:
+        raise ValueError(f"task node {node.node_id} is missing tool_binding")
+    if node.kind == "model" and node.model_binding is None:
+        raise ValueError(f"task node {node.node_id} is missing model_binding")
 
 
 def _compile_node_type(node: TaskNode) -> str:

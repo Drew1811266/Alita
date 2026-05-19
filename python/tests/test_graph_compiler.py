@@ -4,6 +4,7 @@ import pytest
 
 from agent_service.goal_spec import GoalSpec
 from agent_service.graph_compiler import compile_task_graph_to_node_graph
+from agent_service.schemas import RunGraph
 from agent_service.task_graph import (
     TaskGraph,
     TaskNode,
@@ -31,6 +32,7 @@ def test_compile_document_task_graph_to_existing_node_graph_shape() -> None:
 
     node_graph = compile_task_graph_to_node_graph(task_graph)
 
+    RunGraph.model_validate(node_graph)
     assert node_graph["graphId"] == "task-document-graph"
     assert [node["nodeId"] for node in node_graph["nodes"]] == [
         "document-input",
@@ -116,6 +118,58 @@ def test_compile_task_graph_requires_node_ui() -> None:
     )
 
     with pytest.raises(ValueError, match="missing UI metadata.*node-without-ui"):
+        compile_task_graph_to_node_graph(task_graph)
+
+
+def test_compile_task_graph_requires_tool_binding_for_fixed_tool() -> None:
+    task_graph = TaskGraph(
+        graph_id="missing-tool-binding-graph",
+        task_id="missing-tool-binding",
+        objective="compile graph with a missing tool binding",
+        nodes=[
+            TaskNode(
+                node_id="fixed-tool-without-binding",
+                objective="missing tool binding should fail",
+                kind="fixed_tool",
+                risk_level="read_only",
+                ui=TaskNodeUi(
+                    display_name="Fixed Tool",
+                    summary="Fixed tool missing binding.",
+                ),
+            )
+        ],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="fixed-tool-without-binding.*tool_binding",
+    ):
+        compile_task_graph_to_node_graph(task_graph)
+
+
+def test_compile_task_graph_requires_model_binding_for_model() -> None:
+    task_graph = TaskGraph(
+        graph_id="missing-model-binding-graph",
+        task_id="missing-model-binding",
+        objective="compile graph with a missing model binding",
+        nodes=[
+            TaskNode(
+                node_id="model-without-binding",
+                objective="missing model binding should fail",
+                kind="model",
+                risk_level="read_only",
+                ui=TaskNodeUi(
+                    display_name="Model",
+                    summary="Model missing binding.",
+                ),
+            )
+        ],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="model-without-binding.*model_binding",
+    ):
         compile_task_graph_to_node_graph(task_graph)
 
 
