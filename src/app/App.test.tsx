@@ -133,7 +133,10 @@ describe("App", () => {
         permissions: ["read_project_files"],
         riskLevel: "high",
         requiresApproval: true,
-        approvalFingerprint: "sha256:abc123",
+        codePreview: "print('preview')",
+        inputContract: { path: "string" },
+        outputContract: { result: "string" },
+        approvalFingerprint: null,
       },
     };
 
@@ -149,7 +152,7 @@ describe("App", () => {
       taskId: "task-1",
       nodeId: "temporary-script",
       decision: "approve",
-      approvalFingerprint: "sha256:abc123",
+      approvalFingerprint: "e9885c7b40367139e05d1bfad930153222416183c89874c496a09a413d26d3ed",
       currentGraph: graph,
     });
 

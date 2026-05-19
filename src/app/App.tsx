@@ -67,6 +67,7 @@ import {
   saveProject,
 } from "../features/project/projectApi";
 import { ProjectHome } from "../features/project/ProjectHome";
+import { scriptReviewFingerprint } from "../features/task/scriptReviewFingerprint";
 import {
   cancelNodeGraphRun,
   createTemporaryScriptPermissionPayload,
@@ -1295,8 +1296,8 @@ export function buildTemporaryScriptPermissionSubmitPayload({
     taskId,
     nodeId: node.nodeId,
     decision,
-    ...(decision === "approve" && node.scriptReview?.approvalFingerprint
-      ? { approvalFingerprint: node.scriptReview.approvalFingerprint }
+    ...(decision === "approve" && node.scriptReview
+      ? { approvalFingerprint: scriptReviewFingerprint(node.scriptReview) }
       : {}),
     ...(currentGraph ? { currentGraph } : {}),
   });

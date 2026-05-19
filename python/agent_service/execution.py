@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -26,6 +25,7 @@ from agent_service.schemas import (
     RunGraphRequest,
     ScriptReviewState,
 )
+from agent_service.script_review import script_review_fingerprint
 from agent_service.tool_execution import (
     ToolExecutor,
     ToolInvocation,
@@ -1018,7 +1018,7 @@ def _script_requires_permission(node: GraphNode) -> bool:
 def _has_valid_script_approval(review: ScriptReviewState) -> bool:
     return (
         review.status == "approved"
-        and review.approvalFingerprint == _script_review_fingerprint(review)
+        and review.approvalFingerprint == script_review_fingerprint(review)
     )
 
 
@@ -1030,19 +1030,9 @@ def _script_review_event_payload(node: GraphNode) -> dict:
     if review.status == "approved" and not _has_valid_script_approval(review):
         payload["status"] = "not_reviewed"
         payload["approvalFingerprint"] = None
+    elif review.status != "approved":
+        payload["approvalFingerprint"] = script_review_fingerprint(review)
     return payload
-
-
-def _script_review_fingerprint(review: ScriptReviewState) -> str:
-    payload = {
-        "codePreview": review.codePreview,
-        "permissions": review.permissions,
-        "riskLevel": review.riskLevel,
-        "inputContract": review.inputContract,
-        "outputContract": review.outputContract,
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _default_tool_registry() -> ToolRegistry:

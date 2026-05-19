@@ -15,7 +15,7 @@ from agent_service.asr import (
     TranscriptionResponse,
     get_asr_status,
 )
-from agent_service.execution import _script_review_fingerprint, run_graph_events
+from agent_service.execution import run_graph_events
 from agent_service.graph import run_agent, stream_agent_events
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY
 from agent_service.schemas import (
@@ -28,6 +28,7 @@ from agent_service.schemas import (
     ScriptApprovalRequest,
     ScriptRejectionRequest,
 )
+from agent_service.script_review import script_review_fingerprint
 
 
 app = FastAPI(title="Alita Agent Sidecar")
@@ -151,11 +152,8 @@ def approve_temporary_script(
     if review is None:
         raise HTTPException(status_code=400, detail="temporary script has no review state")
 
-    expected_fingerprint = _script_review_fingerprint(review)
-    if (
-        request.approvalFingerprint is not None
-        and request.approvalFingerprint != expected_fingerprint
-    ):
+    expected_fingerprint = script_review_fingerprint(review)
+    if request.approvalFingerprint != expected_fingerprint:
         raise HTTPException(
             status_code=409,
             detail="approval fingerprint does not match script review state",

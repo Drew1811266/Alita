@@ -142,7 +142,7 @@ class ScriptApprovalRequest(BaseModel):
     task_id: str
     node_id: str
     currentGraph: RunGraph = Field(alias="current_graph")
-    approvalFingerprint: str | None = Field(default=None, alias="approval_fingerprint")
+    approvalFingerprint: str = Field(alias="approval_fingerprint")
 
 
 class ScriptRejectionRequest(BaseModel):

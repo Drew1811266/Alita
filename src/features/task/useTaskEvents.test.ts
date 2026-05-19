@@ -12,6 +12,7 @@ import {
   submitTemporaryScriptPermission,
   submitUserMessage,
 } from "./useTaskEvents";
+import { scriptReviewFingerprint } from "./scriptReviewFingerprint";
 import type { BackendEvent } from "../../shared/events";
 import type { NodeGraph } from "../../shared/types";
 
@@ -358,6 +359,22 @@ describe("runNodeGraphStream", () => {
 });
 
 describe("frontend action payload helpers", () => {
+  it("calculates canonical temporary script review fingerprints", () => {
+    expect(
+      scriptReviewFingerprint({
+        status: "not_reviewed",
+        summary: "Needs review before execution.",
+        permissions: ["read_project_files"],
+        riskLevel: "high",
+        requiresApproval: true,
+        codePreview: "print('preview')",
+        inputContract: { path: "string" },
+        outputContract: { result: "string" },
+        approvalFingerprint: null,
+      }),
+    ).toBe("e9885c7b40367139e05d1bfad930153222416183c89874c496a09a413d26d3ed");
+  });
+
   it("creates typed research quick answer and research flow payloads", () => {
     const basePayload = {
       taskId: "task-1",

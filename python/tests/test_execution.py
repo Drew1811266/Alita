@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import tempfile
 from pathlib import Path
 from time import sleep
@@ -16,7 +14,13 @@ from agent_service.graph import run_agent
 from agent_service.model_client import ChatMessage
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import RunRegistry
-from agent_service.schemas import Attachment, RunGraphRequest, UserMessage
+from agent_service.schemas import (
+    Attachment,
+    RunGraphRequest,
+    ScriptReviewState,
+    UserMessage,
+)
+from agent_service.script_review import script_review_fingerprint as canonical_script_review_fingerprint
 from agent_service.tool_execution import ToolResult
 from agent_service.web_research import build_research_graph
 from agent_service.web_search import SearchFailure, SearchResponse, SearchResult
@@ -256,6 +260,12 @@ def test_high_risk_temporary_script_blocks_before_any_node_runs(
     ]
     assert permission_event.payload["scriptReview"]["status"] == "not_reviewed"
     assert permission_event.payload["scriptReview"]["riskLevel"] == "high"
+    temp_script = next(
+        node for node in request.graph.nodes if node.nodeId == "temp-script"
+    )
+    assert permission_event.payload["scriptReview"]["approvalFingerprint"] == (
+        script_review_fingerprint(temp_script.scriptReview.model_dump())
+    )
     assert events[-1].type == "task.failed"
     assert events[-1].payload["errorCode"] == "permission_required"
 
@@ -1163,15 +1173,7 @@ def script_review(*, risk_level: str, requires_approval: bool) -> dict:
 
 
 def script_review_fingerprint(review: dict) -> str:
-    payload = {
-        "codePreview": review.get("codePreview"),
-        "permissions": review.get("permissions", []),
-        "riskLevel": review.get("riskLevel"),
-        "inputContract": review.get("inputContract", {}),
-        "outputContract": review.get("outputContract", {}),
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return canonical_script_review_fingerprint(ScriptReviewState(**review))
 
 
 def build_document_flow_request(

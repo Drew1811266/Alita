@@ -1,9 +1,8 @@
-import hashlib
-import json
-
 from fastapi.testclient import TestClient
 
 from agent_service.app import app
+from agent_service.schemas import ScriptReviewState
+from agent_service.script_review import script_review_fingerprint
 
 
 def test_agent_message_stream_returns_sse_events() -> None:
@@ -271,6 +270,37 @@ def test_scripts_approve_persists_fingerprint_and_unblocks_graph() -> None:
     assert updated_node["scriptReview"]["approvalFingerprint"] == expected_fingerprint
 
 
+def test_scripts_approve_requires_fingerprint() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/scripts/approve",
+        json={
+            "task_id": "task-script",
+            "node_id": "temporary-script",
+            "current_graph": _temporary_script_graph(),
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_scripts_approve_rejects_mismatched_fingerprint() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/scripts/approve",
+        json={
+            "task_id": "task-script",
+            "node_id": "temporary-script",
+            "current_graph": _temporary_script_graph(),
+            "approval_fingerprint": "stale-fingerprint",
+        },
+    )
+
+    assert response.status_code == 409
+
+
 def test_scripts_approve_rejects_unknown_node() -> None:
     client = TestClient(app)
 
@@ -280,10 +310,52 @@ def test_scripts_approve_rejects_unknown_node() -> None:
             "task_id": "task-script",
             "node_id": "missing",
             "current_graph": _temporary_script_graph(),
+            "approval_fingerprint": "stale-fingerprint",
         },
     )
 
     assert response.status_code == 404
+
+
+def test_scripts_approve_rejects_non_temporary_node() -> None:
+    client = TestClient(app)
+    graph = _temporary_script_graph()
+    graph["nodes"][0] = {
+        **graph["nodes"][0],
+        "nodeType": "fixed_tool",
+        "toolRef": "document.receive_attachment",
+        "scriptReview": None,
+    }
+
+    response = client.post(
+        "/agent/scripts/approve",
+        json={
+            "task_id": "task-script",
+            "node_id": "temporary-script",
+            "current_graph": graph,
+            "approval_fingerprint": "stale-fingerprint",
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_scripts_approve_rejects_temporary_script_without_review() -> None:
+    client = TestClient(app)
+    graph = _temporary_script_graph()
+    graph["nodes"][0]["scriptReview"] = None
+
+    response = client.post(
+        "/agent/scripts/approve",
+        json={
+            "task_id": "task-script",
+            "node_id": "temporary-script",
+            "current_graph": graph,
+            "approval_fingerprint": "stale-fingerprint",
+        },
+    )
+
+    assert response.status_code == 400
 
 
 def _temporary_script_graph() -> dict:
@@ -322,12 +394,4 @@ def _temporary_script_graph() -> dict:
 
 
 def _script_review_fingerprint(script_review: dict) -> str:
-    payload = {
-        "codePreview": script_review["codePreview"],
-        "permissions": script_review["permissions"],
-        "riskLevel": script_review["riskLevel"],
-        "inputContract": script_review["inputContract"],
-        "outputContract": script_review["outputContract"],
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return script_review_fingerprint(ScriptReviewState(**script_review))
