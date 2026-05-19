@@ -75,7 +75,7 @@ class TaskGraph(BaseModel):
 
 def build_document_task_graph(task_id: str, goal_spec: GoalSpec) -> TaskGraph:
     task_graph = TaskGraph(
-        graph_id=f"{task_id}-task-graph",
+        graph_id=f"{task_id}-graph",
         task_id=task_id,
         objective=goal_spec.goal,
         success_criteria=list(goal_spec.success_criteria),

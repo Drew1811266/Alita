@@ -43,6 +43,7 @@ def _task_node(node_id: str, dependencies: list[str] | None = None) -> TaskNode:
 def test_build_document_task_graph_preserves_existing_node_ids() -> None:
     graph = build_document_task_graph("task-document", _document_goal_spec())
 
+    assert graph.graph_id == "task-document-graph"
     assert graph.task_id == "task-document"
     assert graph.objective == "summarize this document as a PDF report"
     assert [node.node_id for node in graph.nodes] == [
