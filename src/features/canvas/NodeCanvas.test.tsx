@@ -149,4 +149,86 @@ describe("NodeCanvas", () => {
     expect(markup).toContain("5s");
     expect(markup).toContain("256MB");
   });
+
+  it("renders task planner graphs with planning and executable nodes", () => {
+    const graph: NodeGraph = {
+      graphId: "task-planner-graph",
+      nodes: [
+        {
+          nodeId: "task-analysis",
+          nodeType: "planning",
+          displayName: "Task Analysis",
+          status: "completed",
+          inputPorts: [],
+          outputPorts: [],
+          dependencies: [],
+          summary: "Understand the user task.",
+          createdBy: "agent",
+          artifactRefs: [],
+          retryCount: 0,
+          estimate: { durationMs: 100, cpu: "low", memory: "low" },
+          position: { x: 0, y: 0 },
+        },
+        {
+          nodeId: "temporary-script-file-inspect",
+          nodeType: "temporary_script",
+          displayName: "Inspect CSV with temporary script",
+          status: "needs_permission",
+          inputPorts: [],
+          outputPorts: [],
+          dependencies: ["task-analysis"],
+          summary: "Run generated code only after approval.",
+          createdBy: "agent",
+          artifactRefs: [],
+          retryCount: 0,
+          estimate: { durationMs: 1500, memory: "256MB", network: "none" },
+          scriptReview: {
+            status: "reviewing",
+            summary: "High-risk script needs approval.",
+            permissions: ["read_project_files"],
+            riskLevel: "high",
+            requiresApproval: true,
+          },
+          position: { x: 240, y: 0 },
+        },
+        {
+          nodeId: "task-output",
+          nodeType: "output",
+          displayName: "Task Output",
+          status: "waiting",
+          inputPorts: [],
+          outputPorts: [],
+          dependencies: ["temporary-script-file-inspect"],
+          summary: "Return the result.",
+          createdBy: "agent",
+          artifactRefs: [],
+          retryCount: 0,
+          position: { x: 480, y: 0 },
+        },
+      ],
+      edges: [
+        {
+          id: "task-analysis-temporary-script-file-inspect",
+          source: "task-analysis",
+          target: "temporary-script-file-inspect",
+        },
+        {
+          id: "temporary-script-file-inspect-task-output",
+          source: "temporary-script-file-inspect",
+          target: "task-output",
+        },
+      ],
+    };
+
+    const markup = renderToStaticMarkup(
+      <NodeCanvas graph={graph} running={false} onRun={() => undefined} />,
+    );
+
+    expect(markup).toContain("nodeCanvasRunButton");
+    expect(markup).toContain("agentNode-planningQuiet");
+    expect(markup).toContain("agentNode-needsPermission");
+    expect(markup).toContain("agentNode-riskHigh");
+    expect(markup).toContain("Inspect CSV with temporary script");
+    expect(markup).toContain("Task Output");
+  });
 });

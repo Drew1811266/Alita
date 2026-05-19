@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { reduceBackendEvents } from "./backendEvents";
+import { reduceBackendEvents, toGraphOverwriteSubmitChoice } from "./backendEvents";
+import type { PendingGraphOverwriteChoice } from "./backendEvents";
 import type { BackendEvent } from "../shared/events";
 import type { ChatMessage, NodeGraph } from "../shared/types";
 
@@ -156,6 +157,60 @@ describe("reduceBackendEvents", () => {
     expect(result.messages[0].sourceMetadata?.rejected?.[0].title).toBe(
       "Low quality mirror",
     );
+  });
+
+  it("keeps chat and simple web inquiry responses as messages without creating a graph", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: null,
+        dirty: false,
+      },
+      [
+        {
+          type: "message.created",
+          payload: {
+            message: createAssistantMessage("Direct assistant response."),
+          },
+        },
+        {
+          type: "message.created",
+          payload: {
+            message: createAssistantMessage("Sourced web answer [1]."),
+            sources: [
+              {
+                ref: "[1]",
+                title: "Python docs",
+                url: "https://docs.python.org/3/",
+                accepted: true,
+              },
+            ],
+            sourceMetadata: {
+              answerStatus: "answered",
+              accepted: [
+                {
+                  ref: "[1]",
+                  title: "Python docs",
+                  url: "https://docs.python.org/3/",
+                  accepted: true,
+                },
+              ],
+              rejected: [],
+            },
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.graph).toBeNull();
+    expect(result.messages.map((message) => message.content)).toEqual([
+      "Direct assistant response.",
+      "Sourced web answer [1].",
+    ]);
+    expect(result.messages[1].sourceMetadata?.answerStatus).toBe("answered");
+    expect(result.pendingResearchChoice).toBeNull();
+    expect(result.dirty).toBe(true);
   });
 
   it("keeps existing input and graph responses working", () => {
@@ -435,6 +490,112 @@ describe("reduceBackendEvents", () => {
     );
     expect(result.pendingResearchChoice).toBeNull();
     expect(result.dirty).toBe(true);
+  });
+
+  it("maps overwrite confirmation text into a sidecar pending choice", () => {
+    const pendingChoice: PendingGraphOverwriteChoice = {
+      taskId: "task-1",
+      previousGraphId: graph.graphId,
+      summary: "This full replan will replace prior run artifacts.",
+      pendingChoice: {
+        id: "pending-graph-overwrite",
+        kind: "full_replan",
+        message: "Restart, the direction is wrong.",
+        previousGraphId: graph.graphId,
+      },
+      choices: [
+        { id: "confirm_overwrite", label: "Overwrite graph" },
+        { id: "cancel", label: "Cancel" },
+      ],
+    };
+
+    expect(toGraphOverwriteSubmitChoice(pendingChoice, "yes")).toMatchObject({
+      id: "confirm_overwrite",
+      kind: "full_replan",
+      previousGraphId: graph.graphId,
+    });
+    expect(toGraphOverwriteSubmitChoice(pendingChoice, "cancel")).toMatchObject({
+      id: "cancel",
+      kind: "full_replan",
+      previousGraphId: graph.graphId,
+    });
+  });
+
+  it("replaces only the graph snapshot supplied by graph feedback events", () => {
+    const originalGraph: NodeGraph = {
+      graphId: "feedback-graph",
+      nodes: [
+        {
+          nodeId: "extract-data",
+          nodeType: "model",
+          displayName: "Extract Data",
+          status: "completed",
+          inputPorts: [],
+          outputPorts: [],
+          dependencies: [],
+          summary: "Extract CSV rows.",
+          createdBy: "agent",
+          artifactRefs: ["artifact-extract"],
+          retryCount: 0,
+          position: { x: 0, y: 0 },
+        },
+        {
+          nodeId: "independent-output",
+          nodeType: "output",
+          displayName: "Independent Output",
+          status: "completed",
+          inputPorts: [],
+          outputPorts: [],
+          dependencies: [],
+          summary: "Keep independent output.",
+          createdBy: "agent",
+          artifactRefs: ["artifact-independent"],
+          retryCount: 0,
+          position: { x: 180, y: 0 },
+        },
+      ],
+      edges: [],
+    };
+    const updatedGraph: NodeGraph = {
+      ...originalGraph,
+      nodes: [
+        {
+          ...originalGraph.nodes[0],
+          status: "waiting",
+          artifactRefs: [],
+          summary: "Extract JSON rows.",
+        },
+        originalGraph.nodes[1],
+      ],
+    };
+
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: originalGraph,
+        dirty: false,
+      },
+      [
+        {
+          type: "graph.replanned",
+          payload: {
+            graph: updatedGraph,
+            previousGraphId: originalGraph.graphId,
+            summary: "Updated Extract Data only.",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.graph?.nodes[0]).toMatchObject({
+      nodeId: "extract-data",
+      status: "waiting",
+      artifactRefs: [],
+      summary: "Extract JSON rows.",
+    });
+    expect(result.graph?.nodes[1]).toBe(originalGraph.nodes[1]);
+    expect(result.messages[0].content).toBe("Updated Extract Data only.");
   });
 
   it("applies streaming message lifecycle events", () => {

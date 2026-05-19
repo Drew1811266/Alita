@@ -143,6 +143,34 @@ describe("runNodeGraphStream", () => {
     });
   });
 
+  it("posts prior artifact refs when requesting a full replan confirmation", async () => {
+    const graph: NodeGraph = {
+      graphId: "graph-1",
+      nodes: [],
+      edges: [],
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await submitUserMessage({
+      taskId: "task-1",
+      content: "Restart, the direction is wrong.",
+      attachments: [],
+      currentGraph: graph,
+      artifactRefs: ["D:\\Project\\artifacts\\report.md"],
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      task_id: "task-1",
+      content: "Restart, the direction is wrong.",
+      current_graph: graph,
+      artifact_refs: ["D:\\Project\\artifacts\\report.md"],
+    });
+  });
+
   it("posts pending graph overwrite choice from the submit payload", async () => {
     const graph: NodeGraph = {
       graphId: "graph-1",
@@ -412,6 +440,65 @@ describe("frontend action payload helpers", () => {
 
   it("posts temporary script approval decisions to the sidecar", async () => {
     const graph: NodeGraph = { graphId: "graph-1", nodes: [], edges: [] };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await submitTemporaryScriptPermission(
+      createTemporaryScriptPermissionPayload({
+        taskId: "task-1",
+        nodeId: "temporary-script",
+        decision: "approve",
+        approvalFingerprint: "sha256:abc123",
+        currentGraph: graph,
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/agent/scripts/approve",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          task_id: "task-1",
+          node_id: "temporary-script",
+          approval_fingerprint: "sha256:abc123",
+          current_graph: graph,
+        }),
+      }),
+    );
+  });
+
+  it("posts approved high-risk temporary script decisions with the current graph", async () => {
+    const graph: NodeGraph = {
+      graphId: "script-graph",
+      nodes: [
+        {
+          nodeId: "temporary-script",
+          nodeType: "temporary_script",
+          displayName: "Temporary script",
+          status: "needs_permission",
+          inputPorts: [],
+          outputPorts: [],
+          dependencies: [],
+          summary: "Inspect project files.",
+          createdBy: "agent",
+          artifactRefs: [],
+          retryCount: 0,
+          scriptReview: {
+            status: "reviewing",
+            summary: "Needs review before execution.",
+            permissions: ["read_project_files"],
+            riskLevel: "high",
+            requiresApproval: true,
+            approvalFingerprint: "sha256:abc123",
+          },
+          position: { x: 0, y: 0 },
+        },
+      ],
+      edges: [],
+    };
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify([]), {
         headers: { "Content-Type": "application/json" },

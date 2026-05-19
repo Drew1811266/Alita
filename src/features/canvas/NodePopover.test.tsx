@@ -292,6 +292,36 @@ describe("NodePopover", () => {
     expect(markup).toContain("拒绝");
   });
 
+  it("blocks rerun controls for high-risk temporary scripts until review", () => {
+    const markup = renderToStaticMarkup(
+      <NodePopover
+        node={{
+          ...toolNode,
+          nodeId: "temporary-script",
+          nodeType: "temporary_script",
+          displayName: "Temporary script",
+          status: "needs_permission",
+          scriptReview: {
+            status: "reviewing",
+            summary: "Needs review before execution.",
+            permissions: ["read_project_files"],
+            riskLevel: "high",
+            requiresApproval: true,
+            approvalFingerprint: "sha256:abc123",
+          },
+        }}
+        onApproveTemporaryScript={() => undefined}
+        onClose={() => undefined}
+        onRejectTemporaryScript={() => undefined}
+        onRunFromNode={() => undefined}
+      />,
+    );
+
+    expect(markup).not.toContain("nodePopoverAction");
+    expect(markup).toContain("nodePopoverPermissionActions");
+    expect(markup).toContain("sha256:abc123");
+  });
+
   it("calls temporary script approval and rejection callbacks", () => {
     const approve = vi.fn();
     const reject = vi.fn();
