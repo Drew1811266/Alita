@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
 
+from agent_service.goal_spec import GoalSpec, parse_goal_spec
 from agent_service.model_client import (
     ChatMessage as ModelChatMessage,
     LlamaCppModelClient,
@@ -43,12 +44,15 @@ class AgentState(TypedDict, total=False):
     message: UserMessage
     events: list[AgentEvent]
     intent: AgentIntent
+    goal_spec: GoalSpec
 
 
 def classify_intent(state: AgentState) -> AgentState:
+    goal_spec = parse_goal_spec(state["message"])
     return {
         **state,
-        "intent": _classify_message(state["message"]),
+        "goal_spec": goal_spec,
+        "intent": _intent_from_goal_spec(goal_spec),
     }
 
 
@@ -200,63 +204,18 @@ def _route_intent(state: AgentState) -> AgentIntent:
     return state["intent"]
 
 
-def _classify_message(message: UserMessage) -> AgentIntent:
-    content = message.content.strip()
-    has_attachments = bool(message.attachments)
-    has_task_action = _contains_any(
-        content,
-        [
-            "处理",
-            "整理",
-            "总结",
-            "摘要",
-            "提取",
-            "分析",
-            "改写",
-            "翻译",
-            "生成",
-            "导出",
-            "转换",
-            "压缩",
-            "剪辑",
-            "识别",
-        ],
-    )
-    has_file_reference = _contains_any(
-        content,
-        [
-            "文档",
-            "文件",
-            "附件",
-            "资料",
-            "报告",
-            "图片",
-            "图像",
-            "音频",
-            "视频",
-            "表格",
-            "pdf",
-            "doc",
-            "docx",
-            "ppt",
-            "pptx",
-            "xls",
-            "xlsx",
-        ],
-    )
-
-    if has_attachments and (not content or has_task_action or has_file_reference):
-        return "document_task"
-
-    if not has_attachments and has_task_action and has_file_reference:
+def _intent_from_goal_spec(goal_spec: GoalSpec) -> AgentIntent:
+    if goal_spec.task_type == "document_processing" and goal_spec.missing_inputs:
         return "missing_input"
+
+    if goal_spec.task_type == "document_processing":
+        return "document_task"
 
     return "chat"
 
 
-def _contains_any(content: str, keywords: list[str]) -> bool:
-    normalized = content.lower()
-    return any(keyword.lower() in normalized for keyword in keywords)
+def _classify_message(message: UserMessage) -> AgentIntent:
+    return _intent_from_goal_spec(parse_goal_spec(message))
 
 
 def _build_model_messages(message: UserMessage) -> list[ModelChatMessage]:
