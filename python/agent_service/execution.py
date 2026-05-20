@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
+from agent_service.final_verifier import FinalVerifier
 from agent_service.goal_spec import GoalSpec
 from agent_service.harness_errors import HarnessError, harness_error_payload
 from agent_service.model_client import (
@@ -203,6 +204,7 @@ def run_graph_events(
     registry: RunRegistry | None = None,
     tool_registry: ToolRegistry | None = None,
     result_verifier: ResultVerifier | None = None,
+    final_verifier: FinalVerifier | None = None,
 ) -> Iterator[AgentEvent]:
     try:
         ordered_nodes = _topological_nodes(request)
@@ -226,6 +228,7 @@ def run_graph_events(
         tool_executor=tool_executor,
     )
     verifier = result_verifier or ResultVerifier()
+    graph_verifier = final_verifier or FinalVerifier()
     run_registry = registry or DEFAULT_RUN_REGISTRY
     cancel_token = run_registry.start(request.run_id)
     journal = RunJournal(project_path=request.project_path, run_id=request.run_id)
@@ -440,6 +443,31 @@ def run_graph_events(
                         "createdAt": completed_at,
                     },
                 )
+
+        try:
+            graph_verifier.verify(request, outputs=outputs)
+        except Exception as error:
+            completed_at = _now_iso()
+            payload = harness_error_payload(error)
+            journal.write_run(
+                {
+                    "runId": request.run_id,
+                    "taskId": request.task_id,
+                    "status": "failed",
+                    "startedAt": started_at,
+                    "completedAt": completed_at,
+                    "mode": request.mode.model_dump(),
+                }
+            )
+            yield AgentEvent(
+                type="task.failed",
+                payload={
+                    "taskId": request.task_id,
+                    "runId": request.run_id,
+                    **payload,
+                },
+            )
+            return
 
         completed_at = _now_iso()
         journal.write_run(

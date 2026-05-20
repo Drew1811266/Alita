@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 from agent_service.execution import DocumentFlowExecutor, NodeOutput, run_graph_events
+from agent_service.harness_errors import HarnessError
 from agent_service.model_client import ChatMessage
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import RunRegistry
@@ -106,6 +107,14 @@ class RecordingModelRuntime:
         if binding.model_ref == "local.report_writer":
             return NodeOutput(values={"report": "runtime report"})
         raise AssertionError(binding.model_ref)
+
+
+class RejectingFinalVerifier:
+    def verify(self, request: RunGraphRequest, *, outputs: dict[str, NodeOutput]) -> None:
+        raise HarnessError(
+            "missing_final_output",
+            "missing final output for node: file-export",
+        )
 
 
 def test_document_flow_model_nodes_use_model_runtime(tmp_path: Path) -> None:
@@ -351,6 +360,23 @@ def test_execution_fails_when_result_verifier_rejects_empty_output(
 
     assert events[-1].type == "task.failed"
     assert events[-1].payload["errorCode"] == "empty_node_output"
+
+
+def test_execution_fails_when_final_verifier_rejects_output(tmp_path: Path) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("content", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source)
+
+    events = list(
+        run_graph_events(
+            request,
+            executor=FakeNodeExecutor(),
+            final_verifier=RejectingFinalVerifier(),
+        )
+    )
+
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "missing_final_output"
 
 
 def test_document_flow_exports_markdown_artifact(tmp_path: Path) -> None:
