@@ -688,6 +688,64 @@ def test_failed_only_reruns_failed_node_and_downstream(tmp_path: Path) -> None:
     assert running == ["content-organize", "file-export"]
 
 
+def test_failed_only_with_no_failed_nodes_verifies_source_final_output(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "report.md"
+    artifact.write_text("report", encoding="utf-8")
+    source_run = "run-all-completed"
+    journal = RunJournal(project_path=str(tmp_path / "project.alita"), run_id=source_run)
+    journal.write_node(
+        "file-export",
+        {
+            "nodeId": "file-export",
+            "status": "completed",
+            "values": {"artifact": str(artifact)},
+            "artifactRefs": [str(artifact)],
+        },
+    )
+    source = tmp_path / "input.md"
+    source.write_text("content", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source, run_id="run-no-failed")
+    request.mode.type = "failed_only"
+    request.mode.source_run_id = source_run
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert [event.type for event in events] == [
+        "run.started",
+        "task.completed",
+    ]
+
+
+def test_failed_only_with_missing_source_final_artifact_fails_final_verification(
+    tmp_path: Path,
+) -> None:
+    source_run = "run-missing-final-artifact"
+    missing_artifact = tmp_path / "missing.md"
+    journal = RunJournal(project_path=str(tmp_path / "project.alita"), run_id=source_run)
+    journal.write_node(
+        "file-export",
+        {
+            "nodeId": "file-export",
+            "status": "completed",
+            "values": {"artifact": str(missing_artifact)},
+            "artifactRefs": [str(missing_artifact)],
+        },
+    )
+    source = tmp_path / "input.md"
+    source.write_text("content", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source, run_id="run-missing-final")
+    request.mode.type = "failed_only"
+    request.mode.source_run_id = source_run
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "missing_artifact"
+    assert any(event.type == "graph.patch_suggested" for event in events)
+
+
 def test_from_node_reruns_target_and_downstream(tmp_path: Path) -> None:
     source = tmp_path / "input.md"
     source.write_text("正文", encoding="utf-8")
