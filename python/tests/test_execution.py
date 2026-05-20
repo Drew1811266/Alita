@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from agent_service.execution import NodeOutput, run_graph_events
+from agent_service.execution import DocumentFlowExecutor, NodeOutput, run_graph_events
 from agent_service.model_client import ChatMessage
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import RunRegistry
@@ -42,7 +42,7 @@ class FakeModelClient:
         max_tokens: int = 1024,
     ) -> str:
         self.calls.append(messages)
-        if "结构化中文要点" in messages[0].content:
+        if "文档内容整理助手" in messages[0].content:
             return "整理结果：标题和正文内容"
         return "报告正文：这是一份测试报告"
 
@@ -93,6 +93,39 @@ class TypstFlowToolExecutor:
 class FailingNodeExecutor:
     def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
         raise RuntimeError(f"boom from {node_id}")
+
+
+class RecordingModelRuntime:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def run(self, binding, *, inputs):
+        self.calls.append((binding, inputs))
+        if binding.model_ref == "local.content_organizer":
+            return NodeOutput(values={"outline": "runtime outline"})
+        if binding.model_ref == "local.report_writer":
+            return NodeOutput(values={"report": "runtime report"})
+        raise AssertionError(binding.model_ref)
+
+
+def test_document_flow_model_nodes_use_model_runtime(tmp_path: Path) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("document text", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source)
+    runtime = RecordingModelRuntime()
+    executor = DocumentFlowExecutor(request, model_runtime=runtime)
+
+    parse_output = NodeOutput(values={"text": "document text"})
+
+    outline_output = executor.run("content-organize", {"document-parse": parse_output})
+    report_output = executor.run("report-generate", {"document-parse": parse_output})
+
+    assert outline_output.values == {"outline": "runtime outline"}
+    assert report_output.values == {"report": "runtime report"}
+    assert [call[0].model_ref for call in runtime.calls] == [
+        "local.content_organizer",
+        "local.report_writer",
+    ]
 
 
 def test_rejects_graph_with_missing_dependency(tmp_path: Path) -> None:

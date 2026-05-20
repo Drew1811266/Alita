@@ -6,16 +6,19 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
+from agent_service.goal_spec import GoalSpec
 from agent_service.harness_errors import HarnessError, harness_error_payload
 from agent_service.model_client import (
     ChatMessage as ModelChatMessage,
     LlamaCppModelClient,
 )
+from agent_service.model_runtime import ModelRuntime
 from agent_service.node_output import NodeOutput
 from agent_service.result_verifier import ResultVerifier
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY, RunRegistry
 from agent_service.schemas import AgentEvent, GraphNode, RunGraphRequest
+from agent_service.task_graph import build_document_task_graph
 from agent_service.tool_execution import (
     ToolExecutor,
     ToolInvocation,
@@ -52,13 +55,28 @@ class DocumentFlowExecutor:
         request: RunGraphRequest,
         *,
         model_client: ModelClient | None = None,
+        model_runtime: ModelRuntime | None = None,
         tool_executor: ToolExecutor | None = None,
     ) -> None:
         self.request = request
         self.model_client = model_client or LlamaCppModelClient()
+        self.model_runtime = model_runtime or ModelRuntime(model_client=self.model_client)
         self.tool_executor = tool_executor or ToolExecutor()
         self.project_dir = Path(request.project_path).parent
         self.artifact_dir = self.project_dir / "artifacts"
+        self.task_graph = build_document_task_graph(
+            request.task_id,
+            GoalSpec(
+                goal="Process attached documents into a report artifact.",
+                task_type="document_processing",
+                deliverable="markdown_report",
+                success_criteria=["Generate a local project artifact."],
+                required_context=["attachment"],
+                risk_level="local_write",
+                permissions_required=["read_attachment", "write_project_artifact"],
+                confidence=0.85,
+            ),
+        )
 
     def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
         if node_id == "document-input":
@@ -97,34 +115,16 @@ class DocumentFlowExecutor:
             return NodeOutput(artifacts=artifacts, values={"text": "\n\n".join(texts)})
 
         if node_id == "content-organize":
-            text = _first_input_value(inputs, "text")
-            content = self.model_client.chat(
-                [
-                    ModelChatMessage(
-                        role="system",
-                        content="请把用户文档整理成结构化中文要点。",
-                    ),
-                    ModelChatMessage(role="user", content=text),
-                ],
-                temperature=0.2,
-                max_tokens=1024,
-            )
-            return NodeOutput(values={"outline": content})
+            node = self.task_graph.node_by_id(node_id)
+            if node.model_binding is None:
+                raise ValueError(f"{node_id} is missing model binding")
+            return self.model_runtime.run(node.model_binding, inputs=inputs)
 
         if node_id == "report-generate":
-            text = _first_input_value(inputs, "text")
-            content = self.model_client.chat(
-                [
-                    ModelChatMessage(
-                        role="system",
-                        content="请根据用户文档生成一份简洁中文报告。",
-                    ),
-                    ModelChatMessage(role="user", content=text),
-                ],
-                temperature=0.2,
-                max_tokens=1536,
-            )
-            return NodeOutput(values={"report": content})
+            node = self.task_graph.node_by_id(node_id)
+            if node.model_binding is None:
+                raise ValueError(f"{node_id} is missing model binding")
+            return self.model_runtime.run(node.model_binding, inputs=inputs)
 
         if node_id == "typst-export":
             outline = _first_input_value(inputs, "outline")
