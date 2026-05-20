@@ -18,6 +18,23 @@ def test_allows_default_document_permissions() -> None:
     PermissionGate().ensure_node_allowed(node, tool_registry=_registry())
 
 
+def test_explicit_empty_default_allowlist_blocks_document_permissions() -> None:
+    node = _node(
+        "typst-export",
+        tool_ref="document.typst_compile",
+        permissions=["write_project_artifact"],
+    )
+
+    with pytest.raises(HarnessError) as exc_info:
+        PermissionGate(default_allowed_permissions=[]).ensure_node_allowed(
+            node,
+            tool_registry=_registry(),
+        )
+
+    assert exc_info.value.code == "permission_required"
+    assert "write_project_artifact" in exc_info.value.message
+
+
 def test_rejects_network_permission_without_approval() -> None:
     node = _node("web-search", permissions=["network"])
 

@@ -25,9 +25,9 @@ class PermissionGate:
         default_allowed_permissions: Iterable[str] | None = None,
     ) -> None:
         self.approved_permissions = set(approved_permissions or [])
-        self.default_allowed_permissions = set(
-            default_allowed_permissions or DEFAULT_ALLOWED_PERMISSIONS
-        )
+        if default_allowed_permissions is None:
+            default_allowed_permissions = DEFAULT_ALLOWED_PERMISSIONS
+        self.default_allowed_permissions = set(default_allowed_permissions)
 
     def required_permissions(
         self,
