@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from agent_service.risk_levels import RiskLevel
 from agent_service.schemas import UserMessage
 
 
@@ -17,15 +18,6 @@ TaskType = Literal[
     "code_task",
     "automation",
     "unknown",
-]
-RiskLevel = Literal[
-    "read_only",
-    "local_write",
-    "local_modify",
-    "destructive",
-    "network",
-    "external_comm",
-    "system",
 ]
 
 

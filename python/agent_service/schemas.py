@@ -5,6 +5,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from agent_service.risk_levels import RiskLevel
+
 
 class Attachment(BaseModel):
     attachment_id: str
@@ -35,17 +37,6 @@ class ScriptReviewState(BaseModel):
     permissions: list[str] = Field(default_factory=list)
 
 
-GraphRiskLevel = Literal[
-    "read_only",
-    "local_write",
-    "local_modify",
-    "destructive",
-    "network",
-    "external_comm",
-    "system",
-]
-
-
 class GraphNode(BaseModel):
     nodeId: str
     nodeType: Literal["fixed_tool", "model", "output", "temporary_placeholder"]
@@ -70,7 +61,7 @@ class GraphNode(BaseModel):
     artifactRefs: list[str] = Field(default_factory=list)
     retryCount: int = 0
     scriptReview: ScriptReviewState | None = None
-    riskLevel: GraphRiskLevel | None = None
+    riskLevel: RiskLevel | None = None
     permissionsRequired: list[str] = Field(default_factory=list)
     position: dict[str, float]
 
