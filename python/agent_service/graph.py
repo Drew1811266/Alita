@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
 
+from agent_service.context_manager import build_context_bundle
 from agent_service.goal_spec import GoalSpec, parse_goal_spec
 from agent_service.graph_compiler import compile_task_graph_to_node_graph
 from agent_service.model_client import (
@@ -15,8 +16,10 @@ from agent_service.model_client import (
     ModelRuntimeDisabled,
     ModelRuntimeRequestFailed,
 )
+from agent_service.planner_v2 import PlannerV2
 from agent_service.schemas import AgentEvent, UserMessage
-from agent_service.task_graph import build_document_task_graph
+from agent_service.tool_execution import default_tool_packages_root
+from agent_service.tool_registry import ToolRegistry
 
 
 AgentIntent = Literal["chat", "missing_input", "document_task"]
@@ -83,6 +86,7 @@ def plan_node_graph(state: AgentState) -> AgentState:
                     "graph": _create_document_graph(
                         state["message"].task_id,
                         state["goal_spec"],
+                        state["message"],
                     ),
                 },
             )
@@ -254,9 +258,22 @@ def _assistant_message(content: str) -> dict:
     }
 
 
-def _create_document_graph(task_id: str, goal_spec: GoalSpec) -> dict:
-    task_graph = build_document_task_graph(task_id, goal_spec)
-    return compile_task_graph_to_node_graph(task_graph)
+def _create_document_graph(
+    task_id: str, goal_spec: GoalSpec, message: UserMessage
+) -> dict:
+    tool_registry = ToolRegistry.from_packages_root(default_tool_packages_root())
+    context = build_context_bundle(
+        message=message,
+        goal_spec=goal_spec,
+        project_path="project.alita",
+        tool_registry=tool_registry,
+    )
+    plan = PlannerV2(tool_registry=tool_registry).plan(
+        task_id=task_id,
+        goal_spec=goal_spec,
+        context=context,
+    )
+    return compile_task_graph_to_node_graph(plan.task_graph)
 
 
 def _node(

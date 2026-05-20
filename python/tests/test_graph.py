@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
+import agent_service.graph as graph_module
 from agent_service.graph import _node, run_agent, stream_agent_events
 from agent_service.model_client import ChatMessage
 from agent_service.schemas import Attachment, GraphNode, UserMessage
+from agent_service.task_graph import build_document_task_graph
 
 
 class FakeModelClient:
@@ -194,6 +198,62 @@ def test_attachment_with_only_latest_keyword_generates_node_graph() -> None:
 
     assert len(events) == 1
     assert events[0].type == "node_graph.created"
+
+
+def test_document_graph_planning_still_validates_frontend_shape(monkeypatch) -> None:
+    planner_calls: list[dict[str, object]] = []
+
+    class RecordingPlanner:
+        def __init__(self, *, tool_registry) -> None:
+            self.tool_registry = tool_registry
+
+        def plan(self, *, task_id, goal_spec, context):
+            planner_calls.append(
+                {
+                    "task_id": task_id,
+                    "goal_spec": goal_spec,
+                    "context": context,
+                    "tool_registry": self.tool_registry,
+                }
+            )
+            return SimpleNamespace(
+                task_graph=build_document_task_graph(task_id, goal_spec)
+            )
+
+    monkeypatch.setattr(graph_module, "PlannerV2", RecordingPlanner)
+
+    events = run_agent(
+        UserMessage(
+            task_id="task-planner-v2",
+            content="summarize this document as a PDF report",
+            attachments=[
+                Attachment(
+                    attachment_id="a-planner-v2",
+                    name="planner-v2.docx",
+                    path="workspace/inputs/planner-v2.docx",
+                    size_bytes=100,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            ],
+        )
+    )
+
+    assert planner_calls
+    assert len(events) == 1
+    assert events[0].type == "node_graph.created"
+    graph = events[0].payload["graph"]
+    assert graph["graphId"] == "task-planner-v2-graph"
+    assert [edge["id"] for edge in graph["edges"]] == [
+        "document-input-document-parse",
+        "document-parse-content-organize",
+        "document-parse-report-generate",
+        "content-organize-typst-export",
+        "report-generate-typst-export",
+        "typst-export-file-export",
+    ]
+    nodes_by_id = {node["nodeId"]: node for node in graph["nodes"]}
+    assert nodes_by_id["content-organize"]["modelRef"] == "local-content-organizer"
+    assert nodes_by_id["report-generate"]["modelRef"] == "local-report-writer"
 
 
 def test_temporary_placeholder_node_gets_default_script_review_state() -> None:
