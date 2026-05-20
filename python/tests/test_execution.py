@@ -520,6 +520,10 @@ def test_failed_only_reruns_failed_node_and_downstream(tmp_path: Path) -> None:
         "content-organize",
         {"nodeId": "content-organize", "status": "failed", "error": "model failed"},
     )
+    journal.write_node(
+        "report-generate",
+        {"nodeId": "report-generate", "status": "completed", "values": {"report": "report"}},
+    )
     request = build_document_flow_request(tmp_path, source, run_id="run-retry")
     request.mode.type = "failed_only"
     request.mode.source_run_id = source_run
@@ -533,14 +537,89 @@ def test_failed_only_reruns_failed_node_and_downstream(tmp_path: Path) -> None:
 def test_from_node_reruns_target_and_downstream(tmp_path: Path) -> None:
     source = tmp_path / "input.md"
     source.write_text("正文", encoding="utf-8")
+    source_run = "run-from-node-source"
+    journal = RunJournal(project_path=str(tmp_path / "project.alita"), run_id=source_run)
+    journal.write_node(
+        "document-parse",
+        {"nodeId": "document-parse", "status": "completed", "values": {"text": "正文"}},
+    )
+    journal.write_node(
+        "content-organize",
+        {"nodeId": "content-organize", "status": "completed", "values": {"outline": "outline"}},
+    )
     request = build_document_flow_request(tmp_path, source, run_id="run-from-node")
     request.mode.type = "from_node"
     request.mode.node_id = "report-generate"
+    request.mode.source_run_id = source_run
 
     events = list(run_graph_events(request, executor=FakeNodeExecutor()))
 
     running = [event.payload["nodeId"] for event in events if event.type == "node.running"]
     assert running == ["report-generate", "file-export"]
+
+
+def test_from_node_real_executor_fails_when_dependency_output_missing(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("document text", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source)
+    request.mode.type = "from_node"
+    request.mode.node_id = "report-generate"
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=FakeModelClient(),
+            tool_executor=FakeToolExecutor(),
+        )
+    )
+
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "missing_dependency_output"
+    assert "report-generate" in events[-1].payload["error"]
+    assert "document-parse" in events[-1].payload["error"]
+
+
+def test_from_node_with_source_outputs_runs_real_document_flow_executor(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("document text", encoding="utf-8")
+    source_run = "run-real-from-node-source"
+    journal = RunJournal(project_path=str(tmp_path / "project.alita"), run_id=source_run)
+    journal.write_node(
+        "document-parse",
+        {
+            "nodeId": "document-parse",
+            "status": "completed",
+            "values": {"text": "parsed text"},
+        },
+    )
+    journal.write_node(
+        "content-organize",
+        {
+            "nodeId": "content-organize",
+            "status": "completed",
+            "values": {"outline": "prior outline"},
+        },
+    )
+    request = build_document_flow_request(tmp_path, source, run_id="run-real-from-node")
+    request.mode.type = "from_node"
+    request.mode.node_id = "report-generate"
+    request.mode.source_run_id = source_run
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=FakeModelClient(),
+            tool_executor=FakeToolExecutor(),
+        )
+    )
+
+    running = [event.payload["nodeId"] for event in events if event.type == "node.running"]
+    assert running == ["report-generate", "file-export"]
+    assert events[-1].type == "task.completed"
 
 
 def build_request(tmp_path: Path, *, nodes: list[dict]) -> RunGraphRequest:

@@ -341,6 +341,19 @@ def run_graph_events(
             )
             yield AgentEvent(type="node.running", payload={"nodeId": node.nodeId})
             try:
+                missing_dependencies = [
+                    dependency
+                    for dependency in node.dependencies
+                    if dependency not in outputs
+                ]
+                if missing_dependencies:
+                    raise HarnessError(
+                        "missing_dependency_output",
+                        (
+                            f"node {node.nodeId} is missing dependency output: "
+                            f"{', '.join(missing_dependencies)}"
+                        ),
+                    )
                 dependency_outputs = {
                     dependency: outputs[dependency]
                     for dependency in node.dependencies
@@ -555,6 +568,8 @@ def _source_outputs_for_mode(request: RunGraphRequest) -> dict[str, NodeOutput]:
     )
     outputs: dict[str, NodeOutput] = {}
     for record in journal.read_nodes():
+        if record.get("status") != "completed":
+            continue
         node_id = record.get("nodeId")
         if not isinstance(node_id, str):
             continue
