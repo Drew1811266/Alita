@@ -39,6 +39,8 @@ def _compile_node(node: TaskNode) -> dict[str, Any]:
         "createdBy": "agent",
         "artifactRefs": [],
         "retryCount": 0,
+        "riskLevel": node.risk_level,
+        "permissionsRequired": list(node.permissions_required),
         "position": dict(node.ui.position),
     }
 

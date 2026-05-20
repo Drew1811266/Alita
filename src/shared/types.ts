@@ -14,6 +14,15 @@ export type NodeType =
   | "output"
   | "temporary_placeholder";
 
+export type RiskLevel =
+  | "read_only"
+  | "local_write"
+  | "local_modify"
+  | "destructive"
+  | "network"
+  | "external_comm"
+  | "system";
+
 export type NodePort = {
   id: string;
   label: string;
@@ -36,6 +45,8 @@ export type AgentNode = {
   retryCount: number;
   lastRun?: NodeRunRecord;
   scriptReview?: ScriptReviewState;
+  riskLevel?: RiskLevel;
+  permissionsRequired?: string[];
   position: {
     x: number;
     y: number;

@@ -35,6 +35,17 @@ class ScriptReviewState(BaseModel):
     permissions: list[str] = Field(default_factory=list)
 
 
+GraphRiskLevel = Literal[
+    "read_only",
+    "local_write",
+    "local_modify",
+    "destructive",
+    "network",
+    "external_comm",
+    "system",
+]
+
+
 class GraphNode(BaseModel):
     nodeId: str
     nodeType: Literal["fixed_tool", "model", "output", "temporary_placeholder"]
@@ -59,6 +70,8 @@ class GraphNode(BaseModel):
     artifactRefs: list[str] = Field(default_factory=list)
     retryCount: int = 0
     scriptReview: ScriptReviewState | None = None
+    riskLevel: GraphRiskLevel | None = None
+    permissionsRequired: list[str] = Field(default_factory=list)
     position: dict[str, float]
 
 
@@ -92,3 +105,4 @@ class RunGraphRequest(BaseModel):
     run_id: str = Field(default_factory=lambda: f"run-{uuid4()}")
     mode: RunMode = Field(default_factory=RunMode)
     disabled_tool_ids: list[str] = Field(default_factory=list)
+    approved_permissions: list[str] = Field(default_factory=list)
