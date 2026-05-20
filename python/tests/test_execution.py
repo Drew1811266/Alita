@@ -254,6 +254,7 @@ def test_runs_nodes_after_all_dependencies_complete(tmp_path: Path) -> None:
                 "fixed_tool",
                 ["document-input"],
                 tool_ref="document.markitdown_convert",
+                permissions=["read_attachment"],
             ),
             build_node(
                 "content-organize",
@@ -283,6 +284,52 @@ def test_runs_nodes_after_all_dependencies_complete(tmp_path: Path) -> None:
         "report-generate",
         "file-export",
     ]
+    assert events[-1].type == "task.completed"
+
+
+def test_execution_emits_permission_required_before_running_blocked_node(
+    tmp_path: Path,
+) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "network-node",
+                "model",
+                [],
+                permissions=["network"],
+            )
+        ],
+    )
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert "node.running" not in [event.type for event in events]
+    assert events[0].type == "run.started"
+    assert events[1].type == "permission.required"
+    assert events[1].payload["nodeId"] == "network-node"
+    assert events[1].payload["permissions"] == ["network"]
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "permission_required"
+
+
+def test_execution_runs_blocked_permission_when_approved(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "network-node",
+                "model",
+                [],
+                permissions=["network"],
+            )
+        ],
+    )
+    request.approved_permissions = ["network"]
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert "node.running" in [event.type for event in events]
     assert events[-1].type == "task.completed"
 
 
@@ -704,6 +751,7 @@ def build_document_flow_request(
                     "fixed_tool",
                     ["document-input"],
                     tool_ref="document.markitdown_convert",
+                    permissions=["read_attachment"],
                 ),
                 build_node(
                     "content-organize",
@@ -746,6 +794,7 @@ def build_document_flow_request_with_typst(
             "fixed_tool",
             ["document-input"],
             tool_ref="document.markitdown_convert",
+            permissions=["read_attachment"],
         ),
         build_node(
             "content-organize",
@@ -764,6 +813,7 @@ def build_document_flow_request_with_typst(
             "fixed_tool",
             ["content-organize", "report-generate"],
             tool_ref="document.typst_compile",
+            permissions=["write_project_artifact"],
         ),
         build_node("file-export", "output", ["typst-export"]),
     ]
@@ -803,6 +853,7 @@ def build_node(
     *,
     tool_ref: str | None = None,
     model_ref: str | None = None,
+    permissions: list[str] | None = None,
 ) -> dict:
     node = {
         "nodeId": node_id,
@@ -817,6 +868,7 @@ def build_node(
         "artifactRefs": [],
         "retryCount": 0,
         "position": {"x": 0, "y": 0},
+        "permissionsRequired": permissions or [],
     }
     if tool_ref:
         node["toolRef"] = tool_ref

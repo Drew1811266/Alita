@@ -15,6 +15,7 @@ from agent_service.model_client import (
 )
 from agent_service.model_runtime import ModelRuntime
 from agent_service.node_output import NodeOutput
+from agent_service.permission_gate import PermissionGate
 from agent_service.result_verifier import ResultVerifier
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY, RunRegistry
@@ -203,12 +204,14 @@ def run_graph_events(
     tool_executor: ToolExecutor | None = None,
     registry: RunRegistry | None = None,
     tool_registry: ToolRegistry | None = None,
+    permission_gate: PermissionGate | None = None,
     result_verifier: ResultVerifier | None = None,
     final_verifier: FinalVerifier | None = None,
 ) -> Iterator[AgentEvent]:
     try:
         ordered_nodes = _topological_nodes(request)
-        _validate_graph_tools(request, tool_registry or _default_tool_registry())
+        effective_tool_registry = tool_registry or _default_tool_registry()
+        _validate_graph_tools(request, effective_tool_registry)
     except (ValueError, HarnessError) as error:
         payload = harness_error_payload(error)
         yield AgentEvent(
@@ -237,6 +240,9 @@ def run_graph_events(
 
     started_at = _now_iso()
     disabled_tool_ids = set(request.disabled_tool_ids)
+    gate = permission_gate or PermissionGate(
+        approved_permissions=request.approved_permissions
+    )
     journal.write_run(
         {
             "runId": request.run_id,
@@ -290,6 +296,65 @@ def run_graph_events(
                         "taskId": request.task_id,
                         "runId": request.run_id,
                         **payload,
+                    },
+                )
+                yield AgentEvent(
+                    type="node.run_recorded",
+                    payload={"record": _event_record(record)},
+                )
+                yield AgentEvent(
+                    type="task.failed",
+                    payload={
+                        "taskId": request.task_id,
+                        "runId": request.run_id,
+                        **payload,
+                    },
+                )
+                return
+
+            denied_permissions = gate.denied_permissions(
+                node,
+                tool_registry=effective_tool_registry,
+            )
+            if denied_permissions:
+                completed_at = _now_iso()
+                error = HarnessError(
+                    "permission_required",
+                    (
+                        f"node {node.nodeId} requires permission approval: "
+                        f"{', '.join(denied_permissions)}"
+                    ),
+                )
+                payload = harness_error_payload(error)
+                record = {
+                    "nodeRunId": f"{request.run_id}-{node.nodeId}",
+                    "runId": request.run_id,
+                    "nodeId": node.nodeId,
+                    "status": "needs_permission",
+                    "startedAt": completed_at,
+                    "completedAt": completed_at,
+                    "artifactRefs": [],
+                    "error": str(error),
+                    "values": {},
+                }
+                journal.write_node(node.nodeId, record)
+                journal.write_run(
+                    {
+                        "runId": request.run_id,
+                        "taskId": request.task_id,
+                        "status": "failed",
+                        "startedAt": started_at,
+                        "completedAt": completed_at,
+                        "mode": request.mode.model_dump(),
+                    }
+                )
+                yield AgentEvent(
+                    type="permission.required",
+                    payload={
+                        "nodeId": node.nodeId,
+                        "taskId": request.task_id,
+                        "runId": request.run_id,
+                        "permissions": denied_permissions,
                     },
                 )
                 yield AgentEvent(
