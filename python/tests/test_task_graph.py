@@ -75,16 +75,21 @@ def test_build_document_task_graph_preserves_existing_node_ids() -> None:
     )
     assert graph.node_by_id("typst-export").tool_binding is not None
     assert graph.node_by_id("typst-export").tool_binding.operation == "compile_report_pdf"
-    assert graph.node_by_id("content-organize").model_binding is not None
-    assert (
-        graph.node_by_id("content-organize").model_binding.model_ref
-        == "local.content_organizer"
-    )
-    assert graph.node_by_id("report-generate").model_binding is not None
-    assert (
-        graph.node_by_id("report-generate").model_binding.model_ref
-        == "local.report_writer"
-    )
+    content_binding = graph.node_by_id("content-organize").model_binding
+    assert content_binding is not None
+    assert content_binding.model_ref == "local.content_organizer"
+    assert content_binding.prompt_template == "document.content_organizer.zh.v1"
+    assert content_binding.output_key == "outline"
+    assert content_binding.temperature == 0.2
+    assert content_binding.max_tokens == 1024
+
+    report_binding = graph.node_by_id("report-generate").model_binding
+    assert report_binding is not None
+    assert report_binding.model_ref == "local.report_writer"
+    assert report_binding.prompt_template == "document.report_writer.zh.v1"
+    assert report_binding.output_key == "report"
+    assert report_binding.temperature == 0.2
+    assert report_binding.max_tokens == 1536
     assert graph.node_by_id("file-export").risk_level == "local_write"
 
     document_parse_ui = graph.node_by_id("document-parse").ui
