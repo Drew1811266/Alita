@@ -741,9 +741,15 @@ def test_failed_only_with_missing_source_final_artifact_fails_final_verification
 
     events = list(run_graph_events(request, executor=FakeNodeExecutor()))
 
+    assert "node.running" not in [event.type for event in events]
+    assert "node.failed" not in [event.type for event in events]
+    suggestion_event = next(
+        event for event in events if event.type == "graph.patch_suggested"
+    )
+    assert suggestion_event.payload["operations"][0]["op"] == "rerun_node"
+    assert suggestion_event.payload["operations"][0]["node_id"] == "file-export"
     assert events[-1].type == "task.failed"
     assert events[-1].payload["errorCode"] == "missing_artifact"
-    assert any(event.type == "graph.patch_suggested" for event in events)
 
 
 def test_from_node_reruns_target_and_downstream(tmp_path: Path) -> None:
