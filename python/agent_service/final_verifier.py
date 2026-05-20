@@ -26,7 +26,11 @@ class FinalVerifier:
                 )
 
             artifact_value = output.values.get("artifact", "")
-            if artifact_value and artifact_value not in output.artifacts:
+            artifact_paths = {
+                _normalized_path(path)
+                for path in output.artifacts
+            }
+            if artifact_value and _normalized_path(artifact_value) not in artifact_paths:
                 raise HarnessError(
                     "missing_artifact",
                     f"final artifact is not listed: {artifact_value}",
@@ -38,3 +42,7 @@ class FinalVerifier:
                         "missing_artifact",
                         f"artifact does not exist: {path}",
                     )
+
+
+def _normalized_path(value: str) -> Path:
+    return Path(value).expanduser().resolve(strict=False)

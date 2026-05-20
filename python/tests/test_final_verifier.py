@@ -26,6 +26,26 @@ def test_existing_output_artifact_passes(tmp_path: Path) -> None:
     )
 
 
+def test_artifact_value_matches_listed_artifact_after_path_normalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = tmp_path / "report.md"
+    artifact.write_text("report", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    request = build_request(tmp_path, output_node_id="file-export")
+
+    FinalVerifier().verify(
+        request,
+        outputs={
+            "file-export": NodeOutput(
+                artifacts=[artifact.name],
+                values={"artifact": str(artifact.resolve())},
+            )
+        },
+    )
+
+
 def test_missing_output_node_raises_missing_final_output(tmp_path: Path) -> None:
     request = build_request(tmp_path, output_node_id="file-export")
 
