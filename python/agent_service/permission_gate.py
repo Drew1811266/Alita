@@ -11,6 +11,8 @@ DEFAULT_ALLOWED_PERMISSIONS = frozenset(
     {
         "read_attachment",
         "read_project_files",
+        "run_local_cli",
+        "run_python_plugin",
         "write_project_artifact",
         "write_project_outputs",
     }
@@ -36,11 +38,11 @@ class PermissionGate:
         tool_registry: ToolRegistry,
     ) -> list[str]:
         permissions = list(node.permissionsRequired)
-        if not permissions and node.toolRef:
+        if node.toolRef:
             try:
-                permissions = list(tool_registry.get(node.toolRef).permissions)
+                permissions.extend(tool_registry.get(node.toolRef).permissions)
             except KeyError:
-                permissions = []
+                pass
         if node.scriptReview is not None:
             permissions.extend(node.scriptReview.permissions)
         return _dedupe(permissions)

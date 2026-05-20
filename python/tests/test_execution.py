@@ -179,6 +179,12 @@ def test_rejects_graph_with_unknown_tool_ref_before_running_nodes(tmp_path: Path
     events = list(run_graph_events(request, executor=FakeNodeExecutor()))
 
     assert "node.running" not in [event.type for event in events]
+    suggestion_event = next(
+        event for event in events if event.type == "graph.patch_suggested"
+    )
+    assert suggestion_event.payload["operations"][0]["op"] == "request_tool_enablement"
+    assert suggestion_event.payload["operations"][0]["node_id"] == "missing-tool"
+    assert suggestion_event.payload["requires_user_approval"] is True
     assert events[-1].type == "task.failed"
     assert events[-1].payload["errorCode"] == "unsupported_tool"
     assert "missing.tool" in events[-1].payload["error"]

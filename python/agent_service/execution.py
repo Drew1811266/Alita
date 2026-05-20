@@ -210,12 +210,24 @@ def run_graph_events(
     final_verifier: FinalVerifier | None = None,
     failure_replanner: FailureReplanner | None = None,
 ) -> Iterator[AgentEvent]:
+    replanner = failure_replanner or FailureReplanner()
     try:
         ordered_nodes = _topological_nodes(request)
         effective_tool_registry = tool_registry or _default_tool_registry()
         _validate_graph_tools(request, effective_tool_registry)
     except (ValueError, HarnessError) as error:
         payload = harness_error_payload(error)
+        failed_node = _unsupported_tool_node(request, error)
+        suggestion = replanner.propose(
+            request=request,
+            failed_node=failed_node,
+            error=error,
+        )
+        if suggestion is not None:
+            yield AgentEvent(
+                type="graph.patch_suggested",
+                payload=suggestion.model_dump(),
+            )
         yield AgentEvent(
             type="task.failed",
             payload={
@@ -234,7 +246,6 @@ def run_graph_events(
     )
     verifier = result_verifier or ResultVerifier()
     graph_verifier = final_verifier or FinalVerifier()
-    replanner = failure_replanner or FailureReplanner()
     run_registry = registry or DEFAULT_RUN_REGISTRY
     cancel_token = run_registry.start(request.run_id)
     journal = RunJournal(project_path=request.project_path, run_id=request.run_id)
@@ -625,7 +636,33 @@ def _validate_graph_tools(request: RunGraphRequest, registry: ToolRegistry) -> N
         try:
             registry.get(node.toolRef)
         except KeyError as error:
-            raise HarnessError("unsupported_tool", str(error)) from error
+            raise HarnessError(
+                "unsupported_tool",
+                f"unsupported tool: {node.toolRef}",
+            ) from error
+
+
+def _unsupported_tool_node(
+    request: RunGraphRequest,
+    error: Exception,
+) -> GraphNode | None:
+    if not isinstance(error, HarnessError) or error.code != "unsupported_tool":
+        return None
+
+    prefix = "unsupported tool: "
+    if not error.message.startswith(prefix):
+        return None
+    tool_ref = error.message.removeprefix(prefix).strip()
+    if not tool_ref:
+        return None
+    return next(
+        (
+            node
+            for node in request.graph.nodes
+            if node.nodeType == "fixed_tool" and node.toolRef == tool_ref
+        ),
+        None,
+    )
 
 
 def _selected_nodes_for_mode(
