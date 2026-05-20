@@ -190,6 +190,22 @@ export function reduceBackendEvents(
       };
     }
 
+    if (event.type === "graph.patch_suggested") {
+      const operations = event.payload.operations
+        .map((operation) => `${operation.op}:${operation.node_id}`)
+        .join("、");
+      return {
+        ...current,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(
+            `建议修复：${event.payload.reason}（${operations}）`,
+          ),
+        ],
+        dirty: true,
+      };
+    }
+
     if (event.type === "task.completed") {
       const runId = event.payload.runId ?? current.activeRunId;
       return {

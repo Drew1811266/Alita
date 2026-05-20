@@ -122,6 +122,22 @@ export type BackendEvent =
       };
     }
   | {
+      type: "graph.patch_suggested";
+      payload: {
+        reason: string;
+        operations: Array<{
+          op:
+            | "retry_node"
+            | "rerun_node"
+            | "rerun_from_node"
+            | "request_tool_enablement";
+          node_id: string;
+          reason: string;
+        }>;
+        requires_user_approval: boolean;
+      };
+    }
+  | {
       type: "task.completed";
       payload: {
         taskId: string;

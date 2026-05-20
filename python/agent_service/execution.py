@@ -16,6 +16,7 @@ from agent_service.model_client import (
 from agent_service.model_runtime import ModelRuntime
 from agent_service.node_output import NodeOutput
 from agent_service.permission_gate import PermissionGate
+from agent_service.replan import FailureReplanner
 from agent_service.result_verifier import ResultVerifier
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY, RunRegistry
@@ -207,6 +208,7 @@ def run_graph_events(
     permission_gate: PermissionGate | None = None,
     result_verifier: ResultVerifier | None = None,
     final_verifier: FinalVerifier | None = None,
+    failure_replanner: FailureReplanner | None = None,
 ) -> Iterator[AgentEvent]:
     try:
         ordered_nodes = _topological_nodes(request)
@@ -232,6 +234,7 @@ def run_graph_events(
     )
     verifier = result_verifier or ResultVerifier()
     graph_verifier = final_verifier or FinalVerifier()
+    replanner = failure_replanner or FailureReplanner()
     run_registry = registry or DEFAULT_RUN_REGISTRY
     cancel_token = run_registry.start(request.run_id)
     journal = RunJournal(project_path=request.project_path, run_id=request.run_id)
@@ -467,6 +470,16 @@ def run_graph_events(
                     type="node.run_recorded",
                     payload={"record": _event_record(record)},
                 )
+                suggestion = replanner.propose(
+                    request=request,
+                    failed_node=node,
+                    error=error,
+                )
+                if suggestion is not None:
+                    yield AgentEvent(
+                        type="graph.patch_suggested",
+                        payload=suggestion.model_dump(),
+                    )
                 yield AgentEvent(
                     type="task.failed",
                     payload={
@@ -524,6 +537,20 @@ def run_graph_events(
                     "mode": request.mode.model_dump(),
                 }
             )
+            output_node = next(
+                (node for node in request.graph.nodes if node.nodeType == "output"),
+                None,
+            )
+            suggestion = replanner.propose(
+                request=request,
+                failed_node=output_node,
+                error=error,
+            )
+            if suggestion is not None:
+                yield AgentEvent(
+                    type="graph.patch_suggested",
+                    payload=suggestion.model_dump(),
+                )
             yield AgentEvent(
                 type="task.failed",
                 payload={

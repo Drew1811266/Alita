@@ -409,6 +409,29 @@ def test_execution_fails_when_result_verifier_rejects_empty_output(
     assert events[-1].payload["errorCode"] == "empty_node_output"
 
 
+def test_execution_emits_replan_suggestion_for_empty_node_output(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("正文", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source)
+
+    class EmptyContentExecutor(FakeNodeExecutor):
+        def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+            if node_id == "content-organize":
+                return NodeOutput(values={"outline": ""})
+            return super().run(node_id, inputs)
+
+    events = list(run_graph_events(request, executor=EmptyContentExecutor()))
+
+    suggestion_event = next(
+        event for event in events if event.type == "graph.patch_suggested"
+    )
+    assert suggestion_event.payload["operations"][0]["op"] == "retry_node"
+    assert suggestion_event.payload["operations"][0]["node_id"] == "content-organize"
+    assert events[-1].type == "task.failed"
+
+
 def test_execution_fails_when_final_verifier_rejects_output(tmp_path: Path) -> None:
     source = tmp_path / "input.md"
     source.write_text("content", encoding="utf-8")
