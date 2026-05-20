@@ -25,7 +25,11 @@ def render_prompt_template(template_id: str, values: dict[str, str]) -> list[Cha
     except KeyError as error:
         raise PromptTemplateError(f"unknown prompt template: {template_id}") from error
 
+    text = values.get("text", "").strip()
+    if not text:
+        raise PromptTemplateError("missing required input: text")
+
     return [
         ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=values.get("text", "")),
+        ChatMessage(role="user", content=text),
     ]
