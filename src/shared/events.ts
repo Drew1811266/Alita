@@ -107,6 +107,8 @@ export type BackendEvent =
       type: "permission.required";
       payload: {
         nodeId: string;
+        taskId?: string;
+        runId?: string;
         permissions: string[];
       };
     }

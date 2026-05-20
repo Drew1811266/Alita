@@ -160,6 +160,17 @@ export function reduceBackendEvents(
       });
     }
 
+    if (event.type === "permission.required") {
+      return updateNode(current, event.payload.nodeId, {
+        status: "needs_permission",
+        scriptReview: {
+          status: "reviewing",
+          summary: "节点需要授权后才能继续执行。",
+          permissions: event.payload.permissions,
+        },
+      });
+    }
+
     if (event.type === "artifact.created") {
       const artifact: ArtifactRef = {
         artifactId: event.payload.artifactId,

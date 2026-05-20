@@ -20,6 +20,7 @@ export type RunNodeGraphPayload = {
   attachments: ChatAttachment[];
   mode: RunNodeGraphMode;
   disabledToolIds?: string[];
+  approvedPermissions?: string[];
   signal?: AbortSignal;
 };
 
@@ -88,6 +89,7 @@ export async function runNodeGraphStream(
       graph: payload.graph,
       mode: toSidecarRunMode(payload.mode),
       disabled_tool_ids: payload.disabledToolIds ?? [],
+      approved_permissions: payload.approvedPermissions ?? [],
       attachments: payload.attachments.map(toSidecarAttachment),
     }),
   });

@@ -302,6 +302,36 @@ describe("reduceBackendEvents", () => {
     expect(result.graph?.nodes[0].lastRun?.errorCode).toBe("tool_disabled");
   });
 
+  it("marks a node as needing permission when permission.required is received", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: graphWithNode,
+        dirty: false,
+        activeRunId: "run-1",
+      },
+      [
+        {
+          type: "permission.required",
+          payload: {
+            nodeId: "document-parse",
+            taskId: "task-1",
+            runId: "run-1",
+            permissions: ["network"],
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.graph?.nodes[0].status).toBe("needs_permission");
+    expect(result.graph?.nodes[0].scriptReview).toEqual({
+      status: "reviewing",
+      summary: "节点需要授权后才能继续执行。",
+      permissions: ["network"],
+    });
+  });
+
   it("adds completed runs to run history", () => {
     const result = reduceBackendEvents(
       {
