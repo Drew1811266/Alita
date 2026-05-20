@@ -305,6 +305,16 @@ def run_graph_events(
                     type="node.run_recorded",
                     payload={"record": _event_record(record)},
                 )
+                suggestion = replanner.propose(
+                    request=request,
+                    failed_node=node,
+                    error=error,
+                )
+                if suggestion is not None:
+                    yield AgentEvent(
+                        type="graph.patch_suggested",
+                        payload=suggestion.model_dump(),
+                    )
                 yield AgentEvent(
                     type="task.failed",
                     payload={
@@ -537,10 +547,7 @@ def run_graph_events(
                     "mode": request.mode.model_dump(),
                 }
             )
-            output_node = next(
-                (node for node in request.graph.nodes if node.nodeType == "output"),
-                None,
-            )
+            output_node = _final_failure_output_node(request, outputs, error)
             suggestion = replanner.propose(
                 request=request,
                 failed_node=output_node,
@@ -642,6 +649,108 @@ def _selected_nodes_for_mode(
         return [node for node in ordered_nodes if node.nodeId in selected]
 
     return ordered_nodes
+
+
+def _final_failure_output_node(
+    request: RunGraphRequest,
+    outputs: dict[str, NodeOutput],
+    error: Exception,
+) -> GraphNode | None:
+    output_nodes = [node for node in request.graph.nodes if node.nodeType == "output"]
+    if not output_nodes:
+        return None
+
+    if isinstance(error, HarnessError):
+        if error.code == "missing_final_output":
+            parsed_node_id = _missing_final_output_node_id(str(error))
+            if parsed_node_id:
+                parsed_node = _node_by_id(output_nodes, parsed_node_id)
+                if parsed_node is not None:
+                    return parsed_node
+            return next(
+                (node for node in output_nodes if node.nodeId not in outputs),
+                output_nodes[0],
+            )
+
+        if error.code == "missing_artifact":
+            artifact_path = _missing_artifact_path(str(error))
+            if artifact_path:
+                implicated_node = _output_node_for_artifact(
+                    output_nodes,
+                    outputs,
+                    artifact_path,
+                )
+                if implicated_node is not None:
+                    return implicated_node
+            return (
+                _output_node_with_invalid_artifact(output_nodes, outputs)
+                or output_nodes[0]
+            )
+
+    return output_nodes[0]
+
+
+def _missing_final_output_node_id(message: str) -> str | None:
+    prefix = "missing final output for node: "
+    if prefix not in message:
+        return None
+    return message.split(prefix, 1)[1].strip() or None
+
+
+def _missing_artifact_path(message: str) -> Path | None:
+    for prefix in ("final artifact is not listed: ", "artifact does not exist: "):
+        if prefix in message:
+            value = message.split(prefix, 1)[1].strip()
+            return Path(value) if value else None
+    return None
+
+
+def _output_node_for_artifact(
+    output_nodes: list[GraphNode],
+    outputs: dict[str, NodeOutput],
+    artifact_path: Path,
+) -> GraphNode | None:
+    target = artifact_path.expanduser().resolve(strict=False)
+    for node in output_nodes:
+        output = outputs.get(node.nodeId)
+        if output is None:
+            continue
+        artifact_value = output.values.get("artifact")
+        candidate_paths = [Path(path) for path in output.artifacts]
+        if artifact_value:
+            candidate_paths.append(Path(artifact_value))
+        if any(
+            path.expanduser().resolve(strict=False) == target
+            for path in candidate_paths
+        ):
+            return node
+    return None
+
+
+def _output_node_with_invalid_artifact(
+    output_nodes: list[GraphNode],
+    outputs: dict[str, NodeOutput],
+) -> GraphNode | None:
+    for node in output_nodes:
+        output = outputs.get(node.nodeId)
+        if output is None:
+            continue
+        artifact_value = output.values.get("artifact", "")
+        artifact_paths = {
+            Path(path).expanduser().resolve(strict=False)
+            for path in output.artifacts
+        }
+        if artifact_value:
+            normalized_artifact = Path(artifact_value).expanduser().resolve(strict=False)
+            if normalized_artifact not in artifact_paths:
+                return node
+        if any(not Path(path).is_file() for path in output.artifacts):
+            return node
+    return None
+
+
+def _node_by_id(nodes: list[GraphNode], node_id: str) -> GraphNode | None:
+    return next((node for node in nodes if node.nodeId == node_id), None)
 
 
 def _downstream_node_ids(request: RunGraphRequest) -> dict[str, set[str]]:

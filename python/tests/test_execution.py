@@ -309,6 +309,7 @@ def test_execution_emits_permission_required_before_running_blocked_node(
     assert events[1].type == "permission.required"
     assert events[1].payload["nodeId"] == "network-node"
     assert events[1].payload["permissions"] == ["network"]
+    assert "graph.patch_suggested" not in [event.type for event in events]
     assert events[-1].type == "task.failed"
     assert events[-1].payload["errorCode"] == "permission_required"
 
@@ -344,6 +345,23 @@ def test_rejects_disabled_tool_nodes(tmp_path: Path) -> None:
     assert "node.running" not in [event.type for event in events]
     assert events[-1].type == "task.failed"
     assert "document.receive_attachment" in events[-1].payload["error"]
+
+
+def test_disabled_tool_failure_emits_replan_suggestion(tmp_path: Path) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("content", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source)
+    request.disabled_tool_ids = ["document.receive_attachment"]
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    suggestion_event = next(
+        event for event in events if event.type == "graph.patch_suggested"
+    )
+    assert suggestion_event.payload["requires_user_approval"] is True
+    assert suggestion_event.payload["operations"][0]["op"] == "request_tool_enablement"
+    assert suggestion_event.payload["operations"][0]["node_id"] == "document-input"
+    assert events[-1].type == "task.failed"
 
 
 def test_failed_events_include_standard_error_code(tmp_path: Path) -> None:
@@ -447,6 +465,46 @@ def test_execution_fails_when_final_verifier_rejects_output(tmp_path: Path) -> N
 
     assert events[-1].type == "task.failed"
     assert events[-1].payload["errorCode"] == "missing_final_output"
+
+
+def test_final_verifier_replan_suggestion_uses_implicated_output_node(
+    tmp_path: Path,
+) -> None:
+    first_artifact = tmp_path / "first.md"
+    first_artifact.write_text("first", encoding="utf-8")
+    second_artifact = tmp_path / "second.md"
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node("source", "model", []),
+            build_node("first-output", "output", ["source"]),
+            build_node("second-output", "output", ["source"]),
+        ],
+    )
+
+    class MultiOutputExecutor(FakeNodeExecutor):
+        def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+            if node_id == "first-output":
+                return NodeOutput(
+                    values={"artifact": str(first_artifact)},
+                    artifacts=[str(first_artifact)],
+                )
+            if node_id == "second-output":
+                return NodeOutput(values={"artifact": str(second_artifact)})
+            return super().run(node_id, inputs)
+
+    events = list(
+        run_graph_events(
+            request,
+            executor=MultiOutputExecutor(),
+        )
+    )
+
+    suggestion_event = next(
+        event for event in events if event.type == "graph.patch_suggested"
+    )
+    assert suggestion_event.payload["operations"][0]["node_id"] == "second-output"
+    assert events[-1].type == "task.failed"
 
 
 def test_document_flow_exports_markdown_artifact(tmp_path: Path) -> None:
