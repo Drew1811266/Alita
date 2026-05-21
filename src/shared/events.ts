@@ -107,6 +107,8 @@ export type BackendEvent =
       type: "permission.required";
       payload: {
         nodeId: string;
+        taskId?: string;
+        runId?: string;
         permissions: string[];
       };
     }
@@ -117,6 +119,22 @@ export type BackendEvent =
         path: string;
         sourceNodeId?: string;
         createdAt?: string;
+      };
+    }
+  | {
+      type: "graph.patch_suggested";
+      payload: {
+        reason: string;
+        operations: Array<{
+          op:
+            | "retry_node"
+            | "rerun_node"
+            | "rerun_from_node"
+            | "request_tool_enablement";
+          node_id: string;
+          reason: string;
+        }>;
+        requires_user_approval: boolean;
       };
     }
   | {

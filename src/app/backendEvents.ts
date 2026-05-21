@@ -160,6 +160,17 @@ export function reduceBackendEvents(
       });
     }
 
+    if (event.type === "permission.required") {
+      return updateNode(current, event.payload.nodeId, {
+        status: "needs_permission",
+        scriptReview: {
+          status: "reviewing",
+          summary: "节点需要授权后才能继续执行。",
+          permissions: event.payload.permissions,
+        },
+      });
+    }
+
     if (event.type === "artifact.created") {
       const artifact: ArtifactRef = {
         artifactId: event.payload.artifactId,
@@ -174,6 +185,22 @@ export function reduceBackendEvents(
         messages: [
           ...current.messages,
           createAssistantMessage(`已生成产物：${event.payload.path}`),
+        ],
+        dirty: true,
+      };
+    }
+
+    if (event.type === "graph.patch_suggested") {
+      const operations = event.payload.operations
+        .map((operation) => `${operation.op}:${operation.node_id}`)
+        .join("、");
+      return {
+        ...current,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(
+            `建议修复：${event.payload.reason}（${operations}）`,
+          ),
         ],
         dirty: true,
       };

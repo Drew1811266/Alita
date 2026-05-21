@@ -179,6 +179,12 @@ def test_rejects_graph_with_unknown_tool_ref_before_running_nodes(tmp_path: Path
     events = list(run_graph_events(request, executor=FakeNodeExecutor()))
 
     assert "node.running" not in [event.type for event in events]
+    suggestion_event = next(
+        event for event in events if event.type == "graph.patch_suggested"
+    )
+    assert suggestion_event.payload["operations"][0]["op"] == "request_tool_enablement"
+    assert suggestion_event.payload["operations"][0]["node_id"] == "missing-tool"
+    assert suggestion_event.payload["requires_user_approval"] is True
     assert events[-1].type == "task.failed"
     assert events[-1].payload["errorCode"] == "unsupported_tool"
     assert "missing.tool" in events[-1].payload["error"]
@@ -254,6 +260,7 @@ def test_runs_nodes_after_all_dependencies_complete(tmp_path: Path) -> None:
                 "fixed_tool",
                 ["document-input"],
                 tool_ref="document.markitdown_convert",
+                permissions=["read_attachment"],
             ),
             build_node(
                 "content-organize",
@@ -286,6 +293,53 @@ def test_runs_nodes_after_all_dependencies_complete(tmp_path: Path) -> None:
     assert events[-1].type == "task.completed"
 
 
+def test_execution_emits_permission_required_before_running_blocked_node(
+    tmp_path: Path,
+) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "network-node",
+                "model",
+                [],
+                permissions=["network"],
+            )
+        ],
+    )
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert "node.running" not in [event.type for event in events]
+    assert events[0].type == "run.started"
+    assert events[1].type == "permission.required"
+    assert events[1].payload["nodeId"] == "network-node"
+    assert events[1].payload["permissions"] == ["network"]
+    assert "graph.patch_suggested" not in [event.type for event in events]
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "permission_required"
+
+
+def test_execution_runs_blocked_permission_when_approved(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "network-node",
+                "model",
+                [],
+                permissions=["network"],
+            )
+        ],
+    )
+    request.approved_permissions = ["network"]
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert "node.running" in [event.type for event in events]
+    assert events[-1].type == "task.completed"
+
+
 def test_rejects_disabled_tool_nodes(tmp_path: Path) -> None:
     source = tmp_path / "input.md"
     source.write_text("content", encoding="utf-8")
@@ -297,6 +351,23 @@ def test_rejects_disabled_tool_nodes(tmp_path: Path) -> None:
     assert "node.running" not in [event.type for event in events]
     assert events[-1].type == "task.failed"
     assert "document.receive_attachment" in events[-1].payload["error"]
+
+
+def test_disabled_tool_failure_emits_replan_suggestion(tmp_path: Path) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("content", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source)
+    request.disabled_tool_ids = ["document.receive_attachment"]
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    suggestion_event = next(
+        event for event in events if event.type == "graph.patch_suggested"
+    )
+    assert suggestion_event.payload["requires_user_approval"] is True
+    assert suggestion_event.payload["operations"][0]["op"] == "request_tool_enablement"
+    assert suggestion_event.payload["operations"][0]["node_id"] == "document-input"
+    assert events[-1].type == "task.failed"
 
 
 def test_failed_events_include_standard_error_code(tmp_path: Path) -> None:
@@ -362,6 +433,29 @@ def test_execution_fails_when_result_verifier_rejects_empty_output(
     assert events[-1].payload["errorCode"] == "empty_node_output"
 
 
+def test_execution_emits_replan_suggestion_for_empty_node_output(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("正文", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source)
+
+    class EmptyContentExecutor(FakeNodeExecutor):
+        def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+            if node_id == "content-organize":
+                return NodeOutput(values={"outline": ""})
+            return super().run(node_id, inputs)
+
+    events = list(run_graph_events(request, executor=EmptyContentExecutor()))
+
+    suggestion_event = next(
+        event for event in events if event.type == "graph.patch_suggested"
+    )
+    assert suggestion_event.payload["operations"][0]["op"] == "retry_node"
+    assert suggestion_event.payload["operations"][0]["node_id"] == "content-organize"
+    assert events[-1].type == "task.failed"
+
+
 def test_execution_fails_when_final_verifier_rejects_output(tmp_path: Path) -> None:
     source = tmp_path / "input.md"
     source.write_text("content", encoding="utf-8")
@@ -377,6 +471,46 @@ def test_execution_fails_when_final_verifier_rejects_output(tmp_path: Path) -> N
 
     assert events[-1].type == "task.failed"
     assert events[-1].payload["errorCode"] == "missing_final_output"
+
+
+def test_final_verifier_replan_suggestion_uses_implicated_output_node(
+    tmp_path: Path,
+) -> None:
+    first_artifact = tmp_path / "first.md"
+    first_artifact.write_text("first", encoding="utf-8")
+    second_artifact = tmp_path / "second.md"
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node("source", "model", []),
+            build_node("first-output", "output", ["source"]),
+            build_node("second-output", "output", ["source"]),
+        ],
+    )
+
+    class MultiOutputExecutor(FakeNodeExecutor):
+        def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+            if node_id == "first-output":
+                return NodeOutput(
+                    values={"artifact": str(first_artifact)},
+                    artifacts=[str(first_artifact)],
+                )
+            if node_id == "second-output":
+                return NodeOutput(values={"artifact": str(second_artifact)})
+            return super().run(node_id, inputs)
+
+    events = list(
+        run_graph_events(
+            request,
+            executor=MultiOutputExecutor(),
+        )
+    )
+
+    suggestion_event = next(
+        event for event in events if event.type == "graph.patch_suggested"
+    )
+    assert suggestion_event.payload["operations"][0]["node_id"] == "second-output"
+    assert events[-1].type == "task.failed"
 
 
 def test_document_flow_exports_markdown_artifact(tmp_path: Path) -> None:
@@ -560,6 +694,70 @@ def test_failed_only_reruns_failed_node_and_downstream(tmp_path: Path) -> None:
     assert running == ["content-organize", "file-export"]
 
 
+def test_failed_only_with_no_failed_nodes_verifies_source_final_output(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "report.md"
+    artifact.write_text("report", encoding="utf-8")
+    source_run = "run-all-completed"
+    journal = RunJournal(project_path=str(tmp_path / "project.alita"), run_id=source_run)
+    journal.write_node(
+        "file-export",
+        {
+            "nodeId": "file-export",
+            "status": "completed",
+            "values": {"artifact": str(artifact)},
+            "artifactRefs": [str(artifact)],
+        },
+    )
+    source = tmp_path / "input.md"
+    source.write_text("content", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source, run_id="run-no-failed")
+    request.mode.type = "failed_only"
+    request.mode.source_run_id = source_run
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert [event.type for event in events] == [
+        "run.started",
+        "task.completed",
+    ]
+
+
+def test_failed_only_with_missing_source_final_artifact_fails_final_verification(
+    tmp_path: Path,
+) -> None:
+    source_run = "run-missing-final-artifact"
+    missing_artifact = tmp_path / "missing.md"
+    journal = RunJournal(project_path=str(tmp_path / "project.alita"), run_id=source_run)
+    journal.write_node(
+        "file-export",
+        {
+            "nodeId": "file-export",
+            "status": "completed",
+            "values": {"artifact": str(missing_artifact)},
+            "artifactRefs": [str(missing_artifact)],
+        },
+    )
+    source = tmp_path / "input.md"
+    source.write_text("content", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source, run_id="run-missing-final")
+    request.mode.type = "failed_only"
+    request.mode.source_run_id = source_run
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert "node.running" not in [event.type for event in events]
+    assert "node.failed" not in [event.type for event in events]
+    suggestion_event = next(
+        event for event in events if event.type == "graph.patch_suggested"
+    )
+    assert suggestion_event.payload["operations"][0]["op"] == "rerun_node"
+    assert suggestion_event.payload["operations"][0]["node_id"] == "file-export"
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "missing_artifact"
+
+
 def test_from_node_reruns_target_and_downstream(tmp_path: Path) -> None:
     source = tmp_path / "input.md"
     source.write_text("正文", encoding="utf-8")
@@ -704,6 +902,7 @@ def build_document_flow_request(
                     "fixed_tool",
                     ["document-input"],
                     tool_ref="document.markitdown_convert",
+                    permissions=["read_attachment"],
                 ),
                 build_node(
                     "content-organize",
@@ -746,6 +945,7 @@ def build_document_flow_request_with_typst(
             "fixed_tool",
             ["document-input"],
             tool_ref="document.markitdown_convert",
+            permissions=["read_attachment"],
         ),
         build_node(
             "content-organize",
@@ -764,6 +964,7 @@ def build_document_flow_request_with_typst(
             "fixed_tool",
             ["content-organize", "report-generate"],
             tool_ref="document.typst_compile",
+            permissions=["write_project_artifact"],
         ),
         build_node("file-export", "output", ["typst-export"]),
     ]
@@ -803,6 +1004,7 @@ def build_node(
     *,
     tool_ref: str | None = None,
     model_ref: str | None = None,
+    permissions: list[str] | None = None,
 ) -> dict:
     node = {
         "nodeId": node_id,
@@ -817,6 +1019,7 @@ def build_node(
         "artifactRefs": [],
         "retryCount": 0,
         "position": {"x": 0, "y": 0},
+        "permissionsRequired": permissions or [],
     }
     if tool_ref:
         node["toolRef"] = tool_ref

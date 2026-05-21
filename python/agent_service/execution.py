@@ -15,6 +15,8 @@ from agent_service.model_client import (
 )
 from agent_service.model_runtime import ModelRuntime
 from agent_service.node_output import NodeOutput
+from agent_service.permission_gate import PermissionGate
+from agent_service.replan import FailureReplanner
 from agent_service.result_verifier import ResultVerifier
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY, RunRegistry
@@ -203,14 +205,29 @@ def run_graph_events(
     tool_executor: ToolExecutor | None = None,
     registry: RunRegistry | None = None,
     tool_registry: ToolRegistry | None = None,
+    permission_gate: PermissionGate | None = None,
     result_verifier: ResultVerifier | None = None,
     final_verifier: FinalVerifier | None = None,
+    failure_replanner: FailureReplanner | None = None,
 ) -> Iterator[AgentEvent]:
+    replanner = failure_replanner or FailureReplanner()
     try:
         ordered_nodes = _topological_nodes(request)
-        _validate_graph_tools(request, tool_registry or _default_tool_registry())
+        effective_tool_registry = tool_registry or _default_tool_registry()
+        _validate_graph_tools(request, effective_tool_registry)
     except (ValueError, HarnessError) as error:
         payload = harness_error_payload(error)
+        failed_node = _unsupported_tool_node(request, error)
+        suggestion = replanner.propose(
+            request=request,
+            failed_node=failed_node,
+            error=error,
+        )
+        if suggestion is not None:
+            yield AgentEvent(
+                type="graph.patch_suggested",
+                payload=suggestion.model_dump(),
+            )
         yield AgentEvent(
             type="task.failed",
             payload={
@@ -237,6 +254,9 @@ def run_graph_events(
 
     started_at = _now_iso()
     disabled_tool_ids = set(request.disabled_tool_ids)
+    gate = permission_gate or PermissionGate(
+        approved_permissions=request.approved_permissions
+    )
     journal.write_run(
         {
             "runId": request.run_id,
@@ -290,6 +310,75 @@ def run_graph_events(
                         "taskId": request.task_id,
                         "runId": request.run_id,
                         **payload,
+                    },
+                )
+                yield AgentEvent(
+                    type="node.run_recorded",
+                    payload={"record": _event_record(record)},
+                )
+                suggestion = replanner.propose(
+                    request=request,
+                    failed_node=node,
+                    error=error,
+                )
+                if suggestion is not None:
+                    yield AgentEvent(
+                        type="graph.patch_suggested",
+                        payload=suggestion.model_dump(),
+                    )
+                yield AgentEvent(
+                    type="task.failed",
+                    payload={
+                        "taskId": request.task_id,
+                        "runId": request.run_id,
+                        **payload,
+                    },
+                )
+                return
+
+            denied_permissions = gate.denied_permissions(
+                node,
+                tool_registry=effective_tool_registry,
+            )
+            if denied_permissions:
+                completed_at = _now_iso()
+                error = HarnessError(
+                    "permission_required",
+                    (
+                        f"node {node.nodeId} requires permission approval: "
+                        f"{', '.join(denied_permissions)}"
+                    ),
+                )
+                payload = harness_error_payload(error)
+                record = {
+                    "nodeRunId": f"{request.run_id}-{node.nodeId}",
+                    "runId": request.run_id,
+                    "nodeId": node.nodeId,
+                    "status": "needs_permission",
+                    "startedAt": completed_at,
+                    "completedAt": completed_at,
+                    "artifactRefs": [],
+                    "error": str(error),
+                    "values": {},
+                }
+                journal.write_node(node.nodeId, record)
+                journal.write_run(
+                    {
+                        "runId": request.run_id,
+                        "taskId": request.task_id,
+                        "status": "failed",
+                        "startedAt": started_at,
+                        "completedAt": completed_at,
+                        "mode": request.mode.model_dump(),
+                    }
+                )
+                yield AgentEvent(
+                    type="permission.required",
+                    payload={
+                        "nodeId": node.nodeId,
+                        "taskId": request.task_id,
+                        "runId": request.run_id,
+                        "permissions": denied_permissions,
                     },
                 )
                 yield AgentEvent(
@@ -402,6 +491,16 @@ def run_graph_events(
                     type="node.run_recorded",
                     payload={"record": _event_record(record)},
                 )
+                suggestion = replanner.propose(
+                    request=request,
+                    failed_node=node,
+                    error=error,
+                )
+                if suggestion is not None:
+                    yield AgentEvent(
+                        type="graph.patch_suggested",
+                        payload=suggestion.model_dump(),
+                    )
                 yield AgentEvent(
                     type="task.failed",
                     payload={
@@ -459,6 +558,17 @@ def run_graph_events(
                     "mode": request.mode.model_dump(),
                 }
             )
+            output_node = _final_failure_output_node(request, outputs, error)
+            suggestion = replanner.propose(
+                request=request,
+                failed_node=output_node,
+                error=error,
+            )
+            if suggestion is not None:
+                yield AgentEvent(
+                    type="graph.patch_suggested",
+                    payload=suggestion.model_dump(),
+                )
             yield AgentEvent(
                 type="task.failed",
                 payload={
@@ -526,7 +636,33 @@ def _validate_graph_tools(request: RunGraphRequest, registry: ToolRegistry) -> N
         try:
             registry.get(node.toolRef)
         except KeyError as error:
-            raise HarnessError("unsupported_tool", str(error)) from error
+            raise HarnessError(
+                "unsupported_tool",
+                f"unsupported tool: {node.toolRef}",
+            ) from error
+
+
+def _unsupported_tool_node(
+    request: RunGraphRequest,
+    error: Exception,
+) -> GraphNode | None:
+    if not isinstance(error, HarnessError) or error.code != "unsupported_tool":
+        return None
+
+    prefix = "unsupported tool: "
+    if not error.message.startswith(prefix):
+        return None
+    tool_ref = error.message.removeprefix(prefix).strip()
+    if not tool_ref:
+        return None
+    return next(
+        (
+            node
+            for node in request.graph.nodes
+            if node.nodeType == "fixed_tool" and node.toolRef == tool_ref
+        ),
+        None,
+    )
 
 
 def _selected_nodes_for_mode(
@@ -550,6 +686,108 @@ def _selected_nodes_for_mode(
         return [node for node in ordered_nodes if node.nodeId in selected]
 
     return ordered_nodes
+
+
+def _final_failure_output_node(
+    request: RunGraphRequest,
+    outputs: dict[str, NodeOutput],
+    error: Exception,
+) -> GraphNode | None:
+    output_nodes = [node for node in request.graph.nodes if node.nodeType == "output"]
+    if not output_nodes:
+        return None
+
+    if isinstance(error, HarnessError):
+        if error.code == "missing_final_output":
+            parsed_node_id = _missing_final_output_node_id(str(error))
+            if parsed_node_id:
+                parsed_node = _node_by_id(output_nodes, parsed_node_id)
+                if parsed_node is not None:
+                    return parsed_node
+            return next(
+                (node for node in output_nodes if node.nodeId not in outputs),
+                output_nodes[0],
+            )
+
+        if error.code == "missing_artifact":
+            artifact_path = _missing_artifact_path(str(error))
+            if artifact_path:
+                implicated_node = _output_node_for_artifact(
+                    output_nodes,
+                    outputs,
+                    artifact_path,
+                )
+                if implicated_node is not None:
+                    return implicated_node
+            return (
+                _output_node_with_invalid_artifact(output_nodes, outputs)
+                or output_nodes[0]
+            )
+
+    return output_nodes[0]
+
+
+def _missing_final_output_node_id(message: str) -> str | None:
+    prefix = "missing final output for node: "
+    if prefix not in message:
+        return None
+    return message.split(prefix, 1)[1].strip() or None
+
+
+def _missing_artifact_path(message: str) -> Path | None:
+    for prefix in ("final artifact is not listed: ", "artifact does not exist: "):
+        if prefix in message:
+            value = message.split(prefix, 1)[1].strip()
+            return Path(value) if value else None
+    return None
+
+
+def _output_node_for_artifact(
+    output_nodes: list[GraphNode],
+    outputs: dict[str, NodeOutput],
+    artifact_path: Path,
+) -> GraphNode | None:
+    target = artifact_path.expanduser().resolve(strict=False)
+    for node in output_nodes:
+        output = outputs.get(node.nodeId)
+        if output is None:
+            continue
+        artifact_value = output.values.get("artifact")
+        candidate_paths = [Path(path) for path in output.artifacts]
+        if artifact_value:
+            candidate_paths.append(Path(artifact_value))
+        if any(
+            path.expanduser().resolve(strict=False) == target
+            for path in candidate_paths
+        ):
+            return node
+    return None
+
+
+def _output_node_with_invalid_artifact(
+    output_nodes: list[GraphNode],
+    outputs: dict[str, NodeOutput],
+) -> GraphNode | None:
+    for node in output_nodes:
+        output = outputs.get(node.nodeId)
+        if output is None:
+            continue
+        artifact_value = output.values.get("artifact", "")
+        artifact_paths = {
+            Path(path).expanduser().resolve(strict=False)
+            for path in output.artifacts
+        }
+        if artifact_value:
+            normalized_artifact = Path(artifact_value).expanduser().resolve(strict=False)
+            if normalized_artifact not in artifact_paths:
+                return node
+        if any(not Path(path).is_file() for path in output.artifacts):
+            return node
+    return None
+
+
+def _node_by_id(nodes: list[GraphNode], node_id: str) -> GraphNode | None:
+    return next((node for node in nodes if node.nodeId == node_id), None)
 
 
 def _downstream_node_ids(request: RunGraphRequest) -> dict[str, set[str]]:

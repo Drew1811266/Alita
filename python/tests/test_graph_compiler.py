@@ -27,6 +27,26 @@ def _document_goal_spec() -> GoalSpec:
     )
 
 
+def _goal_spec() -> GoalSpec:
+    return _document_goal_spec()
+
+
+def test_compiled_graph_includes_permission_metadata() -> None:
+    graph = build_document_task_graph("task-permissions", _goal_spec())
+
+    compiled = compile_task_graph_to_node_graph(graph)
+
+    nodes_by_id = {node["nodeId"]: node for node in compiled["nodes"]}
+    assert nodes_by_id["document-input"]["riskLevel"] == "read_only"
+    assert nodes_by_id["document-input"]["permissionsRequired"] == [
+        "read_attachment"
+    ]
+    assert nodes_by_id["typst-export"]["riskLevel"] == "local_write"
+    assert nodes_by_id["typst-export"]["permissionsRequired"] == [
+        "write_project_artifact"
+    ]
+
+
 def test_compile_document_task_graph_to_existing_node_graph_shape() -> None:
     task_graph = build_document_task_graph("task-document", _document_goal_spec())
 

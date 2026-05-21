@@ -216,6 +216,36 @@ describe("reduceBackendEvents", () => {
     expect(result.dirty).toBe(true);
   });
 
+  it("adds a chat notice when a graph patch is suggested", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: graphWithNode,
+        dirty: false,
+      },
+      [
+        {
+          type: "graph.patch_suggested",
+          payload: {
+            reason: "node content-organize returned empty value",
+            operations: [
+              {
+                op: "retry_node",
+                node_id: "content-organize",
+                reason: "node content-organize returned empty value",
+              },
+            ],
+            requires_user_approval: false,
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages[0].content).toContain("建议修复");
+    expect(result.messages[0].content).toContain("retry_node");
+  });
+
   it("records the active run when run.started is received", () => {
     const result = reduceBackendEvents(
       {
@@ -300,6 +330,36 @@ describe("reduceBackendEvents", () => {
     expect(result.graph?.nodes[0].lastRun?.runId).toBe("run-1");
     expect(result.graph?.nodes[0].lastRun?.error).toBe("tool disabled");
     expect(result.graph?.nodes[0].lastRun?.errorCode).toBe("tool_disabled");
+  });
+
+  it("marks a node as needing permission when permission.required is received", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: graphWithNode,
+        dirty: false,
+        activeRunId: "run-1",
+      },
+      [
+        {
+          type: "permission.required",
+          payload: {
+            nodeId: "document-parse",
+            taskId: "task-1",
+            runId: "run-1",
+            permissions: ["network"],
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.graph?.nodes[0].status).toBe("needs_permission");
+    expect(result.graph?.nodes[0].scriptReview).toEqual({
+      status: "reviewing",
+      summary: "节点需要授权后才能继续执行。",
+      permissions: ["network"],
+    });
   });
 
   it("adds completed runs to run history", () => {
