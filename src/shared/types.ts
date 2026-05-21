@@ -46,6 +46,15 @@ export type RuntimeNotice = {
   actualDurationMs?: number | null;
 };
 
+export type RiskLevel =
+  | "read_only"
+  | "local_write"
+  | "local_modify"
+  | "destructive"
+  | "network"
+  | "external_comm"
+  | "system";
+
 export type NodePort = {
   id: string;
   label: string;
@@ -71,6 +80,8 @@ export type AgentNode = {
   estimate?: NodeEstimate | null;
   resourceUsage?: ResourceUsage | null;
   runtimeNotice?: RuntimeNotice | null;
+  riskLevel?: RiskLevel;
+  permissionsRequired?: string[];
   position: {
     x: number;
     y: number;

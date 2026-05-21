@@ -8,6 +8,9 @@ from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
 
+from agent_service.context_manager import build_context_bundle
+from agent_service.goal_spec import GoalSpec, parse_goal_spec
+from agent_service.graph_compiler import compile_task_graph_to_node_graph
 from agent_service.intent import (
     IntentKind,
     InquiryMode,
@@ -25,6 +28,7 @@ from agent_service.plan_feedback import (
     apply_graph_feedback,
     classify_graph_feedback,
 )
+from agent_service.planner_v2 import PlannerV2
 from agent_service.schemas import AgentEvent, RunGraph, UserMessage
 from agent_service.task_planner import (
     analyze_task,
@@ -84,18 +88,22 @@ class AgentState(TypedDict, total=False):
     has_run_history: bool
     artifact_refs: list[str]
     pending_choice: dict
+    goal_spec: GoalSpec
 
 
 def classify_intent(state: AgentState) -> AgentState:
     decision = classify_route(state["message"])
+    goal_spec = parse_goal_spec(state["message"])
     return {
         **state,
         "intent": _compatible_intent(
             state["message"],
             decision,
             inquiry_choice=state.get("inquiry_choice"),
+            goal_spec=goal_spec,
         ),
         "route_decision": decision.to_payload(),
+        "goal_spec": goal_spec,
     }
 
 
@@ -122,18 +130,32 @@ def request_required_inputs(state: AgentState) -> AgentState:
 
 def plan_task_graph(state: AgentState) -> AgentState:
     message = state["message"]
-    graph_payload = _build_task_graph_payload(message)
+    graph_payload = _graph_payload_for_task(
+        message,
+        goal_spec=state.get("goal_spec"),
+    )
     return {
         **state,
         "events": [
             AgentEvent(
                 type="node_graph.created",
-                payload={
-                    "graph": graph_payload,
-                },
+                payload={"graph": graph_payload},
             )
         ],
     }
+
+
+def _graph_payload_for_task(
+    message: UserMessage,
+    *,
+    goal_spec: GoalSpec | None = None,
+) -> dict:
+    spec = goal_spec or parse_goal_spec(message)
+    if spec.task_type == "document_processing" and not _is_markdown_conversion_only(
+        message.content
+    ):
+        return _create_document_graph(message.task_id, spec, message)
+    return _build_task_graph_payload(message)
 
 
 def _build_task_graph_payload(message: UserMessage) -> dict:
@@ -382,9 +404,18 @@ def stream_agent_events(
         return
 
     decision = classify_route(message)
-    intent = _compatible_intent(message, decision, inquiry_choice=inquiry_choice)
+    goal_spec = parse_goal_spec(message)
+    intent = _compatible_intent(
+        message,
+        decision,
+        inquiry_choice=inquiry_choice,
+        goal_spec=goal_spec,
+    )
     if intent == "task":
-        graph_payload = _build_task_graph_payload(message)
+        graph_payload = _graph_payload_for_task(
+            message,
+            goal_spec=goal_spec,
+        )
         yield from _task_planning_progress_events(message, graph_payload)
         yield AgentEvent(
             type="node_graph.created",
@@ -510,7 +541,8 @@ def _route_intent(state: AgentState) -> AgentIntent:
 
 
 def _classify_message(message: UserMessage) -> AgentIntent:
-    return _compatible_intent(message, classify_route(message))
+    goal_spec = parse_goal_spec(message)
+    return _compatible_intent(message, classify_route(message), goal_spec=goal_spec)
 
 
 def _compatible_intent(
@@ -518,7 +550,17 @@ def _compatible_intent(
     decision: RouteDecision,
     *,
     inquiry_choice: InquiryChoice | None = None,
+    goal_spec: GoalSpec | None = None,
 ) -> AgentIntent:
+    if (
+        goal_spec is not None
+        and goal_spec.task_type == "document_processing"
+        and not _looks_like_external_web_request(message.content)
+    ):
+        if goal_spec.missing_inputs:
+            return "missing_input"
+        return "task"
+
     if decision.intent.kind == IntentKind.NEED_INPUT:
         return "missing_input"
 
@@ -538,6 +580,32 @@ def _compatible_intent(
             return "web_complex_choice"
 
     return "chat"
+
+
+def _is_markdown_conversion_only(content: str) -> bool:
+    normalized = content.lower()
+    wants_markdown = "markdown" in normalized or "md" in normalized
+    wants_conversion = "convert" in normalized or "转换" in content or "转" in content
+    wants_report = "report" in normalized or "pdf" in normalized or "报告" in content
+    return wants_markdown and wants_conversion and not wants_report
+
+
+def _looks_like_external_web_request(content: str) -> bool:
+    normalized = content.lower()
+    return any(
+        keyword in normalized
+        for keyword in (
+            "github",
+            "search",
+            "website",
+            "web site",
+            "网站",
+            "查询",
+            "搜索",
+            "热门项目",
+            "联网",
+        )
+    )
 
 
 def _build_model_messages(message: UserMessage) -> list[ModelChatMessage]:
@@ -571,121 +639,22 @@ def _assistant_message(content: str) -> dict:
     }
 
 
-def _create_document_graph(task_id: str) -> dict:
-    return {
-        "graphId": f"{task_id}-graph",
-        "nodes": [
-            _node(
-                node_id="document-input",
-                node_type="fixed_tool",
-                display_name="文档输入",
-                status="completed",
-                input_ports=[],
-                output_ports=[_port("document-output", "文档", "document")],
-                dependencies=[],
-                summary="接收用户在聊天区提供的文档附件。",
-                position={"x": 260, "y": 20},
-                tool_ref="document.receive_attachment",
-            ),
-            _node(
-                node_id="document-parse",
-                node_type="fixed_tool",
-                display_name="文档转 Markdown",
-                status="waiting",
-                input_ports=[_port("document-input", "文档", "document")],
-                output_ports=[_port("markdown-output", "Markdown", "text")],
-                dependencies=["document-input"],
-                summary="把用户提供的本地文档转换为适合模型读取的 Markdown 正文。",
-                position={"x": 260, "y": 190},
-                tool_ref="document.markitdown_convert",
-            ),
-            _node(
-                node_id="content-organize",
-                node_type="model",
-                display_name="整理内容",
-                status="waiting",
-                input_ports=[_port("text-input", "正文", "text")],
-                output_ports=[_port("outline-output", "提纲", "json")],
-                dependencies=["document-parse"],
-                summary="提炼文档要点，形成结构化提纲。",
-                position={"x": 90, "y": 370},
-                model_ref="local-content-organizer",
-            ),
-            _node(
-                node_id="report-generate",
-                node_type="model",
-                display_name="生成报告",
-                status="waiting",
-                input_ports=[_port("text-input", "正文", "text")],
-                output_ports=[_port("report-output", "报告", "text")],
-                dependencies=["document-parse"],
-                summary="根据提取的正文生成报告初稿。",
-                position={"x": 430, "y": 370},
-                model_ref="local-report-writer",
-            ),
-            _node(
-                node_id="typst-export",
-                node_type="fixed_tool",
-                display_name="Typst PDF 导出",
-                status="waiting",
-                input_ports=[
-                    _port("outline-input", "提纲", "json"),
-                    _port("report-input", "报告", "text"),
-                ],
-                output_ports=[
-                    _port("typst-output", "Typst 源文件", "artifact"),
-                    _port("pdf-output", "PDF 文件", "artifact"),
-                ],
-                dependencies=["content-organize", "report-generate"],
-                summary="把整理结果和报告正文排版为 Typst 源文件，并编译为 PDF。",
-                position={"x": 260, "y": 560},
-                tool_ref="document.typst_compile",
-            ),
-            _node(
-                node_id="file-export",
-                node_type="output",
-                display_name="导出文件",
-                status="waiting",
-                input_ports=[_port("artifact-input", "PDF 文件", "artifact")],
-                output_ports=[_port("artifact-output", "产物", "artifact")],
-                dependencies=["typst-export"],
-                summary="汇总 Typst 源文件和 PDF，输出最终文件。",
-                position={"x": 260, "y": 750},
-            ),
-        ],
-        "edges": [
-            {
-                "id": "document-input-document-parse",
-                "source": "document-input",
-                "target": "document-parse",
-            },
-            {
-                "id": "document-parse-content-organize",
-                "source": "document-parse",
-                "target": "content-organize",
-            },
-            {
-                "id": "document-parse-report-generate",
-                "source": "document-parse",
-                "target": "report-generate",
-            },
-            {
-                "id": "content-organize-typst-export",
-                "source": "content-organize",
-                "target": "typst-export",
-            },
-            {
-                "id": "report-generate-typst-export",
-                "source": "report-generate",
-                "target": "typst-export",
-            },
-            {
-                "id": "typst-export-file-export",
-                "source": "typst-export",
-                "target": "file-export",
-            },
-        ],
-    }
+def _create_document_graph(
+    task_id: str, goal_spec: GoalSpec, message: UserMessage
+) -> dict:
+    tool_registry = ToolRegistry.from_packages_root(default_tool_packages_root())
+    context = build_context_bundle(
+        message=message,
+        goal_spec=goal_spec,
+        project_path="project.alita",
+        tool_registry=tool_registry,
+    )
+    plan = PlannerV2(tool_registry=tool_registry).plan(
+        task_id=task_id,
+        goal_spec=goal_spec,
+        context=context,
+    )
+    return compile_task_graph_to_node_graph(plan.task_graph)
 
 
 def _node(

@@ -251,6 +251,7 @@ describe("runNodeGraphStream", () => {
           graph,
           mode: { type: "full" },
           disabled_tool_ids: [],
+          approved_permissions: [],
           attachments: [
             {
               attachment_id: "a1",
@@ -324,6 +325,34 @@ describe("runNodeGraphStream", () => {
 
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
       disabled_tool_ids: ["document.disabled"],
+    });
+  });
+
+  it("posts approved permissions with graph run requests", async () => {
+    const graph: NodeGraph = { graphId: "graph-1", nodes: [], edges: [] };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(
+          'data: {"type":"run.started","payload":{"runId":"run-1","taskId":"task-1","startedAt":"2026-05-10T00:00:00.000Z"}}\n\n',
+        ),
+      );
+
+    await runNodeGraphStream(
+      {
+        runId: "run-1",
+        taskId: "task-1",
+        projectPath: "D:\\Project\\demo.alita",
+        graph,
+        attachments: [],
+        approvedPermissions: ["network"],
+        mode: { type: "full" },
+      },
+      () => undefined,
+    );
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      approved_permissions: ["network"],
     });
   });
 

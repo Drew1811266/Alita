@@ -28,5 +28,6 @@ pnpm-debug.log*
 
 .superpowers/
 .codex-run/
+.worktrees/
 docs/test-results/
 task*.png

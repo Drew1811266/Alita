@@ -774,6 +774,70 @@ describe("reduceBackendEvents", () => {
     expect(result.dirty).toBe(true);
   });
 
+  it("marks nodes that require graph-run permissions", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: graphWithNode,
+        dirty: false,
+      },
+      [
+        {
+          type: "permission.required",
+          payload: {
+            nodeId: "document-parse",
+            taskId: "task-1",
+            runId: "run-1",
+            permissions: ["network"],
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.graph?.nodes[0].status).toBe("needs_permission");
+    expect(result.graph?.nodes[0].scriptReview).toMatchObject({
+      status: "reviewing",
+      permissions: ["network"],
+    });
+    expect(result.messages[0].content).toContain("document-parse");
+    expect(result.messages[0].content).toContain("network");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("adds a chat notice when a graph patch is suggested", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: graphWithNode,
+        dirty: false,
+      },
+      [
+        {
+          type: "graph.patch_suggested",
+          payload: {
+            reason: "node content-organize returned empty value",
+            operations: [
+              {
+                op: "retry_node",
+                node_id: "content-organize",
+                reason: "node content-organize returned empty value",
+              },
+            ],
+            requires_user_approval: false,
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages[0].content).toContain("建议修复");
+    expect(result.messages[0].content).toContain("retry_node");
+    expect(result.messages[0].content).toContain("content-organize");
+    expect(result.graph).toBe(graphWithNode);
+    expect(result.dirty).toBe(true);
+  });
+
   it("stores runtime notices on matching nodes", () => {
     const result = reduceBackendEvents(
       {

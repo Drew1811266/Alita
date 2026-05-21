@@ -9,6 +9,23 @@ from agent_service.harness_errors import HarnessError
 from agent_service.result_verifier import ResultVerifier
 
 
+class RecordingVerifier:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, NodeOutput]] = []
+
+    def verify(self, node_id: str, output: NodeOutput) -> None:
+        self.calls.append((node_id, output))
+
+
+def test_delegates_to_injected_verifier() -> None:
+    verifier = RecordingVerifier()
+    output = NodeOutput(values={"outline": "outline"})
+
+    ResultVerifier(verifier=verifier).verify("content-organize", output)
+
+    assert verifier.calls == [("content-organize", output)]
+
+
 def test_accepts_existing_artifact_and_required_value(tmp_path: Path) -> None:
     artifact = tmp_path / "report.md"
     artifact.write_text("report", encoding="utf-8")

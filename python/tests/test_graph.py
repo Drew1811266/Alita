@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic import ValidationError
 
+import agent_service.graph as graph_module
 from agent_service.graph import (
     _classify_message,
     _node,
@@ -13,6 +16,7 @@ from agent_service.graph import (
 from agent_service.intent import IntentKind, classify_route
 from agent_service.model_client import ChatMessage
 from agent_service.schemas import Attachment, GraphNode, RunGraph, UserMessage
+from agent_service.task_graph import build_document_task_graph
 from agent_service.web_search import SearchResponse, SearchResult
 
 
@@ -475,12 +479,7 @@ def test_attachment_generates_node_graph_for_document_task() -> None:
     assert parse_node["displayName"] == "文档转 Markdown"
     assert parse_node["toolRef"] == "document.markitdown_convert"
     assert parse_node["outputPorts"][0]["label"] == "Markdown"
-    assert graph["nodes"][0]["dependencies"] == ["execution-order-planning"]
-    assert {
-        "id": "execution-order-planning-document-input",
-        "source": "execution-order-planning",
-        "target": "document-input",
-    } in graph["edges"]
+    assert graph["nodes"][0]["dependencies"] == []
     assert {
         "id": "document-input-document-parse",
         "source": "document-input",
@@ -529,47 +528,7 @@ def test_attachment_document_task_route_decision_matches_document_graph_route() 
     assert result["route_decision"]["intent"]["kind"] == "task"
     assert _classify_message(message) == "task"
     assert events[0].type == "node_graph.created"
-    assert events[0].payload["graph"]["metadata"]["taskKind"] == "document"
-
-
-def test_attachment_document_task_graph_has_planner_nodes_and_executable_estimates() -> None:
-    events = run_agent(
-        UserMessage(
-            task_id="task-document-planner",
-            content="Please organize this document into a report PDF.",
-            attachments=[
-                Attachment(
-                    attachment_id="a1",
-                    name="input.docx",
-                    path="workspace/inputs/input.docx",
-                    size_bytes=100,
-                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                )
-            ],
-        )
-    )
-
-    graph = events[0].payload["graph"]
-    planning_nodes = [node for node in graph["nodes"] if node["nodeType"] == "planning"]
-    executable_nodes = [
-        node
-        for node in graph["nodes"]
-        if node["nodeType"] in {"fixed_tool", "model", "temporary_script"}
-    ]
-
-    assert [node["nodeId"] for node in planning_nodes] == [
-        "task-analysis",
-        "context-gathering",
-        "evidence-summary",
-        "plan-draft",
-        "capability-analysis",
-        "tool-selection",
-        "plan-review",
-        "execution-order-planning",
-    ]
-    assert graph["metadata"]["planningMode"] == "deep"
-    assert graph["metadata"]["planningTrace"]["context"]["attachmentCount"] == 1
-    assert [node["nodeId"] for node in graph["nodes"][:6]] == [
+    assert [node["nodeId"] for node in events[0].payload["graph"]["nodes"]] == [
         "document-input",
         "document-parse",
         "content-organize",
@@ -577,9 +536,107 @@ def test_attachment_document_task_graph_has_planner_nodes_and_executable_estimat
         "typst-export",
         "file-export",
     ]
-    assert executable_nodes
-    assert all(node.get("estimate") for node in executable_nodes)
-    assert all(node.get("resourceUsage") for node in executable_nodes)
+
+
+def test_attachment_document_task_graph_uses_planner_v2_shape(monkeypatch) -> None:
+    planner_calls: list[dict[str, object]] = []
+
+    class RecordingPlanner:
+        def __init__(self, *, tool_registry) -> None:
+            self.tool_registry = tool_registry
+
+        def plan(self, *, task_id, goal_spec, context):
+            planner_calls.append(
+                {
+                    "task_id": task_id,
+                    "goal_spec": goal_spec,
+                    "context": context,
+                    "tool_registry": self.tool_registry,
+                }
+            )
+            return SimpleNamespace(
+                task_graph=build_document_task_graph(task_id, goal_spec)
+            )
+
+    monkeypatch.setattr(graph_module, "PlannerV2", RecordingPlanner)
+
+    events = run_agent(
+        UserMessage(
+            task_id="task-planner-v2",
+            content="summarize this document as a PDF report",
+            attachments=[
+                Attachment(
+                    attachment_id="a-planner-v2",
+                    name="planner-v2.docx",
+                    path="workspace/inputs/planner-v2.docx",
+                    size_bytes=100,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            ],
+        )
+    )
+
+    assert planner_calls
+    assert len(events) == 1
+    assert events[0].type == "node_graph.created"
+    graph = events[0].payload["graph"]
+    assert graph["graphId"] == "task-planner-v2-graph"
+    assert [edge["id"] for edge in graph["edges"]] == [
+        "document-input-document-parse",
+        "document-parse-content-organize",
+        "document-parse-report-generate",
+        "content-organize-typst-export",
+        "report-generate-typst-export",
+        "typst-export-file-export",
+    ]
+    nodes_by_id = {node["nodeId"]: node for node in graph["nodes"]}
+    assert nodes_by_id["content-organize"]["modelRef"] == "local-content-organizer"
+    assert nodes_by_id["report-generate"]["modelRef"] == "local-report-writer"
+    assert nodes_by_id["typst-export"]["permissionsRequired"] == [
+        "write_project_artifact"
+    ]
+
+
+def test_attachment_with_latest_keyword_still_generates_node_graph() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="task-latest-doc",
+            content="请总结这个文档里的最新内容",
+            attachments=[
+                Attachment(
+                    attachment_id="a-latest",
+                    name="latest.docx",
+                    path="workspace/inputs/latest.docx",
+                    size_bytes=100,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            ],
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].type == "node_graph.created"
+
+
+def test_attachment_with_only_latest_keyword_generates_node_graph() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="task-latest-only-doc",
+            content="最新",
+            attachments=[
+                Attachment(
+                    attachment_id="a-latest-only",
+                    name="latest-only.docx",
+                    path="workspace/inputs/latest-only.docx",
+                    size_bytes=100,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            ],
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].type == "node_graph.created"
 
 
 def test_general_task_classification_creates_planner_graph_instead_of_answer() -> None:
