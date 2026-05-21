@@ -11,6 +11,8 @@ const MarkdownArtifactPreview = lazy(() =>
   })),
 );
 const PdfArtifactPreview = lazy(() => import("./PdfArtifactPreview"));
+const ImageArtifactPreview = lazy(() => import("./ImageArtifactPreview"));
+const VideoArtifactPreview = lazy(() => import("./VideoArtifactPreview"));
 
 type ArtifactPreviewPanelProps = {
   selectedNode: AgentNode | null;
@@ -133,6 +135,44 @@ function PreviewBody({
     );
   }
 
+  if (previewKind === "image") {
+    return fileUrl ? (
+      <Suspense
+        fallback={
+          <MediaPreviewShell
+            className="artifactPreviewImage"
+            fileName={artifact.fileName}
+            fileUrl={fileUrl}
+            title="图片预览"
+          />
+        }
+      >
+        <ImageArtifactPreview fileName={artifact.fileName} fileUrl={fileUrl} />
+      </Suspense>
+    ) : (
+      <EmptyPreviewState title="无法预览图片" body="本地文件 URL 生成失败。" />
+    );
+  }
+
+  if (previewKind === "video") {
+    return fileUrl ? (
+      <Suspense
+        fallback={
+          <MediaPreviewShell
+            className="artifactPreviewVideo"
+            fileName={artifact.fileName}
+            fileUrl={fileUrl}
+            title="视频预览"
+          />
+        }
+      >
+        <VideoArtifactPreview fileName={artifact.fileName} fileUrl={fileUrl} />
+      </Suspense>
+    ) : (
+      <EmptyPreviewState title="无法预览视频" body="本地文件 URL 生成失败。" />
+    );
+  }
+
   if (previewKind === "unsupported") {
     return (
       <EmptyPreviewState
@@ -191,6 +231,28 @@ function PdfPreviewShell({
     <div className="artifactPreviewPdf" data-file-url={fileUrl}>
       <div className="artifactPreviewPdfToolbar">
         <strong>PDF 预览</strong>
+        <span>加载中</span>
+      </div>
+      <p className="artifactPreviewPdfFallback">{fileName}</p>
+    </div>
+  );
+}
+
+function MediaPreviewShell({
+  className,
+  fileName,
+  fileUrl,
+  title,
+}: {
+  className: string;
+  fileName: string;
+  fileUrl: string;
+  title: string;
+}) {
+  return (
+    <div className={className} data-file-url={fileUrl}>
+      <div className="artifactPreviewMediaShell">
+        <strong>{title}</strong>
         <span>加载中</span>
       </div>
       <p className="artifactPreviewPdfFallback">{fileName}</p>

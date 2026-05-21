@@ -1,9 +1,10 @@
 import "@xyflow/react/dist/style.css";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Background,
   BackgroundVariant,
+  ConnectionLineType,
   Handle,
   MarkerType,
   Position,
@@ -13,6 +14,7 @@ import {
   type NodeMouseHandler,
   type NodeProps,
   type NodeTypes,
+  useNodesState,
 } from "@xyflow/react";
 
 import { NodePopover } from "./NodePopover";
@@ -44,6 +46,43 @@ type NodeCanvasProps = {
 const nodeTypes: NodeTypes = {
   agent: AgentNodeView,
 };
+
+export function createFlowNodes(graph: NodeGraph | null): AgentFlowNode[] {
+  if (!graph) {
+    return [];
+  }
+
+  return graph.nodes.map((node) => ({
+    id: node.nodeId,
+    type: "agent",
+    data: { agentNode: node },
+    position: node.position,
+    targetPosition: Position.Top,
+    sourcePosition: Position.Bottom,
+    draggable: true,
+  }));
+}
+
+export function createFlowEdges(graph: NodeGraph | null): Edge[] {
+  if (!graph) {
+    return [];
+  }
+
+  return graph.edges.map((edge) => ({
+    ...edge,
+    sourceHandle: "output",
+    targetHandle: "input",
+    type: ConnectionLineType.Bezier,
+    markerEnd: {
+      type: MarkerType.ArrowClosed,
+      color: "#64748b",
+    },
+    style: {
+      stroke: "#64748b",
+      strokeWidth: 1.5,
+    },
+  }));
+}
 
 const nodeTypeLabels: Record<AgentNode["nodeType"], string> = {
   fixed_tool: "工具",
@@ -133,45 +172,22 @@ export function NodeCanvas({
     [graph],
   );
 
-  const nodes = useMemo<AgentFlowNode[]>(() => {
-    if (!laidOutGraph) {
-      return [];
-    }
-
-    return laidOutGraph.nodes.map((node) => ({
-      id: node.nodeId,
-      type: "agent",
-      data: { agentNode: node },
-      position: node.position,
-      targetPosition: Position.Top,
-      sourcePosition: Position.Bottom,
-      draggable: false,
-    }));
+  const initialNodes = useMemo(() => {
+    return createFlowNodes(laidOutGraph);
   }, [laidOutGraph]);
+  const [nodes, setNodes, onNodesChange] =
+    useNodesState<AgentFlowNode>(initialNodes);
+  const edges = useMemo(() => createFlowEdges(laidOutGraph), [laidOutGraph]);
 
-  const edges = useMemo<Edge[]>(() => {
-    if (!graph) {
-      return [];
-    }
-
-    return graph.edges.map((edge) => ({
-      ...edge,
-      sourceHandle: "output",
-      targetHandle: "input",
-      type: "smoothstep",
-      markerEnd: {
-        type: MarkerType.ArrowClosed,
-        color: "#64748b",
-      },
-      style: {
-        stroke: "#64748b",
-        strokeWidth: 1.5,
-      },
-    }));
-  }, [graph]);
+  useEffect(() => {
+    setNodes(initialNodes);
+    setSelectedNodeId((current) =>
+      initialNodes.some((node) => node.id === current) ? current : null,
+    );
+  }, [initialNodes, setNodes]);
 
   const selectedNode =
-    laidOutGraph?.nodes.find((node) => node.nodeId === selectedNodeId) ?? null;
+    nodes.find((node) => node.id === selectedNodeId)?.data.agentNode ?? null;
 
   const handleNodeClick: NodeMouseHandler<AgentFlowNode> = (_event, node) => {
     setSelectedNodeId(node.id);
@@ -231,13 +247,14 @@ export function NodeCanvas({
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        onNodesChange={onNodesChange}
         onNodeClick={handleNodeClick}
         onPaneClick={clearSelectedNode}
         fitView
         fitViewOptions={{ padding: 0.18 }}
         minZoom={0.55}
         maxZoom={1.3}
-        nodesDraggable={false}
+        nodesDraggable
         nodesConnectable={false}
         edgesFocusable={false}
         proOptions={{ hideAttribution: true }}

@@ -11,6 +11,22 @@ vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({
   default: "pdf-worker.js",
 }));
 
+vi.mock("./ImageArtifactPreview", () => ({
+  default: ({ fileName, fileUrl }: { fileName: string; fileUrl: string }) => (
+    <div className="artifactPreviewImage" data-file-url={fileUrl}>
+      {fileName}
+    </div>
+  ),
+}));
+
+vi.mock("./VideoArtifactPreview", () => ({
+  default: ({ fileName, fileUrl }: { fileName: string; fileUrl: string }) => (
+    <div className="artifactPreviewVideo" data-file-url={fileUrl}>
+      {fileName}
+    </div>
+  ),
+}));
+
 import { ArtifactPreviewPanel } from "./ArtifactPreviewPanel";
 import type { ArtifactTextPreview } from "./artifactApi";
 import type { PreviewArtifactSelection } from "./artifactPreview";
@@ -121,5 +137,52 @@ describe("ArtifactPreviewPanel", () => {
 
     expect(markup).toContain("artifactPreviewPdf");
     expect(markup).toContain("PDF 预览");
+  });
+  it("renders an image preview surface when the selected artifact is an image", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactPreviewPanel
+        artifact={{
+          ...artifact,
+          fileName: "diagram.png",
+          path: "D:\\Project\\artifacts\\diagram.png",
+        }}
+        error={null}
+        fileUrl="asset://localhost/diagram.png"
+        loading={false}
+        preview={null}
+        previewKind="image"
+        selectedNode={{
+          ...outputNode,
+          artifactRefs: ["D:\\Project\\artifacts\\diagram.png"],
+        }}
+      />,
+    );
+
+    expect(markup).toContain("artifactPreviewImage");
+    expect(markup).toContain("diagram.png");
+  });
+
+  it("renders a video preview surface when the selected artifact is a video", () => {
+    const markup = renderToStaticMarkup(
+      <ArtifactPreviewPanel
+        artifact={{
+          ...artifact,
+          fileName: "demo.mp4",
+          path: "D:\\Project\\artifacts\\demo.mp4",
+        }}
+        error={null}
+        fileUrl="asset://localhost/demo.mp4"
+        loading={false}
+        preview={null}
+        previewKind="video"
+        selectedNode={{
+          ...outputNode,
+          artifactRefs: ["D:\\Project\\artifacts\\demo.mp4"],
+        }}
+      />,
+    );
+
+    expect(markup).toContain("artifactPreviewVideo");
+    expect(markup).toContain("demo.mp4");
   });
 });

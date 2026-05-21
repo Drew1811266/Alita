@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { ConnectionLineType } from "@xyflow/react";
 
-import { NodeCanvas } from "./NodeCanvas";
+import { createFlowEdges, createFlowNodes, NodeCanvas } from "./NodeCanvas";
 import { createDocumentGraph } from "./nodeLayout";
 import type { NodeGraph } from "../../shared/types";
 
@@ -230,5 +231,20 @@ describe("NodeCanvas", () => {
     expect(markup).toContain("agentNode-riskHigh");
     expect(markup).toContain("Inspect CSV with temporary script");
     expect(markup).toContain("Task Output");
+  });
+  it("uses React Flow's built-in bezier edge type for readable node connections", () => {
+    const edges = createFlowEdges(createDocumentGraph());
+
+    expect(edges).not.toHaveLength(0);
+    expect(edges.every((edge) => edge.type === ConnectionLineType.Bezier)).toBe(
+      true,
+    );
+  });
+
+  it("creates draggable flow nodes so users can reposition the graph", () => {
+    const nodes = createFlowNodes(createDocumentGraph());
+
+    expect(nodes).not.toHaveLength(0);
+    expect(nodes.every((node) => node.draggable === true)).toBe(true);
   });
 });
