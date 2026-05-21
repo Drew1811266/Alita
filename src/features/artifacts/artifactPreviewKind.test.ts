@@ -11,7 +11,11 @@ describe("detectArtifactPreviewKind", () => {
     ["D:\\Project\\artifacts\\table.csv", "text"],
     ["D:\\Project\\artifacts\\run.log", "text"],
     ["D:\\Project\\artifacts\\paper.pdf", "pdf"],
-    ["D:\\Project\\artifacts\\image.png", "unsupported"],
+    ["D:\\Project\\artifacts\\image.png", "image"],
+    ["D:\\Project\\artifacts\\photo.WEBP", "image"],
+    ["D:\\Project\\artifacts\\clip.mp4", "video"],
+    ["D:\\Project\\artifacts\\screen-recording.MOV", "video"],
+    ["D:\\Project\\artifacts\\archive.zip", "unsupported"],
   ] as const)("detects %s as %s", (path, expectedKind) => {
     expect(detectArtifactPreviewKind(path)).toBe(expectedKind);
   });

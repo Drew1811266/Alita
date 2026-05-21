@@ -1,7 +1,7 @@
 {
   "name": "alita",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.26.0",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
@@ -21,6 +21,8 @@
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@xyflow/react": "12.10.2",
     "clsx": "2.1.1",
+    "photoswipe": "^5.4.4",
+    "plyr": "^3.8.4",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "react-markdown": "^10.1.0",

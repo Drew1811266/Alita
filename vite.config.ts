@@ -1,4 +1,6 @@
-import { defineConfig } from "vite";
+/// <reference types="vitest/config" />
+
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
@@ -8,5 +10,15 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 1420,
     strictPort: true,
+  },
+  test: {
+    exclude: [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/.worktrees/**",
+      "**/.codex-run/**",
+      "**/src-tauri/**",
+      "**/python/**",
+    ],
   },
 });

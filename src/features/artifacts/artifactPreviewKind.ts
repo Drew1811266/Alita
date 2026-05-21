@@ -2,9 +2,21 @@ export type ArtifactPreviewKind =
   | "markdown"
   | "text"
   | "pdf"
+  | "image"
+  | "video"
   | "unsupported";
 
 const markdownExtensions = new Set(["md", "markdown", "mdown", "mkdn"]);
+const imageExtensions = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "webp",
+  "gif",
+  "svg",
+  "avif",
+]);
+const videoExtensions = new Set(["mp4", "webm", "ogg", "mov", "m4v"]);
 const textExtensions = new Set([
   "txt",
   "text",
@@ -25,6 +37,14 @@ export function detectArtifactPreviewKind(path: string): ArtifactPreviewKind {
 
   if (extension === "pdf") {
     return "pdf";
+  }
+
+  if (imageExtensions.has(extension)) {
+    return "image";
+  }
+
+  if (videoExtensions.has(extension)) {
+    return "video";
   }
 
   if (textExtensions.has(extension)) {
