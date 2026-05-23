@@ -186,7 +186,7 @@ class BraveSearchProvider:
         )
         headers = {
             "Accept": "application/json",
-            "User-Agent": "Alita/0.26 web-search-tool",
+            "User-Agent": "Alita/0.27 web-search-tool",
             "X-Subscription-Token": self.api_key or "",
         }
         try:

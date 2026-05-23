@@ -171,7 +171,7 @@ def _loads(body: bytes) -> dict[str, Any]:
 
 
 def _headers() -> dict[str, str]:
-    return {"User-Agent": "Alita/0.26 weather-tool"}
+    return {"User-Agent": "Alita/0.27 weather-tool"}
 
 
 def _geocode_result(value: Any) -> dict[str, Any]:
