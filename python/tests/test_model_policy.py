@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from agent_service.model_policy import (
     DEEP_REASONING_POLICY,
     FAST_CHAT_POLICY,
@@ -112,6 +114,30 @@ def test_apply_policy_defaults_does_not_expose_constant_extra_body() -> None:
         FAST_CHAT_POLICY.extra_body["chat_template_kwargs"]["enable_thinking"]
         is False
     )
+
+
+def test_policy_constant_extra_body_rejects_direct_mutation() -> None:
+    with pytest.raises(TypeError):
+        FAST_CHAT_POLICY.extra_body["unexpected"] = True
+
+
+def test_policy_constant_extra_body_rejects_nested_mutation() -> None:
+    before = apply_policy_defaults(FAST_CHAT_POLICY).extra_body
+
+    with pytest.raises(TypeError):
+        FAST_CHAT_POLICY.extra_body["chat_template_kwargs"]["enable_thinking"] = True
+
+    assert apply_policy_defaults(FAST_CHAT_POLICY).extra_body == before
+
+
+def test_apply_policy_defaults_returns_mutable_extra_body_copy() -> None:
+    resolved = apply_policy_defaults(FAST_CHAT_POLICY)
+
+    resolved.extra_body["chat_template_kwargs"]["enable_thinking"] = True
+    resolved.extra_body["request_id"] = "test"
+
+    assert resolved.extra_body["chat_template_kwargs"]["enable_thinking"] is True
+    assert resolved.extra_body["request_id"] == "test"
 
 
 def test_policy_constants_have_expected_profiles() -> None:

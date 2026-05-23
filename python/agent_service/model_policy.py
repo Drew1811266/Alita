@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
+from types import MappingProxyType
 from typing import Any, Literal
 
 from agent_service.schemas import GraphNode
@@ -17,6 +19,57 @@ class ModelCallProfile(str, Enum):
     NODE_REASONING = "node_reasoning"
 
 
+class ImmutableDict(Mapping[str, Any]):
+    def __init__(self, values: Mapping[str, Any] | None = None) -> None:
+        self._values = MappingProxyType(
+            {
+                key: _freeze_extra_body_value(value)
+                for key, value in (values or {}).items()
+            },
+        )
+
+    def __getitem__(self, key: str) -> Any:
+        return self._values[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Mapping):
+            return False
+
+        return dict(self.items()) == dict(other.items())
+
+    def __repr__(self) -> str:
+        return repr(self._values)
+
+
+def _freeze_extra_body_value(value: Any) -> Any:
+    if isinstance(value, ImmutableDict):
+        return value
+    if isinstance(value, Mapping):
+        return ImmutableDict(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_extra_body_value(item) for item in value)
+
+    return value
+
+
+def _thaw_extra_body_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _thaw_extra_body_value(nested_value)
+            for key, nested_value in value.items()
+        }
+    if isinstance(value, tuple):
+        return [_thaw_extra_body_value(item) for item in value]
+
+    return deepcopy(value)
+
+
 @dataclass(frozen=True)
 class ModelCallPolicy:
     profile: ModelCallProfile
@@ -25,7 +78,10 @@ class ModelCallPolicy:
     thinking: ThinkingMode
     preserve_thinking: bool = False
     stream: bool | None = None
-    extra_body: dict[str, Any] = field(default_factory=dict)
+    extra_body: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "extra_body", ImmutableDict(self.extra_body))
 
 
 @dataclass(frozen=True)
@@ -163,5 +219,5 @@ def apply_policy_defaults(
             if stream is None and policy.stream is not None
             else bool(stream)
         ),
-        extra_body=deepcopy(policy.extra_body),
+        extra_body=_thaw_extra_body_value(policy.extra_body),
     )
