@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from html.parser import HTMLParser
 import socket
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -33,6 +33,7 @@ class SearchFailure:
 class SearchResponse:
     results: list[SearchResult]
     failure: SearchFailure | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class SearchProvider(Protocol):
@@ -44,6 +45,8 @@ Transport = Callable[[str, float, dict[str, str]], bytes]
 
 
 class DuckDuckGoHtmlSearchProvider:
+    name = "duckduckgo"
+
     def __init__(
         self,
         *,
@@ -52,6 +55,9 @@ class DuckDuckGoHtmlSearchProvider:
     ) -> None:
         self._transport = transport or _urllib_transport
         self._timeout = timeout
+
+    def is_configured(self) -> bool:
+        return True
 
     def search(self, query: str) -> SearchResponse:
         guard = sanitize_for_web_search(query)
@@ -64,6 +70,7 @@ class DuckDuckGoHtmlSearchProvider:
                     blocked=True,
                     removedCategories=guard.removedCategories,
                 ),
+                metadata={"provider": self.name},
             )
 
         url = "https://duckduckgo.com/html/?" + urlencode({"q": guard.sanitizedText})
@@ -78,6 +85,7 @@ class DuckDuckGoHtmlSearchProvider:
                     kind="timeout",
                     message="Search request timed out.",
                 ),
+                metadata={"provider": self.name},
             )
         except (HTTPError, URLError, OSError):
             return SearchResponse(
@@ -86,12 +94,14 @@ class DuckDuckGoHtmlSearchProvider:
                     kind="network_error",
                     message="Search request failed.",
                 ),
+                metadata={"provider": self.name},
             )
 
         return SearchResponse(
             results=parse_duckduckgo_html_results(
                 body.decode("utf-8", errors="replace")
-            )
+            ),
+            metadata={"provider": self.name},
         )
 
 

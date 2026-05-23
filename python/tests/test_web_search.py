@@ -268,3 +268,16 @@ def test_source_classification_accepts_primary_sources_and_rejects_low_signal_so
     assert rejected["Stale page"].rejectionReason == "stale_page"
     assert rejected["Unrelated forum"].rejectionReason == "unrelated_forum_thread"
     assert rejected["Unknown blog"].rejectionReason == "unrecognized_source"
+
+
+def test_duckduckgo_provider_records_provider_metadata() -> None:
+    def transport(url: str, timeout: float, headers: dict[str, str]) -> bytes:
+        return b""
+
+    provider = DuckDuckGoHtmlSearchProvider(transport=transport)
+
+    response = provider.search("LangGraph docs")
+
+    assert provider.name == "duckduckgo"
+    assert provider.is_configured() is True
+    assert response.metadata == {"provider": "duckduckgo"}
