@@ -15,6 +15,7 @@ from agent_service.graph import (
 )
 from agent_service.intent import IntentKind, classify_route
 from agent_service.model_client import ChatMessage
+from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
 from agent_service.schemas import Attachment, GraphNode, RunGraph, UserMessage
 from agent_service.task_graph import build_document_task_graph
 from agent_service.web_search import SearchResponse, SearchResult
@@ -24,25 +25,32 @@ class FakeModelClient:
     def __init__(self, reply: str = "本地模型回复") -> None:
         self.reply = reply
         self.calls: list[list[ChatMessage]] = []
+        self.policies: list[ModelCallPolicy | None] = []
 
     def chat(
         self,
         messages: list[ChatMessage],
         *,
-        temperature: float = 0.2,
-        max_tokens: int = 1024,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
     ) -> str:
+        del temperature, max_tokens
         self.calls.append(messages)
+        self.policies.append(policy)
         return self.reply
 
     def stream_chat(
         self,
         messages: list[ChatMessage],
         *,
-        temperature: float = 0.2,
-        max_tokens: int = 1024,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
     ):
+        del temperature, max_tokens
         self.calls.append(messages)
+        self.policies.append(policy)
         yield "你好"
         yield "，本地模型"
 
@@ -98,6 +106,16 @@ def test_plain_chat_returns_local_model_message() -> None:
     )
 
 
+def test_plain_chat_uses_fast_chat_policy() -> None:
+    client = FakeModelClient("hello")
+
+    run_agent(UserMessage(task_id="task-chat", content="hello"), model_client=client)
+
+    assert client.calls
+    assert client.policies[0] is not None
+    assert client.policies[0].profile == ModelCallProfile.FAST_CHAT
+
+
 def test_plain_chat_after_graph_exists_uses_chat_router() -> None:
     client = FakeModelClient("chat answer")
 
@@ -140,6 +158,21 @@ def test_plain_chat_streams_local_model_message_deltas() -> None:
         "delta": "，本地模型",
     }
     assert events[3].payload == {"messageId": message["messageId"]}
+
+
+def test_plain_chat_stream_uses_fast_chat_policy() -> None:
+    client = FakeModelClient()
+
+    list(
+        stream_agent_events(
+            UserMessage(task_id="task-chat", content="hello"),
+            model_client=client,
+        )
+    )
+
+    assert client.calls
+    assert client.policies[0] is not None
+    assert client.policies[0].profile == ModelCallProfile.FAST_CHAT
 
 
 def test_graph_state_preserves_structured_route_decision_for_inquiries() -> None:
@@ -402,6 +435,20 @@ def test_web_complex_research_flow_choice_creates_research_graph() -> None:
             and node.get("toolRef") == "web.fetch.sources"
         ]
     ) == 1
+
+
+def test_research_graph_records_deep_reasoning_policy_metadata() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="complex-web",
+            content="Research and compare current Python packaging tools",
+        ),
+        inquiry_choice="research_flow",
+    )
+
+    created_event = next(event for event in events if event.type == "node_graph.created")
+    graph = created_event.payload["graph"]
+    assert graph["metadata"].get("modelPolicy") == ModelCallProfile.DEEP_REASONING.value
 
 
 def test_chinese_github_research_with_context_attachment_asks_for_research_choice() -> None:
@@ -674,6 +721,19 @@ def test_general_task_classification_creates_planner_graph_instead_of_answer() -
         "plan-review",
         "execution-order-planning",
     ]
+
+
+def test_task_graph_records_deep_reasoning_policy_metadata() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="task-general",
+            content="Can you create a Python script that counts rows in a CSV file?",
+        )
+    )
+
+    created_event = next(event for event in events if event.type == "node_graph.created")
+    graph = created_event.payload["graph"]
+    assert graph["metadata"].get("modelPolicy") == ModelCallProfile.DEEP_REASONING.value
 
 
 def test_temporary_placeholder_node_gets_default_script_review_state() -> None:

@@ -23,6 +23,11 @@ from agent_service.model_client import (
     ModelRuntimeDisabled,
     ModelRuntimeRequestFailed,
 )
+from agent_service.model_policy import (
+    DEEP_REASONING_POLICY,
+    ModelCallPolicy,
+    policy_for_agent_intent,
+)
 from agent_service.plan_feedback import (
     GraphFeedbackKind,
     apply_graph_feedback,
@@ -63,8 +68,9 @@ class ModelClient(Protocol):
         self,
         messages: list[ModelChatMessage],
         *,
-        temperature: float = 0.2,
-        max_tokens: int = 1024,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
     ) -> str:
         ...
 
@@ -72,8 +78,9 @@ class ModelClient(Protocol):
         self,
         messages: list[ModelChatMessage],
         *,
-        temperature: float = 0.2,
-        max_tokens: int = 1024,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
     ) -> Iterator[str]:
         ...
 
@@ -154,8 +161,20 @@ def _graph_payload_for_task(
     if spec.task_type == "document_processing" and not _is_markdown_conversion_only(
         message.content
     ):
-        return _create_document_graph(message.task_id, spec, message)
-    return _build_task_graph_payload(message)
+        graph_payload = _create_document_graph(message.task_id, spec, message)
+    else:
+        graph_payload = _build_task_graph_payload(message)
+
+    return _with_model_policy_metadata(
+        graph_payload,
+        DEEP_REASONING_POLICY.profile.value,
+    )
+
+
+def _with_model_policy_metadata(graph_payload: dict, policy_name: str) -> dict:
+    metadata = dict(graph_payload.get("metadata") or {})
+    metadata["modelPolicy"] = policy_name
+    return {**graph_payload, "metadata": metadata}
 
 
 def _build_task_graph_payload(message: UserMessage) -> dict:
@@ -234,14 +253,21 @@ def plan_research_graph(state: AgentState) -> AgentState:
             AgentEvent(
                 type="node_graph.created",
                 payload={
-                    "graph": build_research_graph(
-                        state["message"],
-                        state.get("route_decision", {}),
-                    ),
+                    "graph": _research_graph_payload(state),
                 },
             )
         ],
     }
+
+
+def _research_graph_payload(state: AgentState) -> dict:
+    return _with_model_policy_metadata(
+        build_research_graph(
+            state["message"],
+            state.get("route_decision", {}),
+        ),
+        DEEP_REASONING_POLICY.profile.value,
+    )
 
 
 def build_graph(
@@ -301,12 +327,12 @@ def answer_with_model(
     model_client: ModelClient | None = None,
 ) -> AgentState:
     client = model_client or LlamaCppModelClient()
+    policy = policy_for_agent_intent(state.get("intent", "chat"))
 
     try:
         content = client.chat(
             _build_model_messages(state["message"]),
-            temperature=0.2,
-            max_tokens=1024,
+            policy=policy,
         )
     except ModelRuntimeDisabled:
         content = "本地模型暂未启用。请在首选项里设置默认 GGUF 模型，并确认 llama.cpp 服务已启动。"
@@ -433,6 +459,7 @@ def stream_agent_events(
         return
 
     client = model_client or LlamaCppModelClient()
+    policy = policy_for_agent_intent(intent)
     assistant_message = _assistant_message("")
     message_id = assistant_message["messageId"]
     yield AgentEvent(
@@ -443,8 +470,7 @@ def stream_agent_events(
     try:
         for delta in client.stream_chat(
             _build_model_messages(message),
-            temperature=0.2,
-            max_tokens=1024,
+            policy=policy,
         ):
             yield AgentEvent(
                 type="message.delta",
