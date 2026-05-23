@@ -202,3 +202,150 @@ def test_simple_web_inquiry_does_not_cite_rejected_sources() -> None:
     assert payload["sourceMetadata"]["rejected"][0]["rejectionReason"] == "content_farm"
     assert "I could not find reliable web sources" in payload["message"]["content"]
     assert "Top10 Python releases" not in payload["message"]["content"]
+
+
+class FakeWeatherProvider:
+    def __init__(self) -> None:
+        self.current_locations: list[str] = []
+        self.forecast_locations: list[str] = []
+
+    def current(self, location: str, *, locale: str = "zh-CN"):
+        from agent_service.tool_result import ToolResult
+
+        self.current_locations.append(location)
+        return ToolResult(
+            tool_name="weather.current",
+            status="ok",
+            data={
+                "location": "上海",
+                "country": "CN",
+                "temperatureC": 26.1,
+                "apparentTemperatureC": 27.3,
+                "condition": "局部多云",
+                "precipitationMm": 0.0,
+                "windSpeedKmh": 12.4,
+                "observedAt": "2026-05-23T15:00",
+                "timezone": "Asia/Shanghai",
+            },
+            sources=[
+                {
+                    "title": "Open-Meteo",
+                    "url": "https://open-meteo.com/",
+                    "provider": "open_meteo",
+                }
+            ],
+            metadata={"provider": "open_meteo"},
+        )
+
+    def forecast(self, location: str, *, locale: str = "zh-CN"):
+        self.forecast_locations.append(location)
+        return self.current(location, locale=locale)
+
+
+class FailingSearchProvider:
+    def search(self, query: str):
+        raise AssertionError(f"search should not be called for weather: {query}")
+
+
+class RaisingWeatherProvider:
+    def current(self, location: str, *, locale: str = "zh-CN"):
+        del location, locale
+        raise RuntimeError("private provider detail")
+
+    def forecast(self, location: str, *, locale: str = "zh-CN"):
+        del location, locale
+        raise RuntimeError("private provider detail")
+
+
+class WeatherProviderWithUntitledSource:
+    def current(self, location: str, *, locale: str = "zh-CN"):
+        from agent_service.tool_result import ToolResult
+
+        del locale
+        return ToolResult(
+            tool_name="weather.current",
+            status="ok",
+            data={
+                "location": location,
+                "temperatureC": 26.1,
+                "apparentTemperatureC": 27.3,
+                "condition": "局部多云",
+                "precipitationMm": 0.0,
+                "windSpeedKmh": 12.4,
+                "observedAt": "2026-05-23T15:00",
+            },
+            sources=[{"url": "https://open-meteo.com/"}],
+            metadata={"provider": "open_meteo"},
+        )
+
+    def forecast(self, location: str, *, locale: str = "zh-CN"):
+        return self.current(location, locale=locale)
+
+
+def test_simple_weather_inquiry_uses_weather_provider_without_search() -> None:
+    from agent_service.web_research import answer_simple_web_inquiry
+
+    weather_provider = FakeWeatherProvider()
+    message = UserMessage(task_id="weather", content="今天上海天气怎么样？")
+    event = answer_simple_web_inquiry(
+        message,
+        classify_route(message),
+        search_provider=FailingSearchProvider(),
+        weather_provider=weather_provider,
+    )
+
+    assert event.type == "message.created"
+    assert weather_provider.current_locations == ["上海"]
+    assert "上海当前天气" in event.payload["message"]["content"]
+    assert "26.1°C" in event.payload["message"]["content"]
+    assert event.payload["sources"][0]["provider"] == "open_meteo"
+    assert event.payload["sourceMetadata"]["toolName"] == "weather.current"
+
+
+def test_weather_provider_exception_returns_failure_message_without_raising() -> None:
+    from agent_service.web_research import answer_simple_web_inquiry
+
+    message = UserMessage(task_id="weather", content="今天上海天气怎么样？")
+    event = answer_simple_web_inquiry(
+        message,
+        classify_route(message),
+        search_provider=FailingSearchProvider(),
+        weather_provider=RaisingWeatherProvider(),
+    )
+
+    assert event.type == "message.created"
+    assert event.payload["message"]["content"].startswith("天气查询失败：")
+    assert "private provider detail" not in event.payload["message"]["content"]
+    assert event.payload["sourceMetadata"]["toolName"] == "weather.current"
+    assert event.payload["sourceMetadata"]["status"] == "failed"
+
+
+def test_weather_answer_uses_default_source_title_when_source_has_no_title() -> None:
+    from agent_service.web_research import answer_simple_web_inquiry
+
+    message = UserMessage(task_id="weather", content="今天上海天气怎么样？")
+    event = answer_simple_web_inquiry(
+        message,
+        classify_route(message),
+        search_provider=FailingSearchProvider(),
+        weather_provider=WeatherProviderWithUntitledSource(),
+    )
+
+    assert event.type == "message.created"
+    assert "上海当前天气" in event.payload["message"]["content"]
+    assert "数据来源：Open-Meteo。" in event.payload["message"]["content"]
+
+
+def test_weather_inquiry_without_location_asks_for_city() -> None:
+    from agent_service.web_research import answer_simple_web_inquiry
+
+    message = UserMessage(task_id="weather", content="今天的天气怎么样？")
+    event = answer_simple_web_inquiry(
+        message,
+        classify_route(message),
+        search_provider=FailingSearchProvider(),
+        weather_provider=FakeWeatherProvider(),
+    )
+
+    assert event.type == "input.required"
+    assert event.payload == {"prompt": "请告诉我要查询哪个城市的天气。", "missing": ["location"]}

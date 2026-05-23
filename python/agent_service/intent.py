@@ -5,6 +5,7 @@ from enum import Enum
 import re
 
 from agent_service.schemas import UserMessage
+from agent_service.tool_router import route_tool_for_message
 
 
 class IntentKind(str, Enum):
@@ -64,6 +65,15 @@ def classify_route(message: UserMessage) -> RouteDecision:
         if has_attachments:
             return _route(IntentKind.TASK, "attached document task")
         return _route(IntentKind.NEED_INPUT, "empty input needs user content", ["message"])
+
+    tool_route = route_tool_for_message(message)
+    if tool_route is not None and tool_route.tool_name.startswith("weather."):
+        return _route(
+            IntentKind.INQUIRY,
+            "message routes to weather tool",
+            list(tool_route.missing_inputs),
+            inquiry=InquiryDecision(InquiryMode.WEB_SIMPLE, True),
+        )
 
     has_document_reference = _contains_any(content, _DOCUMENT_REFERENCES)
     has_document_action = _contains_any(content, _DOCUMENT_ACTIONS)

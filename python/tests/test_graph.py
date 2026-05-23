@@ -69,6 +69,11 @@ class FakeSearchProvider:
         return self.response
 
 
+class FailingSearchProvider:
+    def search(self, query: str):
+        raise AssertionError(f"generic search should not run for weather: {query}")
+
+
 def _existing_graph() -> RunGraph:
     return RunGraph(
         graphId="existing-graph",
@@ -246,6 +251,119 @@ def test_web_simple_route_auto_searches_and_returns_sources_without_graph() -> N
     assert events[0].payload["sources"][0]["ref"] == "[1]"
     assert events[0].payload["sources"][0]["accepted"] is True
     assert events[0].payload["rejectedSources"][0]["rejectionReason"] == "content_farm"
+
+
+def test_weather_simple_route_uses_weather_provider_without_generic_search() -> None:
+    from agent_service.tool_result import ToolResult
+
+    class WeatherProvider:
+        def __init__(self) -> None:
+            self.locations: list[str] = []
+
+        def current(self, location: str, *, locale: str = "zh-CN") -> ToolResult:
+            self.locations.append(location)
+            return ToolResult(
+                tool_name="weather.current",
+                status="ok",
+                data={
+                    "location": "上海",
+                    "temperatureC": 26.1,
+                    "apparentTemperatureC": 27.3,
+                    "condition": "局部多云",
+                    "precipitationMm": 0.0,
+                    "windSpeedKmh": 12.4,
+                    "observedAt": "2026-05-23T15:00",
+                    "timezone": "Asia/Shanghai",
+                },
+                sources=[{"title": "Open-Meteo", "url": "https://open-meteo.com/"}],
+                metadata={"provider": "open_meteo"},
+            )
+
+        def forecast(self, location: str, *, locale: str = "zh-CN") -> ToolResult:
+            return self.current(location, locale=locale)
+
+    class SearchProvider:
+        def search(self, query: str):
+            raise AssertionError("generic search should not run for weather")
+
+    weather_provider = WeatherProvider()
+    events = run_agent(
+        UserMessage(task_id="weather", content="今天上海天气怎么样？"),
+        search_provider=SearchProvider(),
+        weather_provider=weather_provider,
+    )
+
+    assert weather_provider.locations == ["上海"]
+    assert events[0].type == "message.created"
+    assert "上海当前天气" in events[0].payload["message"]["content"]
+
+
+def test_english_weather_simple_route_uses_weather_provider_without_generic_search() -> None:
+    from agent_service.tool_result import ToolResult
+
+    class WeatherProvider:
+        def __init__(self) -> None:
+            self.locations: list[str] = []
+
+        def current(self, location: str, *, locale: str = "zh-CN") -> ToolResult:
+            del locale
+            self.locations.append(location)
+            return ToolResult(
+                tool_name="weather.current",
+                status="ok",
+                data={
+                    "location": "New York",
+                    "temperatureC": 18.5,
+                    "apparentTemperatureC": 18.1,
+                    "condition": "晴",
+                    "precipitationMm": 0.0,
+                    "windSpeedKmh": 9.2,
+                    "observedAt": "2026-05-23T09:00",
+                },
+                sources=[{"title": "Open-Meteo", "url": "https://open-meteo.com/"}],
+                metadata={"provider": "open_meteo"},
+            )
+
+        def forecast(self, location: str, *, locale: str = "zh-CN") -> ToolResult:
+            return self.current(location, locale=locale)
+
+    weather_provider = WeatherProvider()
+    model_client = FakeModelClient("model should not run")
+    events = run_agent(
+        UserMessage(task_id="weather", content="What is the weather in New York?"),
+        model_client=model_client,
+        search_provider=FailingSearchProvider(),
+        weather_provider=weather_provider,
+    )
+
+    assert weather_provider.locations == ["New York"]
+    assert model_client.calls == []
+    assert events[0].type == "message.created"
+    assert "New York当前天气" in events[0].payload["message"]["content"]
+
+
+def test_english_weather_without_location_requests_location_without_search_or_model() -> None:
+    class WeatherProvider:
+        def current(self, location: str, *, locale: str = "zh-CN"):
+            del location, locale
+            raise AssertionError("weather provider should not run without location")
+
+        def forecast(self, location: str, *, locale: str = "zh-CN"):
+            del location, locale
+            raise AssertionError("weather provider should not run without location")
+
+    model_client = FakeModelClient("model should not run")
+
+    events = run_agent(
+        UserMessage(task_id="weather", content="What's the weather?"),
+        model_client=model_client,
+        search_provider=FailingSearchProvider(),
+        weather_provider=WeatherProvider(),
+    )
+
+    assert model_client.calls == []
+    assert events[0].type == "input.required"
+    assert events[0].payload == {"prompt": "请告诉我要查询哪个城市的天气。", "missing": ["location"]}
 
 
 def test_web_simple_inquiry_after_graph_exists_uses_inquiry_router() -> None:

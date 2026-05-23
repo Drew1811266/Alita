@@ -42,6 +42,7 @@ from agent_service.task_planner import (
     select_tools,
 )
 from agent_service.tool_execution import default_tool_packages_root
+from agent_service.tool_providers.weather import WeatherProvider
 from agent_service.tool_registry import ToolRegistry
 from agent_service.web_research import answer_simple_web_inquiry, build_research_graph
 from agent_service.web_search import SearchProvider
@@ -274,6 +275,7 @@ def build_graph(
     model_client: ModelClient | None = None,
     *,
     search_provider: SearchProvider | None = None,
+    weather_provider: WeatherProvider | None = None,
     inquiry_choice: InquiryChoice | None = None,
 ):
     graph = StateGraph(AgentState)
@@ -292,7 +294,11 @@ def build_graph(
     graph.add_node("plan_research_graph", plan_research_graph)
     graph.add_node(
         "answer_with_web",
-        lambda state: answer_with_web(state, search_provider=search_provider),
+        lambda state: answer_with_web(
+            state,
+            search_provider=search_provider,
+            weather_provider=weather_provider,
+        ),
     )
     graph.add_node(
         "answer_with_model",
@@ -354,6 +360,7 @@ def answer_with_web(
     state: AgentState,
     *,
     search_provider: SearchProvider | None = None,
+    weather_provider: WeatherProvider | None = None,
 ) -> AgentState:
     return {
         **state,
@@ -362,6 +369,7 @@ def answer_with_web(
                 state["message"],
                 state.get("route_decision", {}),
                 search_provider=search_provider,
+                weather_provider=weather_provider,
             )
         ],
     }
@@ -372,6 +380,7 @@ def run_agent(
     *,
     model_client: ModelClient | None = None,
     search_provider: SearchProvider | None = None,
+    weather_provider: WeatherProvider | None = None,
     inquiry_choice: InquiryChoice | None = None,
     current_graph: RunGraph | None = None,
     has_run_history: bool = False,
@@ -396,6 +405,7 @@ def run_agent(
     app = build_graph(
         model_client=model_client,
         search_provider=search_provider,
+        weather_provider=weather_provider,
         inquiry_choice=inquiry_choice,
     )
     result = app.invoke(
@@ -409,6 +419,7 @@ def stream_agent_events(
     *,
     model_client: ModelClient | None = None,
     search_provider: SearchProvider | None = None,
+    weather_provider: WeatherProvider | None = None,
     inquiry_choice: InquiryChoice | None = None,
     current_graph: RunGraph | None = None,
     has_run_history: bool = False,
@@ -454,6 +465,7 @@ def stream_agent_events(
             message,
             model_client=model_client,
             search_provider=search_provider,
+            weather_provider=weather_provider,
             inquiry_choice=inquiry_choice,
         )
         return

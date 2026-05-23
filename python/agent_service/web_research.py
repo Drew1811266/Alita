@@ -7,6 +7,12 @@ from uuid import uuid4
 
 from agent_service.intent import RouteDecision
 from agent_service.schemas import AgentEvent, UserMessage
+from agent_service.tool_providers.weather import (
+    OpenMeteoWeatherProvider,
+    WeatherProvider,
+)
+from agent_service.tool_result import ToolFailure, ToolResult
+from agent_service.tool_router import route_tool_for_message
 from agent_service.web_search import (
     DuckDuckGoHtmlSearchProvider,
     SearchFailure,
@@ -203,8 +209,13 @@ def answer_simple_web_inquiry(
     route_decision: RouteDecision | dict,
     *,
     search_provider: SearchProvider | None = None,
+    weather_provider: WeatherProvider | None = None,
 ) -> AgentEvent:
     del route_decision
+    tool_route = route_tool_for_message(message)
+    if tool_route is not None and tool_route.tool_name.startswith("weather."):
+        return _answer_weather_inquiry(message, tool_route, provider=weather_provider)
+
     provider = search_provider or DuckDuckGoHtmlSearchProvider()
     response = provider.search(message.content.strip())
     question_type = infer_question_type(message.content)
@@ -230,6 +241,96 @@ def answer_simple_web_inquiry(
             },
         },
     )
+
+
+def _answer_weather_inquiry(
+    message: UserMessage,
+    tool_route: Any,
+    *,
+    provider: WeatherProvider | None,
+) -> AgentEvent:
+    del message
+    if tool_route.status == "missing_input":
+        return AgentEvent(
+            type="input.required",
+            payload={
+                "prompt": "请告诉我要查询哪个城市的天气。",
+                "missing": list(tool_route.missing_inputs),
+            },
+        )
+
+    location = tool_route.arguments.get("location", "")
+    weather = provider or OpenMeteoWeatherProvider()
+    try:
+        result = (
+            weather.forecast(location)
+            if tool_route.tool_name == "weather.forecast"
+            else weather.current(location)
+        )
+    except Exception:
+        result = ToolResult(
+            tool_name=tool_route.tool_name,
+            status="failed",
+            failure=ToolFailure(
+                kind="provider_error",
+                message="天气工具暂时不可用。",
+                retryable=True,
+            ),
+        )
+    content = _synthesize_weather_answer(result)
+    return AgentEvent(
+        type="message.created",
+        payload={
+            "message": _assistant_message(content),
+            "sources": list(result.sources),
+            "rejectedSources": [],
+            "sourceMetadata": {
+                "toolName": result.tool_name,
+                "status": result.status,
+                "failure": result.failure.to_payload() if result.failure else None,
+                "metadata": dict(result.metadata),
+            },
+        },
+    )
+
+
+def _synthesize_weather_answer(result: ToolResult) -> str:
+    if result.status != "ok" or not result.data:
+        if result.failure is not None and result.failure.message:
+            return f"天气查询失败：{result.failure.message}"
+        return "天气查询失败：工具没有返回可用结果。"
+
+    data = result.data
+    location = str(data.get("location") or "该城市")
+    source = _weather_source_title(result.sources)
+    label = "当前天气" if result.tool_name == "weather.current" else "天气预报"
+    observed_at = str(data.get("observedAt") or "")
+
+    content = (
+        f"{location}{label}：{data.get('condition') or '未知'}，"
+        f"气温 {_format_weather_value(data.get('temperatureC'), '°C')}，"
+        f"体感 {_format_weather_value(data.get('apparentTemperatureC'), '°C')}，"
+        f"降水 {_format_weather_value(data.get('precipitationMm'), ' mm')}，"
+        f"风速 {_format_weather_value(data.get('windSpeedKmh'), ' km/h')}。"
+    )
+    if observed_at:
+        content += f"观测时间：{observed_at}。"
+    content += f"数据来源：{source}。"
+    return content
+
+
+def _format_weather_value(value: Any, unit: str) -> str:
+    if value is None:
+        return "未知"
+    return f"{value}{unit}"
+
+
+def _weather_source_title(sources: list[dict[str, Any]]) -> str:
+    for source in sources:
+        title = source.get("title")
+        if title:
+            return str(title)
+    return "Open-Meteo"
 
 
 def _synthesize_answer(
