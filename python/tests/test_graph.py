@@ -26,6 +26,8 @@ class FakeModelClient:
         self.reply = reply
         self.calls: list[list[ChatMessage]] = []
         self.policies: list[ModelCallPolicy | None] = []
+        self.temperatures: list[float | None] = []
+        self.max_tokens: list[int | None] = []
 
     def chat(
         self,
@@ -35,9 +37,10 @@ class FakeModelClient:
         max_tokens: int | None = None,
         policy: ModelCallPolicy | None = None,
     ) -> str:
-        del temperature, max_tokens
         self.calls.append(messages)
         self.policies.append(policy)
+        self.temperatures.append(temperature)
+        self.max_tokens.append(max_tokens)
         return self.reply
 
     def stream_chat(
@@ -48,9 +51,10 @@ class FakeModelClient:
         max_tokens: int | None = None,
         policy: ModelCallPolicy | None = None,
     ):
-        del temperature, max_tokens
         self.calls.append(messages)
         self.policies.append(policy)
+        self.temperatures.append(temperature)
+        self.max_tokens.append(max_tokens)
         yield "你好"
         yield "，本地模型"
 
@@ -114,6 +118,8 @@ def test_plain_chat_uses_fast_chat_policy() -> None:
     assert client.calls
     assert client.policies[0] is not None
     assert client.policies[0].profile == ModelCallProfile.FAST_CHAT
+    assert client.temperatures[0] is None
+    assert client.max_tokens[0] is None
 
 
 def test_plain_chat_after_graph_exists_uses_chat_router() -> None:
@@ -173,6 +179,8 @@ def test_plain_chat_stream_uses_fast_chat_policy() -> None:
     assert client.calls
     assert client.policies[0] is not None
     assert client.policies[0].profile == ModelCallProfile.FAST_CHAT
+    assert client.temperatures[0] is None
+    assert client.max_tokens[0] is None
 
 
 def test_graph_state_preserves_structured_route_decision_for_inquiries() -> None:

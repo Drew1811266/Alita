@@ -8,6 +8,7 @@ from agent_service.app import app
 from agent_service.execution import run_graph_events
 from agent_service.graph import run_agent
 from agent_service.model_client import ChatMessage
+from agent_service.model_policy import ModelCallPolicy
 from agent_service.schemas import RunGraph, RunGraphRequest, UserMessage
 from agent_service.web_search import SearchResponse, SearchResult
 
@@ -21,9 +22,11 @@ class FakeModelClient:
         self,
         messages: list[ChatMessage],
         *,
-        temperature: float = 0.2,
-        max_tokens: int = 1024,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
     ) -> str:
+        del temperature, max_tokens, policy
         self.calls.append(messages)
         return self.reply
 
