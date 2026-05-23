@@ -11,10 +11,10 @@ from agent_service.tool_providers.weather import (
     OpenMeteoWeatherProvider,
     WeatherProvider,
 )
+from agent_service.tool_providers.web_search import default_search_provider
 from agent_service.tool_result import ToolFailure, ToolResult
 from agent_service.tool_router import route_tool_for_message
 from agent_service.web_search import (
-    DuckDuckGoHtmlSearchProvider,
     SearchFailure,
     SearchProvider,
     SearchResult,
@@ -216,7 +216,7 @@ def answer_simple_web_inquiry(
     if tool_route is not None and tool_route.tool_name.startswith("weather."):
         return _answer_weather_inquiry(message, tool_route, provider=weather_provider)
 
-    provider = search_provider or DuckDuckGoHtmlSearchProvider()
+    provider = search_provider or default_search_provider()
     response = provider.search(message.content.strip())
     question_type = infer_question_type(message.content)
     classified = classify_sources(question_type, rank_sources(question_type, response.results))

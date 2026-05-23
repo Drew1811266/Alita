@@ -42,6 +42,7 @@ from agent_service.tool_execution import (
     ToolInvocation,
     default_tool_packages_root,
 )
+from agent_service.tool_providers.web_search import default_search_provider
 from agent_service.tool_registry import ToolRegistry
 from agent_service.web_research import (
     REPORT_SECTION_ORDER,
@@ -49,7 +50,6 @@ from agent_service.web_research import (
     source_payload,
 )
 from agent_service.web_search import (
-    DuckDuckGoHtmlSearchProvider,
     SearchFailure,
     SearchProvider,
     SearchResponse,
@@ -414,7 +414,7 @@ class ResearchFlowExecutor:
         max_search_attempts: int = 3,
     ) -> None:
         self.request = request
-        self.search_provider = search_provider or DuckDuckGoHtmlSearchProvider()
+        self.search_provider = search_provider or default_search_provider()
         self.source_fetcher = source_fetcher or UrlSourceContentFetcher()
         self.max_search_attempts = max(1, max_search_attempts)
         self.project_dir = Path(request.project_path).parent

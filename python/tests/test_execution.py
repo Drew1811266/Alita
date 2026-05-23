@@ -1971,3 +1971,55 @@ def build_node(
     if estimate is not None:
         node["estimate"] = estimate
     return node
+
+
+def test_research_flow_executor_uses_default_search_provider_factory(monkeypatch) -> None:
+    import agent_service.execution as execution
+    from agent_service.execution import ResearchFlowExecutor
+    from agent_service.schemas import RunGraph, RunGraphRequest, RunMode, UserMessage
+    from agent_service.web_research import build_research_graph
+    from agent_service.web_search import SearchResponse, SearchResult
+
+    class Provider:
+        def __init__(self) -> None:
+            self.queries: list[str] = []
+
+        def search(self, query: str) -> SearchResponse:
+            self.queries.append(query)
+            return SearchResponse(
+                results=[
+                    SearchResult(
+                        title="Python",
+                        url="https://www.python.org/",
+                        snippet="Official site.",
+                    )
+                ]
+            )
+
+    provider = Provider()
+    monkeypatch.setattr(execution, "default_search_provider", lambda: provider)
+    message = UserMessage(task_id="research", content="Compare current Python packaging tools")
+    graph = RunGraph(**build_research_graph(message, {}))
+    request = RunGraphRequest(
+        task_id="research",
+        graph=graph,
+        project_path="D:/Software Project/Alita/test.alita",
+        mode=RunMode(type="full"),
+        attachments=[],
+    )
+
+    executor = ResearchFlowExecutor(request)
+    output = executor.run(
+        "research-parallel-search",
+        {
+            "research-query-plan": execution.NodeOutput(
+                values={
+                    "sanitizedQuestion": message.content,
+                    "queries": [{"query": message.content, "purpose": "primary"}],
+                }
+            )
+        },
+    )
+
+    assert provider.queries == ["Compare current Python packaging tools"]
+    assert output.values["results"][0]["title"] == "Python"

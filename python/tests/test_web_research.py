@@ -349,3 +349,36 @@ def test_weather_inquiry_without_location_asks_for_city() -> None:
 
     assert event.type == "input.required"
     assert event.payload == {"prompt": "请告诉我要查询哪个城市的天气。", "missing": ["location"]}
+
+
+def test_simple_web_inquiry_uses_default_search_provider_factory(monkeypatch) -> None:
+    import agent_service.web_research as web_research
+
+    provider = FakeSearchProvider(
+        [
+            SearchResponse(
+                results=[
+                    SearchResult(
+                        title="Python docs",
+                        url="https://docs.python.org/3/",
+                        snippet="Official release information.",
+                    )
+                ],
+                metadata={"provider": "chain"},
+            )
+        ]
+    )
+    monkeypatch.setattr(web_research, "default_search_provider", lambda: provider)
+
+    event = web_research.answer_simple_web_inquiry(
+        UserMessage(task_id="simple-web", content="What is the latest Python release?"),
+        classify_route(
+            UserMessage(
+                task_id="simple-web",
+                content="What is the latest Python release?",
+            )
+        ),
+    )
+
+    assert provider.queries == ["What is the latest Python release?"]
+    assert "Python docs" in event.payload["message"]["content"]
