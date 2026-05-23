@@ -14,8 +14,6 @@ from agent_service.model_client import (
 from agent_service.model_policy import (
     DEEP_REASONING_POLICY,
     FAST_CHAT_POLICY,
-    ModelCallPolicy,
-    ModelCallProfile,
 )
 
 
@@ -187,54 +185,13 @@ def test_llama_client_explicit_arguments_override_policy_defaults() -> None:
     assert payload["chat_template_kwargs"]["preserve_thinking"] is True
 
 
-def test_llama_client_policy_extra_body_cannot_override_core_payload_fields() -> None:
-    calls: list[tuple[str, dict, float]] = []
-    policy = ModelCallPolicy(
-        profile=ModelCallProfile.DEEP_REASONING,
-        temperature=0.1,
-        max_tokens=999,
-        thinking="deep",
-        extra_body={
-            "temperature": 0.9,
-            "max_tokens": 1,
-            "stream": True,
-            "chat_template_kwargs": {"enable_thinking": True},
-        },
-    )
-
-    def transport(url: str, payload: dict, timeout: float) -> dict:
-        calls.append((url, deepcopy(payload), timeout))
-        return {"choices": [{"message": {"content": "ok"}}]}
-
-    client = LlamaCppModelClient(
-        ModelClientConfig(enabled=True),
-        transport=transport,
-    )
-
-    assert (
-        client.chat(
-            [ChatMessage(role="user", content="hello")],
-            policy=policy,
-            temperature=0.6,
-            max_tokens=333,
-        )
-        == "ok"
-    )
-
-    payload = calls[0][1]
-    assert payload["temperature"] == 0.6
-    assert payload["max_tokens"] == 333
-    assert payload["stream"] is False
-    assert payload["chat_template_kwargs"]["enable_thinking"] is True
-
-
 def test_llama_client_retries_without_policy_extra_body_when_rejected() -> None:
     calls: list[tuple[str, dict, float]] = []
 
     def transport(url: str, payload: dict, timeout: float) -> dict:
         calls.append((url, deepcopy(payload), timeout))
         if "chat_template_kwargs" in payload:
-            raise ModelRuntimeRequestFailed("unsupported field")
+            raise ModelRuntimeRequestFailed("unsupported field", status_code=400)
         return {"choices": [{"message": {"content": "ok"}}]}
 
     client = LlamaCppModelClient(
@@ -253,6 +210,28 @@ def test_llama_client_retries_without_policy_extra_body_when_rejected() -> None:
     assert len(calls) == 2
     assert "chat_template_kwargs" in calls[0][1]
     assert "chat_template_kwargs" not in calls[1][1]
+
+
+def test_llama_client_does_not_strip_policy_extra_body_for_network_failures() -> None:
+    calls: list[tuple[str, dict, float]] = []
+
+    def transport(url: str, payload: dict, timeout: float) -> dict:
+        calls.append((url, deepcopy(payload), timeout))
+        raise ModelRuntimeRequestFailed("connection reset")
+
+    client = LlamaCppModelClient(
+        ModelClientConfig(enabled=True),
+        transport=transport,
+    )
+
+    with pytest.raises(ModelRuntimeRequestFailed, match="connection reset"):
+        client.chat(
+            [ChatMessage(role="user", content="hello")],
+            policy=DEEP_REASONING_POLICY,
+        )
+
+    assert len(calls) == 1
+    assert "chat_template_kwargs" in calls[0][1]
 
 
 def test_llama_client_retries_when_reasoning_output_exhausts_token_budget() -> None:
@@ -330,7 +309,7 @@ def test_llama_client_retries_stream_without_policy_extra_body_when_rejected() -
     def stream_transport(url: str, payload: dict, timeout: float):
         calls.append((url, deepcopy(payload), timeout))
         if "chat_template_kwargs" in payload:
-            raise ModelRuntimeRequestFailed("unsupported field")
+            raise ModelRuntimeRequestFailed("unsupported field", status_code=422)
         return [
             b'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n',
             b'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',

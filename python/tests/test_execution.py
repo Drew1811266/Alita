@@ -52,6 +52,8 @@ class FakeModelClient:
     def __init__(self) -> None:
         self.calls: list[list[ChatMessage]] = []
         self.policies: list[ModelCallPolicy | None] = []
+        self.temperatures: list[float | None] = []
+        self.max_tokens: list[int | None] = []
 
     def chat(
         self,
@@ -63,6 +65,8 @@ class FakeModelClient:
     ) -> str:
         self.calls.append(messages)
         self.policies.append(policy)
+        self.temperatures.append(temperature)
+        self.max_tokens.append(max_tokens)
         if (
             "outline" in messages[0].content.lower()
             or "要点" in messages[0].content
@@ -1226,6 +1230,8 @@ def test_planned_model_node_uses_runtime_model_client_instead_of_placeholder(
         ) -> str:
             self.calls.append(messages)
             self.policies.append(policy)
+            self.temperatures.append(temperature)
+            self.max_tokens.append(max_tokens)
             return "real model result"
 
     client = RuntimeModelClient()
@@ -1259,6 +1265,8 @@ def test_planned_model_nodes_use_node_reasoning_policy(tmp_path: Path) -> None:
     assert [policy.profile if policy else None for policy in client.policies] == [
         ModelCallProfile.NODE_REASONING
     ]
+    assert client.temperatures == [0.2]
+    assert client.max_tokens == [1536]
 
 
 def test_planned_model_node_fails_without_bound_runtime(

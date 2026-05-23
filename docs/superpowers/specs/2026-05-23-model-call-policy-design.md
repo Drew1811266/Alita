@@ -116,9 +116,9 @@ Use for executable graph model nodes.
 The initial policy model should be plain Python data and not a Pydantic API schema.
 
 ```python
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Literal
+from typing import Literal
 
 ThinkingMode = Literal["off", "auto", "deep"]
 
@@ -138,10 +138,11 @@ class ModelCallPolicy:
     thinking: ThinkingMode
     preserve_thinking: bool = False
     stream: bool | None = None
-    extra_body: dict[str, Any] = field(default_factory=dict)
 ```
 
-`extra_body` is intentionally generic. It lets the llama.cpp adapter add Qwen-specific request fields without leaking them into LangGraph, task planner, or graph execution code.
+The policy model intentionally stays backend agnostic. The llama.cpp adapter derives
+runtime request fields from `thinking` and `preserve_thinking` so Qwen-specific
+payload keys do not leak into LangGraph, task planner, or graph execution code.
 
 ## llama.cpp And Qwen Thinking Adaptation
 
@@ -159,7 +160,10 @@ When `thinking == "deep"`:
 - Increase `max_tokens`.
 - Add a planning-oriented system instruction only at the call site where appropriate.
 
-If llama.cpp rejects unknown request fields, the adapter should retry once without `extra_body` and keep the larger token budget. This gives reliable behavior across llama.cpp versions.
+If llama.cpp rejects unknown thinking request fields with a request-validation
+error, the adapter should retry once without those derived fields and keep the
+larger token budget. This gives reliable behavior across llama.cpp versions
+without masking network or server failures.
 
 ## Integration Points
 
@@ -217,7 +221,9 @@ flowchart TD
 
 ## Error Handling
 
-If a policy extra field causes llama.cpp to reject a request, retry once without policy-specific extra fields and preserve the resolved `temperature` and `max_tokens`.
+If a policy-derived thinking field causes llama.cpp to reject a request, retry
+once without policy-specific extra fields and preserve the resolved `temperature`
+and `max_tokens`.
 
 If the retry fails, raise the existing `ModelRuntimeRequestFailed` error. The graph runner already converts model failures into `node.failed`, `task.failed`, and `graph.patch_suggested` events.
 

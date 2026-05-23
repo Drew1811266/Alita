@@ -44,7 +44,9 @@ class ModelRuntimeDisabled(RuntimeError):
 
 
 class ModelRuntimeRequestFailed(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 Transport = Callable[[str, dict, float], dict]
@@ -81,7 +83,7 @@ class LlamaCppModelClient:
             stream=False,
             policy=policy,
         )
-        policy_has_extra_body = bool(policy and policy.extra_body)
+        policy_has_extra_body = bool(policy and _policy_extra_body(policy))
         endpoint = f"{self.config.base_url}/v1/chat/completions"
 
         try:
@@ -90,8 +92,8 @@ class LlamaCppModelClient:
                 payload,
                 self.config.timeout_seconds,
             )
-        except ModelRuntimeRequestFailed:
-            if not policy_has_extra_body:
+        except ModelRuntimeRequestFailed as error:
+            if not policy_has_extra_body or not _should_retry_without_policy_extra_body(error):
                 raise
 
             payload = self._chat_payload(
@@ -146,7 +148,7 @@ class LlamaCppModelClient:
             stream=True,
             policy=policy,
         )
-        policy_has_extra_body = bool(policy and policy.extra_body)
+        policy_has_extra_body = bool(policy and _policy_extra_body(policy))
         endpoint = f"{self.config.base_url}/v1/chat/completions"
 
         yielded = False
@@ -154,8 +156,12 @@ class LlamaCppModelClient:
             for delta in self._stream_chat_payload(endpoint, payload):
                 yielded = True
                 yield delta
-        except ModelRuntimeRequestFailed:
-            if not policy_has_extra_body or yielded:
+        except ModelRuntimeRequestFailed as error:
+            if (
+                not policy_has_extra_body
+                or yielded
+                or not _should_retry_without_policy_extra_body(error)
+            ):
                 raise
 
             retry_payload = self._chat_payload(
@@ -219,7 +225,7 @@ class LlamaCppModelClient:
             resolved_temperature = resolved.temperature
             resolved_max_tokens = resolved.max_tokens
             resolved_stream = resolved.stream
-            extra_body = resolved.extra_body if include_policy_extra_body else {}
+            extra_body = _policy_extra_body(policy) if include_policy_extra_body else {}
 
         payload = dict(extra_body)
         payload.update(
@@ -249,6 +255,12 @@ def _post_json(url: str, payload: dict, timeout: float) -> dict:
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = _read_http_error_body(error)
+        message = f"llama.cpp chat request failed: HTTP {error.code}"
+        if detail:
+            message = f"{message}: {detail}"
+        raise ModelRuntimeRequestFailed(message, status_code=error.code) from error
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
         raise ModelRuntimeRequestFailed(f"llama.cpp chat request failed: {error}") from error
 
@@ -265,8 +277,40 @@ def _post_json_stream(url: str, payload: dict, timeout: float) -> Iterable[bytes
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             yield from response
+    except urllib.error.HTTPError as error:
+        detail = _read_http_error_body(error)
+        message = f"llama.cpp streaming chat request failed: HTTP {error.code}"
+        if detail:
+            message = f"{message}: {detail}"
+        raise ModelRuntimeRequestFailed(message, status_code=error.code) from error
     except (urllib.error.URLError, TimeoutError) as error:
         raise ModelRuntimeRequestFailed(f"llama.cpp streaming chat request failed: {error}") from error
+
+
+def _policy_extra_body(policy: ModelCallPolicy) -> dict:
+    chat_template_kwargs: dict[str, bool] = {}
+    if policy.thinking == "off":
+        chat_template_kwargs["enable_thinking"] = False
+    elif policy.thinking == "deep" or policy.preserve_thinking:
+        chat_template_kwargs["enable_thinking"] = True
+
+    if policy.preserve_thinking:
+        chat_template_kwargs["preserve_thinking"] = True
+
+    if not chat_template_kwargs:
+        return {}
+    return {"chat_template_kwargs": chat_template_kwargs}
+
+
+def _should_retry_without_policy_extra_body(error: ModelRuntimeRequestFailed) -> bool:
+    return error.status_code in {400, 422}
+
+
+def _read_http_error_body(error: urllib.error.HTTPError) -> str:
+    try:
+        return error.read().decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
 
 
 def _extract_chat_content(response: dict) -> str:

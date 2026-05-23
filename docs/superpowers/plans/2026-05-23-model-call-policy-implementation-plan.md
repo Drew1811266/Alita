@@ -6,6 +6,8 @@
 
 **Architecture:** Add `agent_service.model_policy` as the boundary between route classification and llama.cpp calls. Keep Qwen thinking details inside `LlamaCppModelClient`, preserve existing explicit `temperature` and `max_tokens` overrides, and pass policies from graph routing and graph execution call sites.
 
+**Review adjustment:** The final implementation keeps `ModelCallPolicy` backend agnostic and derives llama.cpp/Qwen `chat_template_kwargs` inside `LlamaCppModelClient`. Earlier task snippets that show `extra_body` on policy constants are superseded by that adapter-boundary fix.
+
 **Tech Stack:** Python 3.12, FastAPI sidecar, LangGraph, llama.cpp OpenAI-compatible chat endpoint, pytest.
 
 ---
