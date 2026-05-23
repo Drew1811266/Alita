@@ -11,7 +11,12 @@ from agent_service.model_client import (
     ModelRuntimeDisabled,
     ModelRuntimeRequestFailed,
 )
-from agent_service.model_policy import DEEP_REASONING_POLICY, FAST_CHAT_POLICY
+from agent_service.model_policy import (
+    DEEP_REASONING_POLICY,
+    FAST_CHAT_POLICY,
+    ModelCallPolicy,
+    ModelCallProfile,
+)
 
 
 def test_default_model_config_is_disabled_without_model_path() -> None:
@@ -182,6 +187,47 @@ def test_llama_client_explicit_arguments_override_policy_defaults() -> None:
     assert payload["chat_template_kwargs"]["preserve_thinking"] is True
 
 
+def test_llama_client_policy_extra_body_cannot_override_core_payload_fields() -> None:
+    calls: list[tuple[str, dict, float]] = []
+    policy = ModelCallPolicy(
+        profile=ModelCallProfile.DEEP_REASONING,
+        temperature=0.1,
+        max_tokens=999,
+        thinking="deep",
+        extra_body={
+            "temperature": 0.9,
+            "max_tokens": 1,
+            "stream": True,
+            "chat_template_kwargs": {"enable_thinking": True},
+        },
+    )
+
+    def transport(url: str, payload: dict, timeout: float) -> dict:
+        calls.append((url, deepcopy(payload), timeout))
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    client = LlamaCppModelClient(
+        ModelClientConfig(enabled=True),
+        transport=transport,
+    )
+
+    assert (
+        client.chat(
+            [ChatMessage(role="user", content="hello")],
+            policy=policy,
+            temperature=0.6,
+            max_tokens=333,
+        )
+        == "ok"
+    )
+
+    payload = calls[0][1]
+    assert payload["temperature"] == 0.6
+    assert payload["max_tokens"] == 333
+    assert payload["stream"] is False
+    assert payload["chat_template_kwargs"]["enable_thinking"] is True
+
+
 def test_llama_client_retries_without_policy_extra_body_when_rejected() -> None:
     calls: list[tuple[str, dict, float]] = []
 
@@ -276,6 +322,40 @@ def test_llama_client_applies_policy_defaults_to_stream_payload() -> None:
     assert payload["max_tokens"] == 768
     assert payload["stream"] is True
     assert payload["chat_template_kwargs"]["enable_thinking"] is False
+
+
+def test_llama_client_retries_stream_without_policy_extra_body_when_rejected() -> None:
+    calls: list[tuple[str, dict, float]] = []
+
+    def stream_transport(url: str, payload: dict, timeout: float):
+        calls.append((url, deepcopy(payload), timeout))
+        if "chat_template_kwargs" in payload:
+            raise ModelRuntimeRequestFailed("unsupported field")
+        return [
+            b'data: {"choices":[{"delta":{"content":"hel"}}]}\n\n',
+            b'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+
+    client = LlamaCppModelClient(
+        ModelClientConfig(enabled=True),
+        stream_transport=stream_transport,
+    )
+
+    chunks = list(
+        client.stream_chat(
+            [ChatMessage(role="user", content="hello")],
+            policy=FAST_CHAT_POLICY,
+        )
+    )
+
+    assert chunks == ["hel", "lo"]
+    assert len(calls) == 2
+    assert "chat_template_kwargs" in calls[0][1]
+    assert "chat_template_kwargs" not in calls[1][1]
+    assert calls[1][1]["temperature"] == 0.3
+    assert calls[1][1]["max_tokens"] == 768
+    assert calls[1][1]["stream"] is True
 
 
 def test_llama_client_rejects_empty_chat_content() -> None:

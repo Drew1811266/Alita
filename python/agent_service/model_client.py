@@ -146,10 +146,32 @@ class LlamaCppModelClient:
             stream=True,
             policy=policy,
         )
+        policy_has_extra_body = bool(policy and policy.extra_body)
+        endpoint = f"{self.config.base_url}/v1/chat/completions"
 
+        yielded = False
+        try:
+            for delta in self._stream_chat_payload(endpoint, payload):
+                yielded = True
+                yield delta
+        except ModelRuntimeRequestFailed:
+            if not policy_has_extra_body or yielded:
+                raise
+
+            retry_payload = self._chat_payload(
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True,
+                policy=policy,
+                include_policy_extra_body=False,
+            )
+            yield from self._stream_chat_payload(endpoint, retry_payload)
+
+    def _stream_chat_payload(self, endpoint: str, payload: dict) -> Iterator[str]:
         for data in _iter_sse_data(
             self._stream_transport(
-                f"{self.config.base_url}/v1/chat/completions",
+                endpoint,
                 payload,
                 self.config.timeout_seconds,
             )
@@ -199,17 +221,19 @@ class LlamaCppModelClient:
             resolved_stream = resolved.stream
             extra_body = resolved.extra_body if include_policy_extra_body else {}
 
-        payload = {
-            "model": self.config.model,
-            "messages": [
-                {"role": message.role, "content": message.content}
-                for message in messages
-            ],
-            "temperature": resolved_temperature,
-            "max_tokens": resolved_max_tokens,
-            "stream": resolved_stream,
-        }
-        payload.update(extra_body)
+        payload = dict(extra_body)
+        payload.update(
+            {
+                "model": self.config.model,
+                "messages": [
+                    {"role": message.role, "content": message.content}
+                    for message in messages
+                ],
+                "temperature": resolved_temperature,
+                "max_tokens": resolved_max_tokens,
+                "stream": resolved_stream,
+            }
+        )
         return payload
 
 
