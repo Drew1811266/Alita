@@ -8,8 +8,12 @@ from dataclasses import dataclass
 from collections.abc import Iterable, Iterator
 from typing import Callable, Literal
 
+from agent_service.model_policy import ModelCallPolicy, apply_policy_defaults
+
 
 ChatRole = Literal["system", "user", "assistant", "tool"]
+DEFAULT_TEMPERATURE = 0.2
+DEFAULT_MAX_TOKENS = 1024
 
 
 @dataclass(frozen=True)
@@ -63,27 +67,47 @@ class LlamaCppModelClient:
         self,
         messages: list[ChatMessage],
         *,
-        temperature: float = 0.2,
-        max_tokens: int = 1024,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
     ) -> str:
         if not self.config.enabled:
             raise ModelRuntimeDisabled("llama.cpp model runtime is not configured")
 
-        payload = {
-            "model": self.config.model,
-            "messages": [
-                {"role": message.role, "content": message.content}
-                for message in messages
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": False,
-        }
-        response = self._transport(
-            f"{self.config.base_url}/v1/chat/completions",
-            payload,
-            self.config.timeout_seconds,
+        payload = self._chat_payload(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=False,
+            policy=policy,
         )
+        policy_has_extra_body = bool(policy and policy.extra_body)
+        endpoint = f"{self.config.base_url}/v1/chat/completions"
+
+        try:
+            response = self._transport(
+                endpoint,
+                payload,
+                self.config.timeout_seconds,
+            )
+        except ModelRuntimeRequestFailed:
+            if not policy_has_extra_body:
+                raise
+
+            payload = self._chat_payload(
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=False,
+                policy=policy,
+                include_policy_extra_body=False,
+            )
+            response = self._transport(
+                endpoint,
+                payload,
+                self.config.timeout_seconds,
+            )
+
         content = _extract_chat_content(response)
         if content.strip():
             return content
@@ -91,10 +115,10 @@ class LlamaCppModelClient:
         if _should_retry_empty_reasoning_response(response):
             retry_payload = {
                 **payload,
-                "max_tokens": max(max_tokens * 4, 4096),
+                "max_tokens": max(payload["max_tokens"] * 4, 4096),
             }
             retry_response = self._transport(
-                f"{self.config.base_url}/v1/chat/completions",
+                endpoint,
                 retry_payload,
                 self.config.timeout_seconds,
             )
@@ -108,22 +132,20 @@ class LlamaCppModelClient:
         self,
         messages: list[ChatMessage],
         *,
-        temperature: float = 0.2,
-        max_tokens: int = 1024,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
     ) -> Iterator[str]:
         if not self.config.enabled:
             raise ModelRuntimeDisabled("llama.cpp model runtime is not configured")
 
-        payload = {
-            "model": self.config.model,
-            "messages": [
-                {"role": message.role, "content": message.content}
-                for message in messages
-            ],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True,
-        }
+        payload = self._chat_payload(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+            policy=policy,
+        )
 
         for data in _iter_sse_data(
             self._stream_transport(
@@ -145,6 +167,50 @@ class LlamaCppModelClient:
 
             if delta:
                 yield delta
+
+    def _chat_payload(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None,
+        max_tokens: int | None,
+        stream: bool,
+        policy: ModelCallPolicy | None,
+        include_policy_extra_body: bool = True,
+    ) -> dict:
+        if policy is None:
+            resolved_temperature = (
+                DEFAULT_TEMPERATURE if temperature is None else temperature
+            )
+            resolved_max_tokens = (
+                DEFAULT_MAX_TOKENS if max_tokens is None else max_tokens
+            )
+            resolved_stream = stream
+            extra_body: dict = {}
+        else:
+            resolved = apply_policy_defaults(
+                policy,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=stream,
+            )
+            resolved_temperature = resolved.temperature
+            resolved_max_tokens = resolved.max_tokens
+            resolved_stream = resolved.stream
+            extra_body = resolved.extra_body if include_policy_extra_body else {}
+
+        payload = {
+            "model": self.config.model,
+            "messages": [
+                {"role": message.role, "content": message.content}
+                for message in messages
+            ],
+            "temperature": resolved_temperature,
+            "max_tokens": resolved_max_tokens,
+            "stream": resolved_stream,
+        }
+        payload.update(extra_body)
+        return payload
 
 
 def _post_json(url: str, payload: dict, timeout: float) -> dict:
