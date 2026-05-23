@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from agent_service.model_client import ChatMessage, LlamaCppModelClient
+from agent_service.model_policy import ModelCallPolicy, NODE_REASONING_POLICY
 from agent_service.node_output import NodeOutput
 from agent_service.prompt_templates import render_prompt_template
 from agent_service.task_graph import ModelBinding
@@ -14,8 +15,9 @@ class ModelClient(Protocol):
         self,
         messages: list[ChatMessage],
         *,
-        temperature: float = 0.2,
-        max_tokens: int = 1024,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
     ) -> str:
         pass
 
@@ -65,5 +67,6 @@ class ModelRuntime:
             messages,
             temperature=binding.temperature,
             max_tokens=binding.max_tokens,
+            policy=NODE_REASONING_POLICY,
         )
         return NodeOutput(values={binding.output_key: content})

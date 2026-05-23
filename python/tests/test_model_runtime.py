@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from agent_service.model_client import ChatMessage
+from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
 from agent_service.model_runtime import (
     ModelRuntime,
     ModelRuntimeError,
@@ -16,19 +17,22 @@ class FakeModelClient:
     def __init__(self, reply: str) -> None:
         self.reply = reply
         self.messages: list[list[ChatMessage]] = []
-        self.temperatures: list[float] = []
-        self.max_tokens: list[int] = []
+        self.temperatures: list[float | None] = []
+        self.max_tokens: list[int | None] = []
+        self.policies: list[ModelCallPolicy | None] = []
 
     def chat(
         self,
         messages: list[ChatMessage],
         *,
-        temperature: float = 0.2,
-        max_tokens: int = 1024,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
     ) -> str:
         self.messages.append(messages)
         self.temperatures.append(temperature)
         self.max_tokens.append(max_tokens)
+        self.policies.append(policy)
         return self.reply
 
 
@@ -75,6 +79,30 @@ def test_model_runtime_runs_report_writer_with_custom_token_limit() -> None:
 
     assert output == NodeOutput(values={"report": "report text"})
     assert model_client.max_tokens == [1536]
+
+
+def test_model_runtime_uses_node_reasoning_policy() -> None:
+    model_client = FakeModelClient("outline text")
+    runtime = ModelRuntime(model_client=model_client)
+    binding = ModelBinding(
+        model_ref="local.content_organizer",
+        purpose="organize_document_content",
+        prompt_template="document.content_organizer.zh.v1",
+        output_key="outline",
+        temperature=0.1,
+        max_tokens=777,
+    )
+
+    runtime.run(
+        binding,
+        inputs={"document-parse": NodeOutput(values={"text": "document body"})},
+    )
+
+    assert [policy.profile if policy else None for policy in model_client.policies] == [
+        ModelCallProfile.NODE_REASONING
+    ]
+    assert model_client.temperatures == [0.1]
+    assert model_client.max_tokens == [777]
 
 
 def test_model_runtime_rejects_unsupported_model_ref() -> None:

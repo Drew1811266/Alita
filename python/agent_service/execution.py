@@ -20,6 +20,7 @@ from agent_service.model_client import (
     ChatMessage as ModelChatMessage,
     LlamaCppModelClient,
 )
+from agent_service.model_policy import ModelCallPolicy, policy_for_graph_node
 from agent_service.model_runtime import ModelRuntime
 from agent_service.node_output import NodeOutput
 from agent_service.permission_gate import PermissionGate
@@ -69,8 +70,9 @@ class ModelClient(Protocol):
         self,
         messages: list[ModelChatMessage],
         *,
-        temperature: float = 0.2,
-        max_tokens: int = 1024,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
     ) -> str:
         ...
 
@@ -357,6 +359,10 @@ class PlannedTaskExecutor:
                 ],
                 temperature=0.2,
                 max_tokens=1536,
+                policy=policy_for_graph_node(
+                    node,
+                    graph_metadata=self.request.graph.metadata,
+                ),
             )
             return NodeOutput(
                 values={

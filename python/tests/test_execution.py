@@ -14,6 +14,7 @@ from agent_service.execution import (
 from agent_service.graph import run_agent
 from agent_service.harness_errors import HarnessError
 from agent_service.model_client import ChatMessage
+from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import RunRegistry
 from agent_service.schemas import (
@@ -50,15 +51,18 @@ class FakeNodeExecutor:
 class FakeModelClient:
     def __init__(self) -> None:
         self.calls: list[list[ChatMessage]] = []
+        self.policies: list[ModelCallPolicy | None] = []
 
     def chat(
         self,
         messages: list[ChatMessage],
         *,
-        temperature: float = 0.2,
-        max_tokens: int = 1024,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
     ) -> str:
         self.calls.append(messages)
+        self.policies.append(policy)
         if (
             "outline" in messages[0].content.lower()
             or "要点" in messages[0].content
@@ -1216,10 +1220,12 @@ def test_planned_model_node_uses_runtime_model_client_instead_of_placeholder(
             self,
             messages: list[ChatMessage],
             *,
-            temperature: float = 0.2,
-            max_tokens: int = 1024,
+            temperature: float | None = None,
+            max_tokens: int | None = None,
+            policy: ModelCallPolicy | None = None,
         ) -> str:
             self.calls.append(messages)
+            self.policies.append(policy)
             return "real model result"
 
     client = RuntimeModelClient()
@@ -1234,6 +1240,25 @@ def test_planned_model_node_uses_runtime_model_client_instead_of_placeholder(
     assert client.calls
     assert model_record["values"]["text"] == "real model result"
     assert "Planned model step" not in model_record["values"]["text"]
+
+
+def test_planned_model_nodes_use_node_reasoning_policy(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node("model-reasoning", "model", [], model_ref="local-task-reasoner"),
+            build_node("task-output", "output", ["model-reasoning"]),
+        ],
+        graph_metadata={"taskKind": "content"},
+    )
+    client = FakeModelClient()
+
+    events = list(run_graph_events(request, model_client=client))
+
+    assert events[-1].type == "task.completed"
+    assert [policy.profile if policy else None for policy in client.policies] == [
+        ModelCallProfile.NODE_REASONING
+    ]
 
 
 def test_planned_model_node_fails_without_bound_runtime(
@@ -1682,7 +1707,12 @@ def test_from_node_with_source_outputs_runs_real_document_flow_executor(
     assert events[-1].type == "task.completed"
 
 
-def build_request(tmp_path: Path, *, nodes: list[dict]) -> RunGraphRequest:
+def build_request(
+    tmp_path: Path,
+    *,
+    nodes: list[dict],
+    graph_metadata: dict | None = None,
+) -> RunGraphRequest:
     return RunGraphRequest(
         task_id="task-run",
         project_path=str(tmp_path / "project.alita"),
@@ -1699,6 +1729,7 @@ def build_request(tmp_path: Path, *, nodes: list[dict]) -> RunGraphRequest:
                 for node in nodes
                 for dependency in node["dependencies"]
             ],
+            "metadata": graph_metadata or {},
         },
     )
 
