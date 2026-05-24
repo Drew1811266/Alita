@@ -191,6 +191,43 @@ fn api_provider_helper_payload_uses_saved_key_for_existing_provider() {
 }
 
 #[test]
+fn api_provider_helper_payload_requires_explicit_key_when_target_changes() {
+    let mut preferences = AppPreferences::default();
+    let provider =
+        upsert_api_provider_config(&mut preferences, valid_api_provider_input()).unwrap();
+    let credential_store = RecordingCredentialStore::default();
+    credential_store.insert_api_key(&provider.credential_ref, "sk-saved");
+    let mut payload = valid_test_payload(Some(provider.provider_id.clone()), None);
+    payload.base_url = "https://gateway.example.com/v1".to_string();
+
+    let error = api_provider_test_payload_with_stored_key(&preferences, payload, &credential_store)
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        "API key is required when provider connection settings are changed"
+    );
+}
+
+#[test]
+fn api_provider_helper_payload_allows_saved_key_when_model_changes() {
+    let mut preferences = AppPreferences::default();
+    let provider =
+        upsert_api_provider_config(&mut preferences, valid_api_provider_input()).unwrap();
+    let credential_store = RecordingCredentialStore::default();
+    credential_store.insert_api_key(&provider.credential_ref, "sk-saved");
+    let mut payload = valid_test_payload(Some(provider.provider_id.clone()), None);
+    payload.model = "gpt-4.1-mini".to_string();
+
+    let hydrated =
+        api_provider_test_payload_with_stored_key(&preferences, payload, &credential_store)
+            .unwrap();
+
+    assert_eq!(hydrated.api_key.as_deref(), Some("sk-saved"));
+    assert_eq!(hydrated.model, "gpt-4.1-mini");
+}
+
+#[test]
 fn api_provider_helper_payload_does_not_replace_explicit_blank_key() {
     let mut preferences = AppPreferences::default();
     let provider =

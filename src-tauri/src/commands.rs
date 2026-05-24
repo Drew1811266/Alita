@@ -569,8 +569,26 @@ pub fn api_provider_test_payload_with_stored_key(
         .iter()
         .find(|candidate| candidate.provider_id == provider_id)
         .ok_or_else(|| format!("unknown API provider id: {provider_id}"))?;
+    validate_api_provider_stored_key_target(provider, &payload)?;
     payload.api_key = credential_store.get_api_key(&provider.credential_ref)?;
     Ok(payload)
+}
+
+fn validate_api_provider_stored_key_target(
+    provider: &crate::preferences::ApiProviderConfig,
+    payload: &TestApiProviderPayload,
+) -> Result<(), String> {
+    let payload_provider_type = normalize_api_provider_type(&payload.provider_type)?;
+    let payload_display_name = normalize_api_provider_display_name(&payload.display_name)?;
+    let payload_base_url = normalize_api_provider_base_url(&payload.base_url)?;
+    if payload_provider_type == provider.provider_type
+        && payload_display_name == provider.display_name
+        && payload_base_url == provider.base_url
+    {
+        return Ok(());
+    }
+
+    Err("API key is required when provider connection settings are changed".to_string())
 }
 
 pub fn attachment_metadata_for_path(
