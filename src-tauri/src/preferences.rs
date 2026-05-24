@@ -41,6 +41,14 @@ pub struct ApiProviderConfig {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiProviderPreset {
+    pub provider_type: String,
+    pub display_name: String,
+    pub base_url: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiProviderInput {
     pub provider_id: Option<String>,
@@ -208,6 +216,23 @@ fn normalize_preferences(preferences: &mut AppPreferences) {
 
 pub fn api_provider_credential_ref(provider_id: &str) -> String {
     format!("alita.api-provider.{provider_id}")
+}
+
+pub fn api_provider_preset(provider_type: &str) -> Result<ApiProviderPreset, String> {
+    let preset = match provider_type {
+        "openai" => ("openai", "OpenAI", "https://api.openai.com/v1"),
+        "deepseek" => ("deepseek", "DeepSeek", "https://api.deepseek.com"),
+        "kimi" => ("kimi", "Kimi", "https://api.moonshot.ai/v1"),
+        "glm" => ("glm", "GLM", "https://open.bigmodel.cn/api/paas/v4"),
+        "minimax" => ("minimax", "MiniMax", "https://api.minimax.io/v1"),
+        "custom" => ("custom", "Custom API", ""),
+        other => return Err(format!("unknown API provider type: {other}")),
+    };
+    Ok(ApiProviderPreset {
+        provider_type: preset.0.to_string(),
+        display_name: preset.1.to_string(),
+        base_url: preset.2.to_string(),
+    })
 }
 
 pub fn provider_default_capabilities(provider_type: &str) -> Vec<String> {

@@ -3,17 +3,20 @@ use crate::{
         AgentAttachment, AgentClient, AgentEvent, AgentMessageRequest, AsrStatusResponse,
         AsrTranscriptionRequest, AsrTranscriptionResponse,
     },
+    api_credentials::{ApiCredentialStore, SystemApiCredentialStore},
     asr::{
         decode_wav_base64, remove_temp_audio_file, write_temp_audio_file,
         TranscribeVoiceAudioPayload,
     },
     preferences::{
-        add_manual_model, add_speech_to_text_model, import_model_to_storage,
-        load_preferences_with_model_recovery, model_recovery_candidate_dirs,
-        previous_preferences_path_for_current_path, record_recent_project,
-        save_preferences_to_path, scan_model_directory, set_default_model, set_model_assignment,
-        set_model_storage_dir, speech_to_text_model_path, summarize_tool_manifests, AppPreferences,
-        ModelAssignmentRole, ToolSummary,
+        add_manual_model, add_speech_to_text_model, delete_api_provider_config,
+        import_model_to_storage, load_preferences_with_model_recovery,
+        model_recovery_candidate_dirs, previous_preferences_path_for_current_path,
+        record_recent_project, save_preferences_to_path, scan_model_directory,
+        set_active_api_provider, set_agent_model_mode, set_default_model, set_model_assignment,
+        set_model_storage_dir, speech_to_text_model_path, summarize_tool_manifests,
+        upsert_api_provider_config, ApiProviderInput, AppPreferences, ModelAssignmentRole,
+        ToolSummary,
     },
     project::{
         load_project_from_path, new_project, save_project_to_path, AlitaProject, ProjectOpenResult,
@@ -108,6 +111,30 @@ pub struct SetDefaultModelPayload {
 pub struct SetModelAssignmentPayload {
     pub role: String,
     pub model_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAgentModelModePayload {
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveApiProviderPayload {
+    pub provider_id: Option<String>,
+    pub provider_type: String,
+    pub display_name: String,
+    pub base_url: String,
+    pub model: String,
+    pub enabled: bool,
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiProviderIdPayload {
+    pub provider_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -467,6 +494,72 @@ pub async fn save_project(
 #[tauri::command]
 pub async fn get_preferences(app: AppHandle) -> Result<PreferencesView, String> {
     let (_, preferences) = load_preferences_for_app(&app)?;
+    let tools = summarize_tool_manifests(packages_root(), &preferences);
+    Ok(PreferencesView { preferences, tools })
+}
+
+#[tauri::command]
+pub async fn set_agent_model_mode_command(
+    app: AppHandle,
+    payload: SetAgentModelModePayload,
+) -> Result<PreferencesView, String> {
+    let (path, mut preferences) = load_preferences_for_app(&app)?;
+    set_agent_model_mode(&mut preferences, &payload.mode)?;
+    save_preferences_to_path(&path, &preferences)?;
+    let tools = summarize_tool_manifests(packages_root(), &preferences);
+    Ok(PreferencesView { preferences, tools })
+}
+
+#[tauri::command]
+pub async fn save_api_provider_config(
+    app: AppHandle,
+    payload: SaveApiProviderPayload,
+) -> Result<PreferencesView, String> {
+    let (path, mut preferences) = load_preferences_for_app(&app)?;
+    let provider = upsert_api_provider_config(
+        &mut preferences,
+        ApiProviderInput {
+            provider_id: payload.provider_id,
+            provider_type: payload.provider_type,
+            display_name: payload.display_name,
+            base_url: payload.base_url,
+            model: payload.model,
+            enabled: payload.enabled,
+        },
+    )?;
+    if let Some(api_key) = payload
+        .api_key
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        SystemApiCredentialStore.set_api_key(&provider.credential_ref, api_key)?;
+    }
+    save_preferences_to_path(&path, &preferences)?;
+    let tools = summarize_tool_manifests(packages_root(), &preferences);
+    Ok(PreferencesView { preferences, tools })
+}
+
+#[tauri::command]
+pub async fn delete_api_provider_config_command(
+    app: AppHandle,
+    payload: ApiProviderIdPayload,
+) -> Result<PreferencesView, String> {
+    let (path, mut preferences) = load_preferences_for_app(&app)?;
+    let removed = delete_api_provider_config(&mut preferences, &payload.provider_id)?;
+    SystemApiCredentialStore.delete_api_key(&removed.credential_ref)?;
+    save_preferences_to_path(&path, &preferences)?;
+    let tools = summarize_tool_manifests(packages_root(), &preferences);
+    Ok(PreferencesView { preferences, tools })
+}
+
+#[tauri::command]
+pub async fn set_active_api_provider_command(
+    app: AppHandle,
+    payload: ApiProviderIdPayload,
+) -> Result<PreferencesView, String> {
+    let (path, mut preferences) = load_preferences_for_app(&app)?;
+    set_active_api_provider(&mut preferences, Some(&payload.provider_id))?;
+    save_preferences_to_path(&path, &preferences)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
     Ok(PreferencesView { preferences, tools })
 }

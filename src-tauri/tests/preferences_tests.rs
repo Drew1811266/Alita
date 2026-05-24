@@ -1,12 +1,13 @@
 use alita_lib::commands::model_assignment_role_from_payload;
 use alita_lib::preferences::{
-    add_manual_model, add_speech_to_text_model, agent_model_path, default_agent_model_mode,
-    default_model_path, delete_api_provider_config, ensure_model_storage_dir,
-    import_model_to_storage, load_preferences_from_path, record_recent_project,
-    recover_model_preferences, save_preferences_to_path, scan_model_directory,
-    set_active_api_provider, set_agent_model_mode, set_default_model, set_model_assignment,
-    set_model_storage_dir, speech_to_text_model_path, summarize_tool_manifests, tool_enabled,
-    upsert_api_provider_config, ApiProviderInput, AppPreferences, ModelAssignmentRole, ModelEntry,
+    add_manual_model, add_speech_to_text_model, agent_model_path, api_provider_preset,
+    default_agent_model_mode, default_model_path, delete_api_provider_config,
+    ensure_model_storage_dir, import_model_to_storage, load_preferences_from_path,
+    record_recent_project, recover_model_preferences, save_preferences_to_path,
+    scan_model_directory, set_active_api_provider, set_agent_model_mode, set_default_model,
+    set_model_assignment, set_model_storage_dir, speech_to_text_model_path,
+    summarize_tool_manifests, tool_enabled, upsert_api_provider_config, ApiProviderInput,
+    AppPreferences, ModelAssignmentRole, ModelEntry,
 };
 use std::fs;
 
@@ -137,6 +138,17 @@ fn agent_model_mode_helper_defaults_to_local_and_rejects_unknown_modes() {
 
     assert!(error.contains("unknown agent model mode"));
     assert_eq!(preferences.agent_model_mode, "api");
+}
+
+#[test]
+fn provider_preset_defaults_are_editable_openai_compatible_roots() {
+    let deepseek = api_provider_preset("deepseek").unwrap();
+    let custom = api_provider_preset("custom").unwrap();
+
+    assert_eq!(deepseek.provider_type, "deepseek");
+    assert_eq!(deepseek.base_url, "https://api.deepseek.com");
+    assert_eq!(custom.provider_type, "custom");
+    assert_eq!(custom.base_url, "");
 }
 
 #[test]
