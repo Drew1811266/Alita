@@ -943,6 +943,10 @@ fn prepare_api_provider_test_payload(
         ));
     }
 
+    if payload.display_name.trim().is_empty() {
+        return Err("API provider display name is required".to_string());
+    }
+
     let base_url = payload.base_url.trim().trim_end_matches('/').to_string();
     if base_url.is_empty() {
         return Err("API provider base URL is required".to_string());
@@ -1093,12 +1097,20 @@ async fn probe_openai_chat_completion(
         .await);
     }
 
-    let (_, was_truncated) =
+    let (body, was_truncated) =
         read_api_provider_success_body(response, API_PROVIDER_SUCCESS_BODY_READ_LIMIT)
             .await
             .map_err(|error| format!("chat completion probe response read failed: {error}"))?;
     if was_truncated {
         return Err("chat completion probe response was too large".to_string());
+    }
+
+    let value = serde_json::from_slice::<serde_json::Value>(&body)
+        .map_err(|error| format!("invalid chat completion probe response: {error}"))?;
+    if !is_valid_openai_chat_completion_response(&value) {
+        return Err(
+            "chat completion probe response did not include a valid completion choice".to_string(),
+        );
     }
 
     Ok(())
@@ -1211,6 +1223,38 @@ fn parse_openai_model_ids(response: &serde_json::Value) -> Vec<String> {
         .filter(|id| !id.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+fn is_valid_openai_chat_completion_response(response: &serde_json::Value) -> bool {
+    response.as_object().is_some()
+        && response
+            .get("choices")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|choices| {
+                !choices.is_empty() && choices.iter().any(is_valid_openai_chat_completion_choice)
+            })
+}
+
+fn is_valid_openai_chat_completion_choice(choice: &serde_json::Value) -> bool {
+    choice.get("text").is_some_and(has_non_empty_string)
+        || choice
+            .get("delta")
+            .and_then(|delta| delta.get("content"))
+            .is_some_and(has_non_empty_string)
+        || choice
+            .get("message")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|message| {
+                message.get("content").is_some_and(has_non_empty_string)
+                    || message
+                        .get("tool_calls")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|tool_calls| !tool_calls.is_empty())
+            })
+}
+
+fn has_non_empty_string(value: &serde_json::Value) -> bool {
+    value.as_str().is_some_and(|text| !text.trim().is_empty())
 }
 
 fn redact_api_provider_secret(message: String, api_key: Option<&str>) -> String {
@@ -1338,6 +1382,20 @@ mod tests {
     }
 
     #[test]
+    fn provider_test_rejects_blank_display_name() {
+        let mut payload = valid_test_provider_payload("https://api.openai.com/v1", "gpt-4.1");
+        payload.display_name = "  ".to_string();
+
+        let error = match prepare_api_provider_test_payload(payload) {
+            Ok(_) => panic!("blank display names must be rejected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, "API provider display name is required");
+        assert!(!error.contains("sk-test"));
+    }
+
+    #[test]
     fn provider_test_rejects_provider_type_without_leaking_api_key() {
         let mut payload = valid_test_provider_payload("https://api.openai.com/v1", "gpt-4.1");
         payload.provider_type = "sk-test".to_string();
@@ -1419,6 +1477,76 @@ mod tests {
             .join()
             .expect("redirect target server should finish")
             .is_none());
+    }
+
+    #[test]
+    fn provider_test_rejects_invalid_fallback_chat_completion_response() {
+        for invalid_body in [
+            "not json",
+            "{\"id\":\"chatcmpl-test\",\"choices\":[]}",
+            "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"content\":\"\"}}]}",
+        ] {
+            let (base_url, server) = spawn_test_server_sequence(vec![
+                (
+                    "503 Service Unavailable",
+                    "{\"error\":\"models unavailable\"}",
+                ),
+                ("200 OK", invalid_body),
+            ]);
+
+            let result = tauri::async_runtime::block_on(test_api_provider_connection_core(
+                valid_test_provider_payload(&base_url, "gpt-4.1"),
+            ));
+            let requests = server.join().expect("server should finish");
+
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0].path, "/models");
+            assert_eq!(requests[1].path, "/chat/completions");
+            assert!(!result.ok, "invalid body should fail: {invalid_body}");
+            assert!(result.message.contains("chat completion probe"));
+            assert!(!result.message.contains("sk-test"));
+        }
+    }
+
+    #[test]
+    fn provider_test_accepts_valid_fallback_chat_completion_response() {
+        let chat_body = serde_json::json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "pong"
+                    },
+                    "finish_reason": "stop"
+                }
+            ]
+        })
+        .to_string();
+        let (base_url, server) = spawn_test_server_sequence(vec![
+            (
+                "503 Service Unavailable",
+                "{\"error\":\"models unavailable\"}",
+            ),
+            ("200 OK", chat_body.as_str()),
+        ]);
+
+        let result = tauri::async_runtime::block_on(test_api_provider_connection_core(
+            valid_test_provider_payload(&base_url, "gpt-4.1"),
+        ));
+        let requests = server.join().expect("server should finish");
+
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].path, "/models");
+        assert_eq!(requests[1].path, "/chat/completions");
+        assert!(result.ok);
+        assert_eq!(
+            result.message,
+            "Connection successful; model listing is unavailable"
+        );
+        assert_eq!(result.models, vec!["gpt-4.1".to_string()]);
     }
 
     #[test]
@@ -1553,6 +1681,38 @@ mod tests {
                 .expect("server should write response");
 
             request
+        });
+
+        (format!("http://{address}"), server)
+    }
+
+    fn spawn_test_server_sequence(
+        responses: Vec<(&'static str, &str)>,
+    ) -> (String, thread::JoinHandle<Vec<CapturedRequest>>) {
+        let responses: Vec<(&'static str, String)> = responses
+            .into_iter()
+            .map(|(status, body)| (status, body.to_string()))
+            .collect();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+        let address = listener
+            .local_addr()
+            .expect("test server should have address");
+        let server = thread::spawn(move || {
+            let mut requests = Vec::with_capacity(responses.len());
+            for (status, response_body) in responses {
+                let (mut stream, _) = listener.accept().expect("server should accept request");
+                requests.push(read_http_request(&mut stream));
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("server should write response");
+            }
+
+            requests
         });
 
         (format!("http://{address}"), server)
