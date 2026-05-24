@@ -34,7 +34,7 @@ export type RunNodeGraphMode =
 export async function submitUserMessage(
   payload: SubmitMessagePayload,
 ): Promise<BackendEvent[]> {
-  if (isTauriRuntime()) {
+  if (isTauriRuntime() && !normalizeModelSessionId(payload.modelSessionId)) {
     return invoke<BackendEvent[]>("submit_user_message", { payload });
   }
 
@@ -182,9 +182,14 @@ function toSidecarMessage(payload: SubmitMessagePayload) {
   return {
     task_id: payload.taskId,
     content: payload.content,
-    model_session_id: payload.modelSessionId ?? null,
+    model_session_id: normalizeModelSessionId(payload.modelSessionId),
     attachments: payload.attachments.map(toSidecarAttachment),
   };
+}
+
+function normalizeModelSessionId(modelSessionId: string | null | undefined) {
+  const trimmed = modelSessionId?.trim();
+  return trimmed ? trimmed : null;
 }
 
 async function readSseResponse(

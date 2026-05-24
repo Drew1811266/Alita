@@ -90,6 +90,71 @@ describe("runNodeGraphStream", () => {
     });
   });
 
+  it("posts Tauri message requests with model session ids directly to the sidecar", async () => {
+    Object.defineProperty(globalThis, "__TAURI_INTERNALS__", {
+      value: {},
+      configurable: true,
+    });
+    invokeMock.mockResolvedValue("sidecar-token");
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await submitUserMessage({
+      taskId: "task-1",
+      content: "Run this",
+      attachments: [],
+      modelSessionId: "session-1",
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("get_sidecar_auth_token");
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "submit_user_message",
+      expect.anything(),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/agent/message",
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Alita-Sidecar-Token": "sidecar-token",
+        },
+      }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      task_id: "task-1",
+      model_session_id: "session-1",
+    });
+  });
+
+  it.each([undefined, null, "   "] as const)(
+    "uses the Tauri command for absent model session ids (%s)",
+    async (modelSessionId) => {
+      Object.defineProperty(globalThis, "__TAURI_INTERNALS__", {
+        value: {},
+        configurable: true,
+      });
+      invokeMock.mockResolvedValue([]);
+      const fetchMock = vi.spyOn(globalThis, "fetch");
+      const payload = {
+        taskId: "task-1",
+        content: "Run this",
+        attachments: [],
+        modelSessionId,
+      };
+
+      await submitUserMessage(payload);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(invokeMock).toHaveBeenCalledWith("submit_user_message", {
+        payload,
+      });
+    },
+  );
+
   it("posts the graph and attachments to the sidecar stream endpoint", async () => {
     const events: BackendEvent[] = [];
     const graph: NodeGraph = {
