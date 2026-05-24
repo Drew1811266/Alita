@@ -35,6 +35,7 @@ const view: PreferencesView = {
         enabled: true,
         capabilities: ["chat_completions", "streaming", "model_list"],
         hasApiKey: true,
+        apiKeyStatus: "configured",
         createdAt: "2026-05-24T00:00:00.000Z",
         updatedAt: "2026-05-24T00:00:00.000Z",
         secretSentinel: "sk-test",
@@ -48,7 +49,8 @@ const view: PreferencesView = {
         credentialRef: "alita.api-provider.api-2",
         enabled: true,
         capabilities: ["chat_completions", "streaming"],
-        hasApiKey: true,
+        hasApiKey: false,
+        apiKeyStatus: "unknown",
         createdAt: "2026-05-24T00:00:00.000Z",
         updatedAt: "2026-05-24T00:00:00.000Z",
       },
@@ -440,6 +442,7 @@ describe("PreferencesDialog", () => {
     expect(markup).toContain("gpt-4.1");
     expect(markup).toContain("https://api.openai.com/v1");
     expect(markup).toContain("密钥已配置");
+    expect(markup).toContain("密钥状态不可用");
     expect(markup).toContain("当前 Agent API");
     expect(markup).toContain("设为当前 API：DeepSeek");
     expect(markup).toContain("删除 API 供应商：OpenAI");

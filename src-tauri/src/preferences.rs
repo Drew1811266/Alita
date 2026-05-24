@@ -37,6 +37,8 @@ pub struct ApiProviderConfig {
     pub credential_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub has_api_key: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_status: Option<String>,
     pub enabled: bool,
     pub capabilities: Vec<String>,
     pub created_at: String,
@@ -216,6 +218,7 @@ fn normalize_preferences(preferences: &mut AppPreferences) {
     }
     for provider in &mut preferences.api_provider_configs {
         provider.has_api_key = None;
+        provider.api_key_status = None;
     }
 }
 
@@ -376,6 +379,7 @@ pub fn upsert_api_provider_config(
     let capabilities = provider_default_capabilities(&provider_type);
     let config = ApiProviderConfig {
         credential_ref: api_provider_credential_ref(&provider_id),
+        api_key_status: None,
         has_api_key: None,
         provider_id: provider_id.clone(),
         provider_type,

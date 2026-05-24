@@ -177,6 +177,8 @@ export type ApiProviderCapability =
   | "streaming"
   | "model_list";
 
+export type ApiProviderKeyStatus = "configured" | "missing" | "unknown";
+
 export type ApiProviderConfig = {
   providerId: string;
   providerType: ApiProviderType;
@@ -186,7 +188,8 @@ export type ApiProviderConfig = {
   credentialRef: string;
   enabled: boolean;
   capabilities: ApiProviderCapability[];
-  hasApiKey?: boolean;
+  hasApiKey: boolean;
+  apiKeyStatus: ApiProviderKeyStatus;
   createdAt: string;
   updatedAt: string;
 };

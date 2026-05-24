@@ -146,9 +146,12 @@ fn api_provider_preferences_view_reports_configured_key_status_without_leaking_s
         .find(|provider| provider.provider_id == provider_without_key.provider_id)
         .unwrap();
     assert_eq!(with_key.has_api_key, Some(true));
+    assert_eq!(with_key.api_key_status.as_deref(), Some("configured"));
     assert_eq!(without_key.has_api_key, Some(false));
+    assert_eq!(without_key.api_key_status.as_deref(), Some("missing"));
     assert!(!saved_preferences.contains("sk-secret"));
     assert!(!saved_preferences.contains("hasApiKey"));
+    assert!(!saved_preferences.contains("apiKeyStatus"));
 }
 
 #[test]
@@ -159,7 +162,16 @@ fn api_provider_preferences_view_does_not_fail_when_key_status_read_fails() {
 
     let view = preferences_view_with_api_key_status(preferences, Vec::new(), &credential_store);
 
-    assert_eq!(view.preferences.api_provider_configs[0].has_api_key, None);
+    assert_eq!(
+        view.preferences.api_provider_configs[0].has_api_key,
+        Some(false)
+    );
+    assert_eq!(
+        view.preferences.api_provider_configs[0]
+            .api_key_status
+            .as_deref(),
+        Some("unknown")
+    );
 }
 
 #[test]

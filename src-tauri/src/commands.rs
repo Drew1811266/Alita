@@ -201,10 +201,20 @@ pub fn preferences_view_with_api_key_status(
     credential_store: &dyn ApiCredentialStore,
 ) -> PreferencesView {
     for provider in &mut preferences.api_provider_configs {
-        provider.has_api_key = credential_store
-            .get_api_key(&provider.credential_ref)
-            .ok()
-            .map(|api_key| api_key.is_some_and(|api_key| !api_key.trim().is_empty()));
+        match credential_store.get_api_key(&provider.credential_ref) {
+            Ok(Some(api_key)) if !api_key.trim().is_empty() => {
+                provider.has_api_key = Some(true);
+                provider.api_key_status = Some("configured".to_string());
+            }
+            Ok(_) => {
+                provider.has_api_key = Some(false);
+                provider.api_key_status = Some("missing".to_string());
+            }
+            Err(_) => {
+                provider.has_api_key = Some(false);
+                provider.api_key_status = Some("unknown".to_string());
+            }
+        }
     }
 
     PreferencesView { preferences, tools }

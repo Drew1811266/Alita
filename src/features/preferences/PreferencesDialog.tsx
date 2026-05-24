@@ -770,7 +770,7 @@ function ApiProviderList({
             </div>
             <span>{provider.model}</span>
             <span>{provider.baseUrl}</span>
-            <span>{provider.hasApiKey ? "密钥已配置" : "未配置密钥"}</span>
+            <span>{apiProviderKeyStatusText(provider)}</span>
             <div className="apiProviderActions">
               {!isActive ? (
                 <button
@@ -804,6 +804,16 @@ function ApiProviderList({
       })}
     </ul>
   );
+}
+
+function apiProviderKeyStatusText(provider: ApiProviderConfig): string {
+  if (provider.apiKeyStatus === "unknown") {
+    return "密钥状态不可用";
+  }
+  if (provider.apiKeyStatus === "configured" || provider.hasApiKey) {
+    return "密钥已配置";
+  }
+  return "未配置密钥";
 }
 
 function ModelItem({

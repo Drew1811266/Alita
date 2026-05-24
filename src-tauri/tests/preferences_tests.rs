@@ -173,6 +173,7 @@ fn api_provider_configs_do_not_store_api_keys() {
     assert!(serialized.contains("deepseek-chat"));
     assert!(serialized.contains("alita.api-provider."));
     assert!(!serialized.contains("hasApiKey"));
+    assert!(!serialized.contains("apiKeyStatus"));
     assert!(!serialized.contains("sk-"));
     assert_eq!(preferences.agent_model_mode, "api");
     assert_eq!(
@@ -209,6 +210,7 @@ fn load_preferences_clears_stale_api_provider_key_status() {
                     "model": "gpt-4.1",
                     "credentialRef": "alita.api-provider.provider-1",
                     "hasApiKey": true,
+                    "apiKeyStatus": "configured",
                     "enabled": true,
                     "capabilities": ["chat_completions"],
                     "createdAt": "2026-05-24T00:00:00.000Z",
@@ -223,6 +225,7 @@ fn load_preferences_clears_stale_api_provider_key_status() {
     let preferences = load_preferences_from_path(&path).unwrap();
 
     assert_eq!(preferences.api_provider_configs[0].has_api_key, None);
+    assert_eq!(preferences.api_provider_configs[0].api_key_status, None);
 }
 
 #[test]
