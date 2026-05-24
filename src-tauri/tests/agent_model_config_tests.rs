@@ -57,6 +57,7 @@ fn legacy_valid_provider() -> ApiProviderConfig {
         base_url: "https://api.openai.com/v1".to_string(),
         model: "gpt-4.1".to_string(),
         credential_ref: "alita.api-provider.provider-1".to_string(),
+        has_api_key: None,
         enabled: true,
         capabilities: vec!["chat_completions".to_string()],
         created_at: "2026-05-24T00:00:00.000Z".to_string(),

@@ -172,12 +172,57 @@ fn api_provider_configs_do_not_store_api_keys() {
 
     assert!(serialized.contains("deepseek-chat"));
     assert!(serialized.contains("alita.api-provider."));
+    assert!(!serialized.contains("hasApiKey"));
     assert!(!serialized.contains("sk-"));
     assert_eq!(preferences.agent_model_mode, "api");
     assert_eq!(
         preferences.active_api_provider_id,
         Some(provider.provider_id)
     );
+}
+
+#[test]
+fn load_preferences_clears_stale_api_provider_key_status() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let path = temp_dir.path().join("preferences.json");
+    std::fs::write(
+        &path,
+        r#"{
+            "schemaVersion": 3,
+            "recentProjects": [],
+            "modelDirectories": [],
+            "modelStorageDir": "",
+            "models": [],
+            "defaultModelId": null,
+            "modelAssignments": {
+                "agentChatModelId": null,
+                "speechToTextModelId": null
+            },
+            "agentModelMode": "api",
+            "activeApiProviderId": "provider-1",
+            "apiProviderConfigs": [
+                {
+                    "providerId": "provider-1",
+                    "providerType": "openai",
+                    "displayName": "OpenAI",
+                    "baseUrl": "https://api.openai.com/v1",
+                    "model": "gpt-4.1",
+                    "credentialRef": "alita.api-provider.provider-1",
+                    "hasApiKey": true,
+                    "enabled": true,
+                    "capabilities": ["chat_completions"],
+                    "createdAt": "2026-05-24T00:00:00.000Z",
+                    "updatedAt": "2026-05-24T00:00:00.000Z"
+                }
+            ],
+            "toolEnablement": {}
+        }"#,
+    )
+    .unwrap();
+
+    let preferences = load_preferences_from_path(&path).unwrap();
+
+    assert_eq!(preferences.api_provider_configs[0].has_api_key, None);
 }
 
 #[test]

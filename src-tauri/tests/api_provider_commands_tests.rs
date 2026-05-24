@@ -1,11 +1,12 @@
 use alita_lib::{
     api_credentials::ApiCredentialStore,
     commands::{
-        delete_api_provider_config_core, save_api_provider_config_core, SaveApiProviderPayload,
+        delete_api_provider_config_core, preferences_view_with_api_key_status,
+        save_api_provider_config_core, SaveApiProviderPayload,
     },
     preferences::{upsert_api_provider_config, ApiProviderInput, AppPreferences},
 };
-use std::sync::Mutex;
+use std::{collections::HashMap, sync::Mutex};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CredentialOperation {
@@ -20,6 +21,7 @@ enum CredentialOperation {
 
 struct RecordingCredentialStore {
     operations: Mutex<Vec<CredentialOperation>>,
+    api_keys: Mutex<HashMap<String, String>>,
     set_error: Option<String>,
     delete_error: Option<String>,
 }
@@ -28,6 +30,7 @@ impl Default for RecordingCredentialStore {
     fn default() -> Self {
         Self {
             operations: Mutex::new(Vec::new()),
+            api_keys: Mutex::new(HashMap::new()),
             set_error: None,
             delete_error: None,
         }
@@ -52,6 +55,13 @@ impl RecordingCredentialStore {
     fn operations(&self) -> Vec<CredentialOperation> {
         self.operations.lock().unwrap().clone()
     }
+
+    fn insert_api_key(&self, credential_ref: &str, api_key: &str) {
+        self.api_keys
+            .lock()
+            .unwrap()
+            .insert(credential_ref.to_string(), api_key.to_string());
+    }
 }
 
 impl ApiCredentialStore for RecordingCredentialStore {
@@ -69,8 +79,8 @@ impl ApiCredentialStore for RecordingCredentialStore {
         }
     }
 
-    fn get_api_key(&self, _credential_ref: &str) -> Result<Option<String>, String> {
-        Ok(None)
+    fn get_api_key(&self, credential_ref: &str) -> Result<Option<String>, String> {
+        Ok(self.api_keys.lock().unwrap().get(credential_ref).cloned())
     }
 
     fn delete_api_key(&self, credential_ref: &str) -> Result<(), String> {
@@ -85,6 +95,48 @@ impl ApiCredentialStore for RecordingCredentialStore {
             None => Ok(()),
         }
     }
+}
+
+#[test]
+fn api_provider_preferences_view_reports_configured_key_status_without_leaking_secret() {
+    let mut preferences = AppPreferences::default();
+    let provider_with_key =
+        upsert_api_provider_config(&mut preferences, valid_api_provider_input()).unwrap();
+    let provider_without_key = upsert_api_provider_config(
+        &mut preferences,
+        ApiProviderInput {
+            provider_id: None,
+            provider_type: "deepseek".to_string(),
+            display_name: "DeepSeek".to_string(),
+            base_url: "https://api.deepseek.com".to_string(),
+            model: "deepseek-chat".to_string(),
+            enabled: true,
+        },
+    )
+    .unwrap();
+    let saved_preferences = serde_json::to_string(&preferences).unwrap();
+    let credential_store = RecordingCredentialStore::default();
+    credential_store.insert_api_key(&provider_with_key.credential_ref, "sk-secret");
+
+    let view =
+        preferences_view_with_api_key_status(preferences, Vec::new(), &credential_store).unwrap();
+
+    let with_key = view
+        .preferences
+        .api_provider_configs
+        .iter()
+        .find(|provider| provider.provider_id == provider_with_key.provider_id)
+        .unwrap();
+    let without_key = view
+        .preferences
+        .api_provider_configs
+        .iter()
+        .find(|provider| provider.provider_id == provider_without_key.provider_id)
+        .unwrap();
+    assert_eq!(with_key.has_api_key, Some(true));
+    assert_eq!(without_key.has_api_key, Some(false));
+    assert!(!saved_preferences.contains("sk-secret"));
+    assert!(!saved_preferences.contains("hasApiKey"));
 }
 
 fn valid_save_payload(api_key: Option<&str>) -> SaveApiProviderPayload {

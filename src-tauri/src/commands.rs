@@ -195,6 +195,22 @@ pub struct PreferencesView {
     pub tools: Vec<ToolSummary>,
 }
 
+pub fn preferences_view_with_api_key_status(
+    mut preferences: AppPreferences,
+    tools: Vec<ToolSummary>,
+    credential_store: &dyn ApiCredentialStore,
+) -> Result<PreferencesView, String> {
+    for provider in &mut preferences.api_provider_configs {
+        provider.has_api_key = Some(
+            credential_store
+                .get_api_key(&provider.credential_ref)?
+                .is_some_and(|api_key| !api_key.trim().is_empty()),
+        );
+    }
+
+    Ok(PreferencesView { preferences, tools })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactTextPreview {
@@ -602,7 +618,7 @@ pub async fn save_project(
 pub async fn get_preferences(app: AppHandle) -> Result<PreferencesView, String> {
     let (_, preferences) = load_preferences_for_app(&app)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
-    Ok(PreferencesView { preferences, tools })
+    preferences_view_with_api_key_status(preferences, tools, &SystemApiCredentialStore)
 }
 
 #[tauri::command]
@@ -614,7 +630,7 @@ pub async fn set_agent_model_mode_command(
     set_agent_model_mode(&mut preferences, &payload.mode)?;
     save_preferences_to_path(&path, &preferences)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
-    Ok(PreferencesView { preferences, tools })
+    preferences_view_with_api_key_status(preferences, tools, &SystemApiCredentialStore)
 }
 
 #[tauri::command]
@@ -630,7 +646,7 @@ pub async fn save_api_provider_config(
         |prefs| save_preferences_to_path(&path, prefs),
     )?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
-    Ok(PreferencesView { preferences, tools })
+    preferences_view_with_api_key_status(preferences, tools, &SystemApiCredentialStore)
 }
 
 pub fn save_api_provider_config_core<F>(
@@ -701,7 +717,7 @@ pub async fn delete_api_provider_config_command(
         |prefs| save_preferences_to_path(&path, prefs),
     )?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
-    Ok(PreferencesView { preferences, tools })
+    preferences_view_with_api_key_status(preferences, tools, &SystemApiCredentialStore)
 }
 
 pub fn delete_api_provider_config_core<F>(
@@ -755,7 +771,7 @@ pub async fn set_active_api_provider_command(
     set_active_api_provider(&mut preferences, Some(&payload.provider_id))?;
     save_preferences_to_path(&path, &preferences)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
-    Ok(PreferencesView { preferences, tools })
+    preferences_view_with_api_key_status(preferences, tools, &SystemApiCredentialStore)
 }
 
 #[tauri::command]
@@ -767,7 +783,7 @@ pub async fn add_model_file(
     add_manual_model(&mut preferences, PathBuf::from(payload.path))?;
     save_preferences_to_path(&path, &preferences)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
-    Ok(PreferencesView { preferences, tools })
+    preferences_view_with_api_key_status(preferences, tools, &SystemApiCredentialStore)
 }
 
 #[tauri::command]
@@ -779,7 +795,7 @@ pub async fn add_speech_to_text_model_directory(
     add_speech_to_text_model(&mut preferences, PathBuf::from(payload.path))?;
     save_preferences_to_path(&path, &preferences)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
-    Ok(PreferencesView { preferences, tools })
+    preferences_view_with_api_key_status(preferences, tools, &SystemApiCredentialStore)
 }
 
 #[tauri::command]
@@ -792,7 +808,7 @@ pub async fn import_model_file(
     import_model_to_storage(&mut preferences, PathBuf::from(payload.path), storage_dir)?;
     save_preferences_to_path(&path, &preferences)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
-    Ok(PreferencesView { preferences, tools })
+    preferences_view_with_api_key_status(preferences, tools, &SystemApiCredentialStore)
 }
 
 #[tauri::command]
@@ -804,7 +820,7 @@ pub async fn scan_model_directory_command(
     scan_model_directory(&mut preferences, PathBuf::from(payload.path))?;
     save_preferences_to_path(&path, &preferences)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
-    Ok(PreferencesView { preferences, tools })
+    preferences_view_with_api_key_status(preferences, tools, &SystemApiCredentialStore)
 }
 
 #[tauri::command]
@@ -816,7 +832,7 @@ pub async fn set_model_storage_directory(
     set_model_storage_dir(&mut preferences, PathBuf::from(payload.path))?;
     save_preferences_to_path(&path, &preferences)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
-    Ok(PreferencesView { preferences, tools })
+    preferences_view_with_api_key_status(preferences, tools, &SystemApiCredentialStore)
 }
 
 #[tauri::command]
@@ -828,7 +844,7 @@ pub async fn set_default_model_command(
     set_default_model(&mut preferences, payload.model_id.as_deref())?;
     save_preferences_to_path(&path, &preferences)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
-    Ok(PreferencesView { preferences, tools })
+    preferences_view_with_api_key_status(preferences, tools, &SystemApiCredentialStore)
 }
 
 #[tauri::command]
@@ -841,7 +857,7 @@ pub async fn set_model_assignment_command(
     set_model_assignment(&mut preferences, role, payload.model_id.as_deref())?;
     save_preferences_to_path(&path, &preferences)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
-    Ok(PreferencesView { preferences, tools })
+    preferences_view_with_api_key_status(preferences, tools, &SystemApiCredentialStore)
 }
 
 pub fn model_assignment_role_from_payload(role: &str) -> Result<ModelAssignmentRole, String> {
@@ -863,7 +879,7 @@ pub async fn set_tool_enabled(
         .insert(payload.tool_id, payload.enabled);
     save_preferences_to_path(&path, &preferences)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
-    Ok(PreferencesView { preferences, tools })
+    preferences_view_with_api_key_status(preferences, tools, &SystemApiCredentialStore)
 }
 
 fn preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
