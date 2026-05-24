@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cancelNodeGraphRun,
   createSseEventParser,
+  submitUserMessage,
   runNodeGraphStream,
 } from "./useTaskEvents";
 import type { BackendEvent } from "../../shared/events";
@@ -50,6 +51,45 @@ describe("createSseEventParser", () => {
 });
 
 describe("runNodeGraphStream", () => {
+  it("posts model session ids with sidecar message requests", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await submitUserMessage({
+      taskId: "task-1",
+      content: "Run this",
+      attachments: [],
+      modelSessionId: "session-1",
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      task_id: "task-1",
+      model_session_id: "session-1",
+    });
+  });
+
+  it("posts null model session ids with sidecar message requests when omitted", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await submitUserMessage({
+      taskId: "task-1",
+      content: "Run this",
+      attachments: [],
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      task_id: "task-1",
+      model_session_id: null,
+    });
+  });
+
   it("posts the graph and attachments to the sidecar stream endpoint", async () => {
     const events: BackendEvent[] = [];
     const graph: NodeGraph = {
@@ -97,6 +137,7 @@ describe("runNodeGraphStream", () => {
           mode: { type: "full" },
           disabled_tool_ids: [],
           approved_permissions: [],
+          model_session_id: null,
           attachments: [
             {
               attachment_id: "a1",
@@ -198,6 +239,34 @@ describe("runNodeGraphStream", () => {
 
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
       approved_permissions: ["network"],
+    });
+  });
+
+  it("posts model session ids with graph run requests", async () => {
+    const graph: NodeGraph = { graphId: "graph-1", nodes: [], edges: [] };
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(
+          'data: {"type":"run.started","payload":{"runId":"run-1","taskId":"task-1","startedAt":"2026-05-10T00:00:00.000Z"}}\n\n',
+        ),
+      );
+
+    await runNodeGraphStream(
+      {
+        runId: "run-1",
+        taskId: "task-1",
+        projectPath: "D:\\Project\\demo.alita",
+        graph,
+        attachments: [],
+        modelSessionId: "session-1",
+        mode: { type: "full" },
+      },
+      () => undefined,
+    );
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      model_session_id: "session-1",
     });
   });
 

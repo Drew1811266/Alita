@@ -10,6 +10,7 @@ export type SubmitMessagePayload = {
   taskId: string;
   content: string;
   attachments: ChatAttachment[];
+  modelSessionId?: string | null;
 };
 
 export type RunNodeGraphPayload = {
@@ -21,6 +22,7 @@ export type RunNodeGraphPayload = {
   mode: RunNodeGraphMode;
   disabledToolIds?: string[];
   approvedPermissions?: string[];
+  modelSessionId?: string | null;
   signal?: AbortSignal;
 };
 
@@ -90,6 +92,7 @@ export async function runNodeGraphStream(
       mode: toSidecarRunMode(payload.mode),
       disabled_tool_ids: payload.disabledToolIds ?? [],
       approved_permissions: payload.approvedPermissions ?? [],
+      model_session_id: payload.modelSessionId ?? null,
       attachments: payload.attachments.map(toSidecarAttachment),
     }),
   });
@@ -179,6 +182,7 @@ function toSidecarMessage(payload: SubmitMessagePayload) {
   return {
     task_id: payload.taskId,
     content: payload.content,
+    model_session_id: payload.modelSessionId ?? null,
     attachments: payload.attachments.map(toSidecarAttachment),
   };
 }
