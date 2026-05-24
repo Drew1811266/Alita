@@ -6,7 +6,7 @@ import type { PreferencesView } from "./preferencesApi";
 
 const view: PreferencesView = {
   preferences: {
-    schemaVersion: 2,
+    schemaVersion: 3,
     recentProjects: [],
     modelDirectories: ["D:\\Models"],
     modelStorageDir:
@@ -16,6 +16,9 @@ const view: PreferencesView = {
       agentChatModelId: "model-1",
       speechToTextModelId: "asr-1",
     },
+    agentModelMode: "local",
+    activeApiProviderId: null,
+    apiProviderConfigs: [],
     models: [
       {
         modelId: "model-1",

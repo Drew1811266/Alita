@@ -10,6 +10,17 @@ use alita_lib::preferences::{
 };
 use std::fs;
 
+fn valid_api_provider_input() -> ApiProviderInput {
+    ApiProviderInput {
+        provider_id: None,
+        provider_type: "openai".to_string(),
+        display_name: "OpenAI".to_string(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        model: "gpt-4.1".to_string(),
+        enabled: true,
+    }
+}
+
 #[test]
 fn default_preferences_have_schema_version_three_and_local_agent_mode() {
     let preferences = AppPreferences::default();
@@ -209,6 +220,114 @@ fn upsert_api_provider_config_normalizes_custom_provider_input() {
         provider.capabilities,
         vec!["chat_completions".to_string(), "streaming".to_string()]
     );
+}
+
+#[test]
+fn upsert_api_provider_config_rejects_invalid_provider_type() {
+    let mut preferences = AppPreferences::default();
+
+    let error = upsert_api_provider_config(
+        &mut preferences,
+        ApiProviderInput {
+            provider_type: "anthropic".to_string(),
+            ..valid_api_provider_input()
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.contains("unknown API provider type"));
+    assert!(preferences.api_provider_configs.is_empty());
+    assert_eq!(preferences.agent_model_mode, "local");
+}
+
+#[test]
+fn upsert_api_provider_config_rejects_blank_required_fields() {
+    let cases = [
+        (
+            ApiProviderInput {
+                display_name: "  ".to_string(),
+                ..valid_api_provider_input()
+            },
+            "display name",
+        ),
+        (
+            ApiProviderInput {
+                base_url: " /// ".to_string(),
+                ..valid_api_provider_input()
+            },
+            "base URL",
+        ),
+        (
+            ApiProviderInput {
+                model: "  ".to_string(),
+                ..valid_api_provider_input()
+            },
+            "model name",
+        ),
+    ];
+
+    for (input, expected_error) in cases {
+        let mut preferences = AppPreferences::default();
+
+        let error = upsert_api_provider_config(&mut preferences, input).unwrap_err();
+
+        assert!(error.contains(expected_error));
+        assert!(preferences.api_provider_configs.is_empty());
+        assert_eq!(preferences.agent_model_mode, "local");
+    }
+}
+
+#[test]
+fn upsert_api_provider_config_updates_existing_provider_without_changing_secret_ref() {
+    let mut preferences = AppPreferences::default();
+    let created = upsert_api_provider_config(&mut preferences, valid_api_provider_input()).unwrap();
+
+    let updated = upsert_api_provider_config(
+        &mut preferences,
+        ApiProviderInput {
+            provider_id: Some(created.provider_id.clone()),
+            provider_type: "deepseek".to_string(),
+            display_name: " DeepSeek ".to_string(),
+            base_url: "https://api.deepseek.com///".to_string(),
+            model: " deepseek-chat ".to_string(),
+            enabled: false,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(preferences.api_provider_configs.len(), 1);
+    assert_eq!(updated.provider_id, created.provider_id);
+    assert_eq!(updated.credential_ref, created.credential_ref);
+    assert_eq!(updated.created_at, created.created_at);
+    assert_eq!(updated.provider_type, "deepseek");
+    assert_eq!(updated.display_name, "DeepSeek");
+    assert_eq!(updated.base_url, "https://api.deepseek.com");
+    assert_eq!(updated.model, "deepseek-chat");
+    assert!(!updated.enabled);
+}
+
+#[test]
+fn first_api_provider_is_auto_selected() {
+    let mut preferences = AppPreferences::default();
+
+    let provider = upsert_api_provider_config(&mut preferences, valid_api_provider_input()).unwrap();
+
+    assert_eq!(
+        preferences.active_api_provider_id.as_deref(),
+        Some(provider.provider_id.as_str())
+    );
+    assert_eq!(preferences.agent_model_mode, "api");
+}
+
+#[test]
+fn set_active_api_provider_rejects_unknown_provider_id() {
+    let mut preferences = AppPreferences::default();
+
+    let error = set_active_api_provider(&mut preferences, Some("missing-provider")).unwrap_err();
+
+    assert!(error.contains("unknown API provider id"));
+    assert!(preferences.active_api_provider_id.is_none());
+    assert_eq!(preferences.agent_model_mode, "local");
 }
 
 #[test]

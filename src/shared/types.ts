@@ -241,17 +241,7 @@ export type AppPreferences = {
   toolEnablement: Record<string, boolean>;
 };
 
-type LegacyAppPreferences = Omit<
-  AppPreferences,
-  | "schemaVersion"
-  | "agentModelMode"
-  | "activeApiProviderId"
-  | "apiProviderConfigs"
-> & {
-  schemaVersion: 2;
-};
-
 export type PreferencesView = {
-  preferences: AppPreferences | LegacyAppPreferences;
+  preferences: AppPreferences;
   tools: ToolSummary[];
 };
