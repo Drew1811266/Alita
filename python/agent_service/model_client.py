@@ -224,31 +224,37 @@ class OpenAICompatibleModelClient:
     ) -> Iterator[str]:
         self._ensure_enabled()
 
-        for data in _iter_sse_data(
-            self._stream_transport(
-                self._chat_url(),
-                self._payload(messages, temperature, max_tokens, stream=True),
-                self.config.timeout_seconds,
-                self._headers(),
-            )
-        ):
-            if data == "[DONE]":
-                break
-
-            try:
-                payload = json.loads(data)
-                delta = payload["choices"][0]["delta"].get("content", "")
-            except (json.JSONDecodeError, KeyError, IndexError, TypeError) as error:
-                raise ModelRuntimeRequestFailed(
-                    "OpenAI-compatible API returned an unexpected streaming chat response shape"
-                ) from error
-
-            if not isinstance(delta, str):
-                raise ModelRuntimeRequestFailed(
-                    "OpenAI-compatible API returned an unexpected streaming chat response shape"
+        try:
+            for data in _iter_sse_data(
+                self._stream_transport(
+                    self._chat_url(),
+                    self._payload(messages, temperature, max_tokens, stream=True),
+                    self.config.timeout_seconds,
+                    self._headers(),
                 )
-            if delta:
-                yield delta
+            ):
+                if data == "[DONE]":
+                    break
+
+                try:
+                    payload = json.loads(data)
+                    delta = payload["choices"][0]["delta"].get("content", "")
+                except (json.JSONDecodeError, KeyError, IndexError, TypeError) as error:
+                    raise ModelRuntimeRequestFailed(
+                        "OpenAI-compatible API returned an unexpected streaming chat response shape"
+                    ) from error
+
+                if not isinstance(delta, str):
+                    raise ModelRuntimeRequestFailed(
+                        "OpenAI-compatible API returned an unexpected streaming chat response shape"
+                    )
+                if delta:
+                    yield delta
+        except UnicodeDecodeError as error:
+            provider = self.config.provider_display_name.strip() or "API provider"
+            raise ModelRuntimeRequestFailed(
+                f"{provider} returned a malformed streaming chat chunk"
+            ) from error
 
     def _ensure_enabled(self) -> None:
         if not self.config.api_key or not self.config.api_key.strip():

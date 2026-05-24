@@ -267,7 +267,7 @@ def test_openai_compatible_client_streams_chat_chunks() -> None:
     def stream_transport(url: str, payload: dict, timeout: float, headers: dict[str, str]):
         return [
             b'data: {"choices":[{"delta":{"content":"A"}}]}\n\n',
-            b'data: {"choices":[{"delta":{"content":"B"}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":"B"}}]}\n\n',
             b"data: [DONE]\n\n",
         ]
 
@@ -284,6 +284,29 @@ def test_openai_compatible_client_streams_chat_chunks() -> None:
     )
 
     assert list(client.stream_chat([ChatMessage(role="user", content="hello")])) == ["A", "B"]
+
+
+def test_openai_compatible_client_wraps_malformed_stream_bytes() -> None:
+    def stream_transport(url: str, payload: dict, timeout: float, headers: dict[str, str]):
+        return [b"\xff"]
+
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4.1",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+        ),
+        stream_transport=stream_transport,
+    )
+
+    with pytest.raises(
+        ModelRuntimeRequestFailed,
+        match="OpenAI returned a malformed streaming chat chunk",
+    ):
+        list(client.stream_chat([ChatMessage(role="user", content="hello")]))
 
 
 def test_openai_compatible_client_rejects_missing_api_key() -> None:
