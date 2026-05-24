@@ -1,5 +1,7 @@
+import type { ComponentProps, ReactElement, ReactNode } from "react";
+import { isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { PreferencesDialog } from "./PreferencesDialog";
 import type { PreferencesView } from "./preferencesApi";
@@ -28,6 +30,20 @@ const view: PreferencesView = {
         credentialRef: "alita.api-provider.api-1",
         enabled: true,
         capabilities: ["chat_completions", "streaming", "model_list"],
+        hasApiKey: true,
+        createdAt: "2026-05-24T00:00:00.000Z",
+        updatedAt: "2026-05-24T00:00:00.000Z",
+        secretSentinel: "sk-test",
+      } as unknown as PreferencesView["preferences"]["apiProviderConfigs"][number],
+      {
+        providerId: "api-2",
+        providerType: "deepseek",
+        displayName: "DeepSeek",
+        baseUrl: "https://api.deepseek.com/v1",
+        model: "deepseek-chat",
+        credentialRef: "alita.api-provider.api-2",
+        enabled: true,
+        capabilities: ["chat_completions", "streaming"],
         hasApiKey: true,
         createdAt: "2026-05-24T00:00:00.000Z",
         updatedAt: "2026-05-24T00:00:00.000Z",
@@ -97,6 +113,111 @@ const view: PreferencesView = {
   ],
 };
 
+type TestButton = ReactElement<{
+  "aria-label"?: string;
+  "aria-pressed"?: boolean | "true" | "false";
+  children?: ReactNode;
+  onClick?: () => void;
+}>;
+
+function renderPreferenceElements(
+  props: Partial<ComponentProps<typeof PreferencesDialog>> = {},
+): ReactElement[] {
+  return collectElements(
+    <PreferencesDialog
+      error={null}
+      loading={false}
+      onAddModel={() => undefined}
+      onAddSpeechToTextModel={() => undefined}
+      onClose={() => undefined}
+      onImportModel={() => undefined}
+      onScanModelDirectory={() => undefined}
+      onDeleteApiProvider={() => undefined}
+      onSaveApiProvider={() => undefined}
+      onSetActiveApiProvider={() => undefined}
+      onSetDefaultModel={() => undefined}
+      onSetAgentModelMode={() => undefined}
+      onSetModelAssignment={() => undefined}
+      onSetModelStorageDirectory={() => undefined}
+      onSetToolEnabled={() => undefined}
+      open
+      view={view}
+      {...props}
+    />,
+  );
+}
+
+function collectElements(node: ReactNode): ReactElement[] {
+  const elements: ReactElement[] = [];
+
+  function visit(current: ReactNode): void {
+    if (Array.isArray(current)) {
+      current.forEach(visit);
+      return;
+    }
+
+    if (!isValidElement(current)) {
+      return;
+    }
+
+    if (typeof current.type === "function") {
+      const FunctionComponent = current.type as (props: unknown) => ReactNode;
+      visit(FunctionComponent(current.props));
+      return;
+    }
+
+    elements.push(current);
+    visit((current.props as { children?: ReactNode }).children);
+  }
+
+  visit(node);
+  return elements;
+}
+
+function buttonText(button: TestButton): string {
+  return textContent(button.props.children);
+}
+
+function textContent(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(textContent).join("");
+  }
+
+  if (isValidElement(node)) {
+    return textContent((node.props as { children?: ReactNode }).children);
+  }
+
+  return "";
+}
+
+function findButtonByLabel(elements: ReactElement[], label: string): TestButton {
+  const button = elements.find(
+    (element): element is TestButton =>
+      element.type === "button" &&
+      (element.props as { "aria-label"?: string })["aria-label"] === label,
+  );
+
+  if (!button) {
+    throw new Error(`Button with aria-label "${label}" was not found.`);
+  }
+
+  return button;
+}
+
+function findButtonsByText(
+  elements: ReactElement[],
+  text: string,
+): TestButton[] {
+  return elements.filter(
+    (element): element is TestButton =>
+      element.type === "button" && buttonText(element as TestButton) === text,
+  );
+}
+
 describe("PreferencesDialog", () => {
   it("renders model storage and tool management sections", () => {
     const markup = renderToStaticMarkup(
@@ -124,6 +245,9 @@ describe("PreferencesDialog", () => {
     expect(markup).toContain("首选项");
     expect(markup).toContain("Agent 模型配置");
     expect(markup).toContain("Agent 模型来源");
+    expect(markup).toContain('role="group"');
+    expect(markup).toContain('aria-pressed="false"');
+    expect(markup).toContain('aria-pressed="true"');
     expect(markup).toContain("本地模型");
     expect(markup).toContain("API 模型");
     expect(markup).toContain("API 供应商");
@@ -132,9 +256,13 @@ describe("PreferencesDialog", () => {
     expect(markup).toContain("https://api.openai.com/v1");
     expect(markup).toContain("密钥已配置");
     expect(markup).toContain("当前 Agent API");
+    expect(markup).toContain("设为当前 API：DeepSeek");
+    expect(markup).toContain("删除 API 供应商：OpenAI");
+    expect(markup).toContain("删除 API 供应商：DeepSeek");
     expect(markup).toContain("删除");
     expect(markup).not.toContain("sk-test");
     expect(markup).not.toContain("alita.api-provider.api-1");
+    expect(markup).not.toContain("alita.api-provider.api-2");
     expect(markup).toContain("模型");
     expect(markup).toContain("模型存储目录");
     expect(markup).toContain("更改目录");
@@ -159,5 +287,42 @@ describe("PreferencesDialog", () => {
     expect(markup).toContain("工具节点");
     expect(markup).toContain("文档处理工具包");
     expect(markup).toContain("启用");
+  });
+
+  it("calls the mode change handler from local and API buttons", () => {
+    const onSetAgentModelMode = vi.fn();
+    const elements = renderPreferenceElements({ onSetAgentModelMode });
+
+    const [localButton] = findButtonsByText(elements, "本地模型");
+    const [apiButton] = findButtonsByText(elements, "API 模型");
+
+    expect(localButton.props["aria-pressed"]).toBe(false);
+    expect(apiButton.props["aria-pressed"]).toBe(true);
+
+    localButton.props.onClick?.();
+    apiButton.props.onClick?.();
+
+    expect(onSetAgentModelMode).toHaveBeenNthCalledWith(1, "local");
+    expect(onSetAgentModelMode).toHaveBeenNthCalledWith(2, "api");
+  });
+
+  it("calls the set-active handler for a provider-specific action", () => {
+    const onSetActiveApiProvider = vi.fn();
+    const elements = renderPreferenceElements({ onSetActiveApiProvider });
+
+    findButtonByLabel(elements, "设为当前 API：DeepSeek").props.onClick?.();
+
+    expect(onSetActiveApiProvider).toHaveBeenCalledWith("api-2");
+  });
+
+  it("calls the delete handler for provider-specific actions", () => {
+    const onDeleteApiProvider = vi.fn();
+    const elements = renderPreferenceElements({ onDeleteApiProvider });
+
+    findButtonByLabel(elements, "删除 API 供应商：OpenAI").props.onClick?.();
+    findButtonByLabel(elements, "删除 API 供应商：DeepSeek").props.onClick?.();
+
+    expect(onDeleteApiProvider).toHaveBeenNthCalledWith(1, "api-1");
+    expect(onDeleteApiProvider).toHaveBeenNthCalledWith(2, "api-2");
   });
 });

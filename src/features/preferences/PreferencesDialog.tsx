@@ -94,8 +94,10 @@ export function PreferencesDialog({
                   <div
                     aria-label="Agent 模型来源"
                     className="agentModelSourceControls"
+                    role="group"
                   >
                     <button
+                      aria-pressed={view.preferences.agentModelMode === "local"}
                       className={
                         view.preferences.agentModelMode === "local"
                           ? "primaryButton"
@@ -107,6 +109,7 @@ export function PreferencesDialog({
                       本地模型
                     </button>
                     <button
+                      aria-pressed={view.preferences.agentModelMode === "api"}
                       className={
                         view.preferences.agentModelMode === "api"
                           ? "primaryButton"
@@ -265,6 +268,7 @@ function ApiProviderList({
             <div className="apiProviderActions">
               {!isActive ? (
                 <button
+                  aria-label={`设为当前 API：${provider.displayName}`}
                   className="secondaryButton compactButton"
                   onClick={() => onSetActiveApiProvider(provider.providerId)}
                   type="button"
@@ -273,6 +277,7 @@ function ApiProviderList({
                 </button>
               ) : null}
               <button
+                aria-label={`删除 API 供应商：${provider.displayName}`}
                 className="secondaryButton compactButton"
                 onClick={() => onDeleteApiProvider(provider.providerId)}
                 type="button"
