@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -5,10 +7,12 @@ use crate::{
     preferences::{agent_model_path, AppPreferences},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", tag = "mode")]
 pub enum AgentModelConfig {
+    #[serde(rename_all = "camelCase")]
     Local { base_url: String, model: String },
+    #[serde(rename_all = "camelCase")]
     Api {
         provider_id: String,
         provider_type: String,
@@ -19,10 +23,47 @@ pub enum AgentModelConfig {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+impl fmt::Debug for AgentModelConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AgentModelConfig::Local { base_url, model } => formatter
+                .debug_struct("Local")
+                .field("base_url", base_url)
+                .field("model", model)
+                .finish(),
+            AgentModelConfig::Api {
+                provider_id,
+                provider_type,
+                display_name,
+                base_url,
+                model,
+                api_key: _,
+            } => formatter
+                .debug_struct("Api")
+                .field("provider_id", provider_id)
+                .field("provider_type", provider_type)
+                .field("display_name", display_name)
+                .field("base_url", base_url)
+                .field("model", model)
+                .field("api_key", &"<redacted>")
+                .finish(),
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterModelSessionRequest {
     pub model_config: AgentModelConfig,
+}
+
+impl fmt::Debug for RegisterModelSessionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RegisterModelSessionRequest")
+            .field("model_config", &self.model_config)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -70,7 +111,10 @@ fn resolve_api_config(
         .find(|provider| provider.provider_id == active_id)
         .ok_or_else(|| format!("active API provider does not exist: {active_id}"))?;
     if !provider.enabled {
-        return Err(format!("API provider '{}' is disabled", provider.display_name));
+        return Err(format!(
+            "API provider '{}' is disabled",
+            provider.display_name
+        ));
     }
     let api_key = credential_store
         .get_api_key(&provider.credential_ref)?

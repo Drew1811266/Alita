@@ -1,9 +1,9 @@
-#[path = "../src/api_credentials.rs"]
-#[allow(dead_code)]
-mod api_credentials;
 #[path = "../src/agent_model_config.rs"]
 #[allow(dead_code)]
 mod agent_model_config;
+#[path = "../src/api_credentials.rs"]
+#[allow(dead_code)]
+mod api_credentials;
 #[path = "../src/preferences.rs"]
 #[allow(dead_code)]
 mod preferences;
@@ -11,9 +11,11 @@ mod preferences;
 #[allow(dead_code)]
 mod tools;
 
+use agent_model_config::{
+    resolve_agent_model_config, AgentModelConfig, RegisterModelSessionRequest,
+};
 use api_credentials::{ApiCredentialStore, MemoryApiCredentialStore};
-use agent_model_config::{resolve_agent_model_config, AgentModelConfig};
-use preferences::{upsert_api_provider_config, ApiProviderInput, AppPreferences};
+use preferences::{add_manual_model, upsert_api_provider_config, ApiProviderInput, AppPreferences};
 
 #[test]
 fn resolves_api_agent_model_config_with_secret_from_store() {
@@ -31,7 +33,9 @@ fn resolves_api_agent_model_config_with_secret_from_store() {
     )
     .unwrap();
     let store = MemoryApiCredentialStore::default();
-    store.set_api_key(&provider.credential_ref, "sk-test").unwrap();
+    store
+        .set_api_key(&provider.credential_ref, "sk-test")
+        .unwrap();
 
     let resolved = resolve_agent_model_config(&preferences, &store).unwrap();
 
@@ -69,4 +73,146 @@ fn api_mode_without_key_returns_safe_error() {
 
     assert!(error.contains("API key is not configured"));
     assert!(!error.contains("sk-"));
+}
+
+#[test]
+fn resolves_local_agent_model_config_from_model_file_stem() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let model_path = temp_dir.path().join("local-agent.gguf");
+    std::fs::write(&model_path, b"model").unwrap();
+
+    let mut preferences = AppPreferences::default();
+    add_manual_model(&mut preferences, &model_path).unwrap();
+    let store = MemoryApiCredentialStore::default();
+
+    let resolved = resolve_agent_model_config(&preferences, &store).unwrap();
+
+    assert_eq!(
+        resolved,
+        AgentModelConfig::Local {
+            base_url: "http://127.0.0.1:8766".to_string(),
+            model: "local-agent".to_string(),
+        }
+    );
+}
+
+#[test]
+fn api_mode_without_selected_provider_returns_selection_error() {
+    let mut preferences = AppPreferences::default();
+    preferences.agent_model_mode = "api".to_string();
+    let store = MemoryApiCredentialStore::default();
+
+    let error = resolve_agent_model_config(&preferences, &store).unwrap_err();
+
+    assert_eq!(error, "API Agent provider is not selected");
+}
+
+#[test]
+fn api_mode_with_unknown_active_provider_returns_missing_provider_error() {
+    let mut preferences = AppPreferences::default();
+    preferences.agent_model_mode = "api".to_string();
+    preferences.active_api_provider_id = Some("missing-provider".to_string());
+    let store = MemoryApiCredentialStore::default();
+
+    let error = resolve_agent_model_config(&preferences, &store).unwrap_err();
+
+    assert_eq!(
+        error,
+        "active API provider does not exist: missing-provider"
+    );
+}
+
+#[test]
+fn disabled_api_provider_returns_disabled_provider_error() {
+    let mut preferences = AppPreferences::default();
+    upsert_api_provider_config(
+        &mut preferences,
+        ApiProviderInput {
+            provider_id: None,
+            provider_type: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4.1".to_string(),
+            enabled: false,
+        },
+    )
+    .unwrap();
+    let store = MemoryApiCredentialStore::default();
+
+    let error = resolve_agent_model_config(&preferences, &store).unwrap_err();
+
+    assert_eq!(error, "API provider 'OpenAI' is disabled");
+}
+
+#[test]
+fn serializes_api_agent_model_config_with_tagged_camel_case_shape() {
+    let config = AgentModelConfig::Api {
+        provider_id: "provider-1".to_string(),
+        provider_type: "openai".to_string(),
+        display_name: "OpenAI".to_string(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        model: "gpt-4.1".to_string(),
+        api_key: "sk-serialize".to_string(),
+    };
+
+    let serialized = serde_json::to_value(config).unwrap();
+
+    assert_eq!(
+        serialized,
+        serde_json::json!({
+            "mode": "api",
+            "providerId": "provider-1",
+            "providerType": "openai",
+            "displayName": "OpenAI",
+            "baseUrl": "https://api.openai.com/v1",
+            "model": "gpt-4.1",
+            "apiKey": "sk-serialize",
+        })
+    );
+}
+
+#[test]
+fn agent_model_config_debug_redacts_api_key() {
+    let mut preferences = AppPreferences::default();
+    let provider = upsert_api_provider_config(
+        &mut preferences,
+        ApiProviderInput {
+            provider_id: None,
+            provider_type: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4.1".to_string(),
+            enabled: true,
+        },
+    )
+    .unwrap();
+    let store = MemoryApiCredentialStore::default();
+    store
+        .set_api_key(&provider.credential_ref, "sk-debug-secret")
+        .unwrap();
+
+    let resolved = resolve_agent_model_config(&preferences, &store).unwrap();
+    let debug = format!("{:?}", resolved);
+
+    assert!(!debug.contains("sk-debug-secret"));
+    assert!(debug.contains("<redacted>"));
+}
+
+#[test]
+fn register_model_session_request_debug_redacts_nested_api_key() {
+    let request = RegisterModelSessionRequest {
+        model_config: AgentModelConfig::Api {
+            provider_id: "provider-1".to_string(),
+            provider_type: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4.1".to_string(),
+            api_key: "sk-request-debug-secret".to_string(),
+        },
+    };
+
+    let debug = format!("{:?}", request);
+
+    assert!(!debug.contains("sk-request-debug-secret"));
+    assert!(debug.contains("<redacted>"));
 }
