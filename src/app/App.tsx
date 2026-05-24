@@ -79,6 +79,7 @@ import {
   type RunNodeGraphMode,
   submitUserMessage,
   submitUserMessageStream,
+  type SubmitMessagePayload,
 } from "../features/task/useTaskEvents";
 import { WorkbenchTopBar } from "../features/workbench/WorkbenchTopBar";
 import { reduceBackendEvents } from "./backendEvents";
@@ -140,6 +141,50 @@ export const createAgentSession = async (): Promise<string | null> => {
   }
 };
 
+type SubmitUserMessageWithStreamFallbackArgs = {
+  payload: SubmitMessagePayload;
+  createSession: () => Promise<string | null>;
+  submitStream: (
+    payload: SubmitMessagePayload,
+    onEvent: (event: BackendEvent) => void,
+  ) => Promise<void>;
+  submitFallback: (payload: SubmitMessagePayload) => Promise<BackendEvent[]>;
+  onEvent: (event: BackendEvent) => void;
+};
+
+async function submitUserMessageWithStreamFallback({
+  payload,
+  createSession,
+  submitStream,
+  submitFallback,
+  onEvent,
+}: SubmitUserMessageWithStreamFallbackArgs): Promise<void> {
+  const streamModelSessionId = await createSession();
+  let receivedStreamEvent = false;
+  try {
+    await submitStream(
+      { ...payload, modelSessionId: streamModelSessionId },
+      (event) => {
+        receivedStreamEvent = true;
+        onEvent(event);
+      },
+    );
+  } catch (streamError) {
+    if (receivedStreamEvent) {
+      throw streamError;
+    }
+
+    const fallbackModelSessionId = await createSession();
+    const events = await submitFallback({
+      ...payload,
+      modelSessionId: fallbackModelSessionId,
+    });
+    for (const event of events) {
+      onEvent(event);
+    }
+  }
+}
+
 type GraphRunInFlightRef = {
   current: boolean;
 };
@@ -159,6 +204,8 @@ function endGraphRun(refLike: GraphRunInFlightRef): void {
 
 export const tryBeginGraphRunForTest = tryBeginGraphRun;
 export const endGraphRunForTest = endGraphRun;
+export const submitUserMessageWithStreamFallbackForTest =
+  submitUserMessageWithStreamFallback;
 
 export function App() {
   const [activeProject, setActiveProject] = useState<AlitaProject | null>(
@@ -776,28 +823,13 @@ export function App() {
         attachments: agentAttachments,
       };
 
-      let receivedStreamEvent = false;
-      try {
-        await submitUserMessageStream(
-          { ...payload, modelSessionId: await createAgentSession() },
-          (event) => {
-            receivedStreamEvent = true;
-            applyBackendEvent(event);
-          },
-        );
-      } catch (streamError) {
-        if (receivedStreamEvent) {
-          throw streamError;
-        }
-
-        const events = await submitUserMessage({
-          ...payload,
-          modelSessionId: await createAgentSession(),
-        });
-        for (const event of events) {
-          applyBackendEvent(event);
-        }
-      }
+      await submitUserMessageWithStreamFallback({
+        payload,
+        createSession: createAgentSession,
+        submitStream: submitUserMessageStream,
+        submitFallback: submitUserMessage,
+        onEvent: applyBackendEvent,
+      });
 
       if (sentAttachments.length > 0) {
         setContextAttachments(sentAttachments);

@@ -10,8 +10,11 @@ import {
   createAgentSession,
   endGraphRunForTest,
   shouldRefreshAsrForPreferencesUpdate,
+  submitUserMessageWithStreamFallbackForTest,
   tryBeginGraphRunForTest,
 } from "./App";
+import type { BackendEvent } from "../shared/events";
+import type { SubmitMessagePayload } from "../features/task/useTaskEvents";
 
 vi.mock("../features/preferences/preferencesApi", async (importOriginal) => {
   const actual =
@@ -106,5 +109,108 @@ describe("App", () => {
 
     expect(inFlightRef.current).toBe(false);
     expect(tryBeginGraphRunForTest(inFlightRef)).toBe(true);
+  });
+
+  it("does not fall back when stream session preparation fails", async () => {
+    const payload: SubmitMessagePayload = {
+      taskId: "task-1",
+      content: "Run this",
+      attachments: [],
+    };
+    const sessionError = new Error("missing config");
+    const createSession = vi.fn().mockRejectedValue(sessionError);
+    const submitStream = vi.fn();
+    const submitFallback = vi.fn();
+
+    await expect(
+      submitUserMessageWithStreamFallbackForTest({
+        payload,
+        createSession,
+        submitStream,
+        submitFallback,
+        onEvent: vi.fn(),
+      }),
+    ).rejects.toBe(sessionError);
+
+    expect(createSession).toHaveBeenCalledOnce();
+    expect(submitStream).not.toHaveBeenCalled();
+    expect(submitFallback).not.toHaveBeenCalled();
+  });
+
+  it("uses a fresh fallback session after stream submission fails before events", async () => {
+    const payload: SubmitMessagePayload = {
+      taskId: "task-1",
+      content: "Run this",
+      attachments: [],
+    };
+    const fallbackEvent: BackendEvent = {
+      type: "task.completed",
+      payload: { taskId: "task-1" },
+    };
+    const createSession = vi
+      .fn()
+      .mockResolvedValueOnce("stream-session")
+      .mockResolvedValueOnce("fallback-session");
+    const submitStream = vi.fn().mockRejectedValue(new Error("stream failed"));
+    const submitFallback = vi.fn().mockResolvedValue([fallbackEvent]);
+    const onEvent = vi.fn();
+
+    await submitUserMessageWithStreamFallbackForTest({
+      payload,
+      createSession,
+      submitStream,
+      submitFallback,
+      onEvent,
+    });
+
+    expect(createSession).toHaveBeenCalledTimes(2);
+    expect(submitStream).toHaveBeenCalledWith(
+      { ...payload, modelSessionId: "stream-session" },
+      expect.any(Function),
+    );
+    expect(submitFallback).toHaveBeenCalledWith({
+      ...payload,
+      modelSessionId: "fallback-session",
+    });
+    expect(onEvent).toHaveBeenCalledWith(fallbackEvent);
+  });
+
+  it("does not fall back after receiving a partial stream event", async () => {
+    const payload: SubmitMessagePayload = {
+      taskId: "task-1",
+      content: "Run this",
+      attachments: [],
+    };
+    const streamEvent: BackendEvent = {
+      type: "message.delta",
+      payload: { messageId: "assistant-1", delta: "partial" },
+    };
+    const streamError = new Error("stream interrupted");
+    const createSession = vi.fn().mockResolvedValue("stream-session");
+    const submitStream = vi.fn(
+      async (
+        _payload: SubmitMessagePayload,
+        onStreamEvent: (event: BackendEvent) => void,
+      ) => {
+        onStreamEvent(streamEvent);
+        throw streamError;
+      },
+    );
+    const submitFallback = vi.fn();
+    const onEvent = vi.fn();
+
+    await expect(
+      submitUserMessageWithStreamFallbackForTest({
+        payload,
+        createSession,
+        submitStream,
+        submitFallback,
+        onEvent,
+      }),
+    ).rejects.toBe(streamError);
+
+    expect(createSession).toHaveBeenCalledOnce();
+    expect(onEvent).toHaveBeenCalledWith(streamEvent);
+    expect(submitFallback).not.toHaveBeenCalled();
   });
 });
