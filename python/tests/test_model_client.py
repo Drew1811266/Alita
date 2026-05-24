@@ -52,6 +52,23 @@ def test_model_config_ignores_non_alita_env(monkeypatch) -> None:
     assert config.model == "local-llama-cpp"
 
 
+def test_agent_model_config_uses_api_env(monkeypatch) -> None:
+    monkeypatch.setenv("ALITA_AGENT_MODEL_MODE", "api")
+    monkeypatch.setenv("ALITA_API_KEY", "sk-test")
+    monkeypatch.setenv("ALITA_API_BASE_URL", "https://api.openai.com/v1/")
+    monkeypatch.setenv("ALITA_API_MODEL", "gpt-4.1")
+    monkeypatch.setenv("ALITA_API_PROVIDER_NAME", "OpenAI")
+
+    config = AgentModelClientConfig.from_env()
+
+    assert config.mode == "api"
+    assert config.enabled
+    assert config.base_url == "https://api.openai.com/v1"
+    assert config.model == "gpt-4.1"
+    assert config.api_key == "sk-test"
+    assert config.provider_display_name == "OpenAI"
+
+
 def test_disabled_model_client_rejects_chat_calls() -> None:
     client = LlamaCppModelClient(ModelClientConfig())
 
@@ -547,3 +564,23 @@ def test_create_model_client_returns_api_client_for_api_config() -> None:
     )
 
     assert isinstance(client, OpenAICompatibleModelClient)
+
+
+def test_create_model_client_bridges_local_config_to_llama_client() -> None:
+    client = create_model_client(
+        AgentModelClientConfig(
+            mode="local",
+            enabled=True,
+            base_url="http://127.0.0.1:9876",
+            model="bridged-local-model",
+            timeout_seconds=7.5,
+        )
+    )
+
+    assert isinstance(client, LlamaCppModelClient)
+    assert client.config == ModelClientConfig(
+        enabled=True,
+        base_url="http://127.0.0.1:9876",
+        model="bridged-local-model",
+        timeout_seconds=7.5,
+    )
