@@ -3,7 +3,7 @@ use crate::{
         AgentAttachment, AgentClient, AgentEvent, AgentMessageRequest, AsrStatusResponse,
         AsrTranscriptionRequest, AsrTranscriptionResponse, RegisterModelSessionRequest,
     },
-    agent_model_config::resolve_agent_model_config,
+    agent_model_config::{resolve_agent_model_config, AgentModelConfig},
     api_credentials::{ApiCredentialStore, SystemApiCredentialStore},
     asr::{
         decode_wav_base64, remove_temp_audio_file, write_temp_audio_file,
@@ -12,12 +12,12 @@ use crate::{
     preferences::{
         add_manual_model, add_speech_to_text_model, delete_api_provider_config,
         import_model_to_storage, load_preferences_with_model_recovery,
-        model_recovery_candidate_dirs, previous_preferences_path_for_current_path,
-        record_recent_project, save_preferences_to_path, scan_model_directory,
-        set_active_api_provider, set_agent_model_mode, set_default_model, set_model_assignment,
-        set_model_storage_dir, speech_to_text_model_path, summarize_tool_manifests,
-        upsert_api_provider_config, ApiProviderInput, AppPreferences, ModelAssignmentRole,
-        ToolSummary,
+        model_recovery_candidate_dirs, normalize_api_provider_base_url,
+        previous_preferences_path_for_current_path, record_recent_project,
+        save_preferences_to_path, scan_model_directory, set_active_api_provider,
+        set_agent_model_mode, set_default_model, set_model_assignment, set_model_storage_dir,
+        speech_to_text_model_path, summarize_tool_manifests, upsert_api_provider_config,
+        ApiProviderInput, AppPreferences, ModelAssignmentRole, ToolSummary,
     },
     project::{
         load_project_from_path, new_project, save_project_to_path, AlitaProject, ProjectOpenResult,
@@ -392,7 +392,10 @@ pub async fn prepare_agent_model_session(
     app: AppHandle,
 ) -> Result<PrepareAgentModelSessionResponse, String> {
     let (_, preferences) = load_preferences_for_app(&app)?;
-    let config = resolve_agent_model_config(&preferences, &SystemApiCredentialStore)?;
+    let config = validate_agent_model_session_config(resolve_agent_model_config(
+        &preferences,
+        &SystemApiCredentialStore,
+    )?)?;
     let request = RegisterModelSessionRequest {
         model_config: serde_json::to_value(config)
             .map_err(|error| format!("failed to serialize model config: {error}"))?,
@@ -403,6 +406,29 @@ pub async fn prepare_agent_model_session(
     Ok(PrepareAgentModelSessionResponse {
         model_session_id: response.model_session_id,
     })
+}
+
+fn validate_agent_model_session_config(
+    config: AgentModelConfig,
+) -> Result<AgentModelConfig, String> {
+    match config {
+        AgentModelConfig::Api {
+            provider_id,
+            provider_type,
+            display_name,
+            base_url,
+            model,
+            api_key,
+        } => Ok(AgentModelConfig::Api {
+            provider_id,
+            provider_type,
+            display_name,
+            base_url: normalize_api_provider_base_url(&base_url)?,
+            model,
+            api_key,
+        }),
+        local => Ok(local),
+    }
 }
 
 #[tauri::command]
@@ -947,29 +973,9 @@ fn prepare_api_provider_test_payload(
         return Err("API provider display name is required".to_string());
     }
 
-    let base_url = payload.base_url.trim().trim_end_matches('/').to_string();
-    if base_url.is_empty() {
-        return Err("API provider base URL is required".to_string());
-    }
+    let base_url = normalize_api_provider_base_url(&payload.base_url)?;
     let mut parsed_url = reqwest::Url::parse(&base_url)
         .map_err(|_| "API provider base URL is invalid".to_string())?;
-    if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
-        return Err("API provider base URL must start with http:// or https://".to_string());
-    }
-    if !parsed_url.username().is_empty()
-        || parsed_url.password().is_some()
-        || parsed_url.query().is_some()
-        || parsed_url.fragment().is_some()
-    {
-        return Err(
-            "API provider base URL must not include credentials, query, or fragment".to_string(),
-        );
-    }
-    if parsed_url.scheme() == "http" && !is_local_api_provider_host(&parsed_url) {
-        return Err(
-            "API provider base URL must use HTTPS unless it points to localhost".to_string(),
-        );
-    }
     if !parsed_url.path().ends_with('/') {
         let mut path = parsed_url.path().to_string();
         path.push('/');
@@ -993,16 +999,6 @@ fn prepare_api_provider_test_payload(
     })
 }
 
-fn is_local_api_provider_host(url: &reqwest::Url) -> bool {
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    host.eq_ignore_ascii_case("localhost")
-        || host.eq_ignore_ascii_case("127.0.0.1")
-        || host == "::1"
-        || host.to_ascii_lowercase().ends_with(".localhost")
-}
-
 fn api_provider_model_list_result(
     selected_model: &str,
     models: Vec<String>,
@@ -1015,9 +1011,7 @@ fn api_provider_model_list_result(
         };
     }
 
-    api_provider_connection_failure(format!(
-        "selected model '{selected_model}' was not found in the provider model list"
-    ))
+    api_provider_connection_failure("selected model was not found in the provider model list")
 }
 
 async fn fetch_openai_models(
@@ -1236,21 +1230,39 @@ fn is_valid_openai_chat_completion_response(response: &serde_json::Value) -> boo
 }
 
 fn is_valid_openai_chat_completion_choice(choice: &serde_json::Value) -> bool {
-    choice.get("text").is_some_and(has_non_empty_string)
-        || choice
-            .get("delta")
-            .and_then(|delta| delta.get("content"))
-            .is_some_and(has_non_empty_string)
-        || choice
-            .get("message")
-            .and_then(serde_json::Value::as_object)
-            .is_some_and(|message| {
-                message.get("content").is_some_and(has_non_empty_string)
+    choice
+        .get("message")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|message| {
+            is_assistant_chat_message(message)
+                && (message.get("content").is_some_and(has_non_empty_string)
                     || message
                         .get("tool_calls")
                         .and_then(serde_json::Value::as_array)
-                        .is_some_and(|tool_calls| !tool_calls.is_empty())
-            })
+                        .is_some_and(|tool_calls| {
+                            !tool_calls.is_empty()
+                                && tool_calls.iter().all(is_valid_openai_tool_call)
+                        }))
+        })
+}
+
+fn is_assistant_chat_message(message: &serde_json::Map<String, serde_json::Value>) -> bool {
+    match message.get("role") {
+        Some(role) => role.as_str().is_some_and(|role| role == "assistant"),
+        None => true,
+    }
+}
+
+fn is_valid_openai_tool_call(tool_call: &serde_json::Value) -> bool {
+    let Some(tool_call) = tool_call.as_object() else {
+        return false;
+    };
+
+    tool_call.get("id").is_some_and(has_non_empty_string)
+        || tool_call
+            .get("function")
+            .and_then(|function| function.get("name"))
+            .is_some_and(has_non_empty_string)
 }
 
 fn has_non_empty_string(value: &serde_json::Value) -> bool {
@@ -1485,6 +1497,9 @@ mod tests {
             "not json",
             "{\"id\":\"chatcmpl-test\",\"choices\":[]}",
             "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"content\":\"\"}}]}",
+            "{\"id\":\"chatcmpl-test\",\"choices\":[{\"text\":\"pong\"}]}",
+            "{\"id\":\"chatcmpl-test\",\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}",
+            "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"function\":{}}]}}]}",
         ] {
             let (base_url, server) = spawn_test_server_sequence(vec![
                 (
@@ -1550,6 +1565,53 @@ mod tests {
     }
 
     #[test]
+    fn provider_test_accepts_valid_fallback_chat_completion_tool_call_response() {
+        let chat_body = serde_json::json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup_weather",
+                                    "arguments": "{}"
+                                }
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }
+            ]
+        })
+        .to_string();
+        let (base_url, server) = spawn_test_server_sequence(vec![
+            (
+                "503 Service Unavailable",
+                "{\"error\":\"models unavailable\"}",
+            ),
+            ("200 OK", chat_body.as_str()),
+        ]);
+
+        let result = tauri::async_runtime::block_on(test_api_provider_connection_core(
+            valid_test_provider_payload(&base_url, "gpt-4.1"),
+        ));
+        let requests = server.join().expect("server should finish");
+
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].path, "/models");
+        assert_eq!(requests[1].path, "/chat/completions");
+        assert!(result.ok);
+        assert_eq!(result.models, vec!["gpt-4.1".to_string()]);
+    }
+
+    #[test]
     fn provider_model_list_result_rejects_missing_selected_model() {
         let result = api_provider_model_list_result(
             "gpt-4.1",
@@ -1559,6 +1621,41 @@ mod tests {
         assert!(!result.ok);
         assert!(result.message.contains("selected model"));
         assert!(result.models.is_empty());
+    }
+
+    #[test]
+    fn provider_test_redacts_api_key_when_missing_selected_model_matches_key() {
+        let (base_url, server) = spawn_test_server(
+            "200 OK",
+            "{\"data\":[{\"id\":\"deepseek-chat\"},{\"id\":\"qwen-chat\"}]}",
+        );
+        let mut payload = valid_test_provider_payload(&base_url, "sk-secret-model");
+        payload.api_key = Some("sk-secret-model".to_string());
+
+        let result = tauri::async_runtime::block_on(test_api_provider_connection_core(payload));
+        let request = server.join().expect("server should finish");
+
+        assert_eq!(request.path, "/models");
+        assert!(!result.ok);
+        assert!(result.message.contains("selected model"));
+        assert!(!result.message.contains("sk-secret-model"));
+    }
+
+    #[test]
+    fn session_preparation_rejects_unsafe_legacy_api_provider_base_url() {
+        let error =
+            validate_agent_model_session_config(crate::agent_model_config::AgentModelConfig::Api {
+                provider_id: "provider-1".to_string(),
+                provider_type: "openai".to_string(),
+                display_name: "OpenAI".to_string(),
+                base_url: "http://example.com/v1".to_string(),
+                model: "gpt-4.1".to_string(),
+                api_key: "sk-session-secret".to_string(),
+            })
+            .unwrap_err();
+
+        assert!(error.contains("base URL"));
+        assert!(!error.contains("sk-session-secret"));
     }
 
     #[test]

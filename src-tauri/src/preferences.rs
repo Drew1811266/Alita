@@ -256,6 +256,51 @@ pub fn set_agent_model_mode(preferences: &mut AppPreferences, mode: &str) -> Res
     }
 }
 
+pub fn normalize_api_provider_base_url(base_url: &str) -> Result<String, String> {
+    let base_url = base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() {
+        return Err("API provider base URL is required".to_string());
+    }
+
+    let parsed_url = reqwest::Url::parse(base_url)
+        .map_err(|_| "API provider base URL is invalid".to_string())?;
+    validate_api_provider_base_url(&parsed_url)?;
+
+    Ok(parsed_url.as_str().trim_end_matches('/').to_string())
+}
+
+fn validate_api_provider_base_url(url: &reqwest::Url) -> Result<(), String> {
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err("API provider base URL must start with http:// or https://".to_string());
+    }
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(
+            "API provider base URL must not include credentials, query, or fragment".to_string(),
+        );
+    }
+    if url.scheme() == "http" && !is_local_api_provider_host(url) {
+        return Err(
+            "API provider base URL must use HTTPS unless it points to localhost".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn is_local_api_provider_host(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.eq_ignore_ascii_case("localhost")
+        || host.eq_ignore_ascii_case("127.0.0.1")
+        || host == "::1"
+        || host.to_ascii_lowercase().ends_with(".localhost")
+}
+
 pub fn upsert_api_provider_config(
     preferences: &mut AppPreferences,
     input: ApiProviderInput,
@@ -275,10 +320,7 @@ pub fn upsert_api_provider_config(
     if display_name.is_empty() {
         return Err("API provider display name is required".to_string());
     }
-    let base_url = input.base_url.trim().trim_end_matches('/').to_string();
-    if base_url.is_empty() {
-        return Err("API provider base URL is required".to_string());
-    }
+    let base_url = normalize_api_provider_base_url(&input.base_url)?;
     let model = input.model.trim().to_string();
     if model.is_empty() {
         return Err("API provider model name is required".to_string());

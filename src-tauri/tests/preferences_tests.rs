@@ -290,6 +290,58 @@ fn upsert_api_provider_config_rejects_blank_required_fields() {
 }
 
 #[test]
+fn upsert_api_provider_config_rejects_unsafe_base_urls() {
+    let cases = [
+        "ftp://api.openai.com/v1",
+        "http://example.com/v1",
+        "https://sk-test@api.openai.com/v1",
+        "https://api.openai.com/v1?api_key=sk-test",
+        "https://api.openai.com/v1#sk-test",
+    ];
+
+    for base_url in cases {
+        let mut preferences = AppPreferences::default();
+
+        let error = upsert_api_provider_config(
+            &mut preferences,
+            ApiProviderInput {
+                base_url: base_url.to_string(),
+                ..valid_api_provider_input()
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("base URL"), "{base_url}: {error}");
+        assert!(!error.contains("sk-test"), "{base_url}: {error}");
+        assert!(preferences.api_provider_configs.is_empty());
+        assert_eq!(preferences.agent_model_mode, "local");
+    }
+}
+
+#[test]
+fn upsert_api_provider_config_allows_plain_http_for_loopback_base_urls() {
+    for base_url in [
+        "http://localhost:8766/v1///",
+        "http://127.0.0.1:8766/v1///",
+        "http://[::1]:8766/v1///",
+        "http://custom.localhost:8766/v1///",
+    ] {
+        let mut preferences = AppPreferences::default();
+
+        let provider = upsert_api_provider_config(
+            &mut preferences,
+            ApiProviderInput {
+                base_url: base_url.to_string(),
+                ..valid_api_provider_input()
+            },
+        )
+        .unwrap();
+
+        assert!(!provider.base_url.ends_with('/'));
+    }
+}
+
+#[test]
 fn upsert_api_provider_config_updates_existing_provider_without_changing_secret_ref() {
     let mut preferences = AppPreferences::default();
     let created = upsert_api_provider_config(&mut preferences, valid_api_provider_input()).unwrap();
