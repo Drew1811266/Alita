@@ -352,15 +352,15 @@ def _post_json_with_headers(
     except urllib.error.HTTPError as error:
         raise ModelRuntimeRequestFailed(
             f"API chat request failed with HTTP status {error.code}"
-        ) from error
+        ) from None
     except urllib.error.URLError as error:
-        raise ModelRuntimeRequestFailed("API chat request failed") from error
+        raise ModelRuntimeRequestFailed("API chat request failed") from None
     except TimeoutError as error:
-        raise ModelRuntimeRequestFailed("API chat request timed out") from error
+        raise ModelRuntimeRequestFailed("API chat request timed out") from None
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise ModelRuntimeRequestFailed("API chat request returned invalid JSON") from error
+        raise ModelRuntimeRequestFailed("API chat request returned invalid JSON") from None
     except (ValueError, OSError, http.client.HTTPException) as error:
-        raise ModelRuntimeRequestFailed("API chat request failed") from error
+        raise ModelRuntimeRequestFailed("API chat request failed") from None
 
 
 def _post_json_stream(url: str, payload: dict, timeout: float) -> Iterable[bytes]:
@@ -398,13 +398,13 @@ def _post_json_stream_with_headers(
     except urllib.error.HTTPError as error:
         raise ModelRuntimeRequestFailed(
             f"API streaming chat request failed with HTTP status {error.code}"
-        ) from error
+        ) from None
     except urllib.error.URLError as error:
-        raise ModelRuntimeRequestFailed("API streaming chat request failed") from error
+        raise ModelRuntimeRequestFailed("API streaming chat request failed") from None
     except TimeoutError as error:
-        raise ModelRuntimeRequestFailed("API streaming chat request timed out") from error
+        raise ModelRuntimeRequestFailed("API streaming chat request timed out") from None
     except (ValueError, OSError, http.client.HTTPException) as error:
-        raise ModelRuntimeRequestFailed("API streaming chat request failed") from error
+        raise ModelRuntimeRequestFailed("API streaming chat request failed") from None
 
 
 def _extract_chat_content(response: dict) -> str:

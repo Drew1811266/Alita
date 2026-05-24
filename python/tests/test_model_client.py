@@ -398,6 +398,48 @@ def test_openai_compatible_client_wraps_invalid_stream_url() -> None:
     assert "Authorization" not in str(error.value)
 
 
+def test_openai_compatible_client_suppresses_secret_chat_transport_cause() -> None:
+    secret = "sk-secret-chat"
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="http://127.0.0.1:1",
+            model="gpt-4.1",
+            api_key=f"{secret}\r\nX-Injected: leaked",
+            provider_display_name="OpenAI",
+            timeout_seconds=0.01,
+        )
+    )
+
+    with pytest.raises(ModelRuntimeRequestFailed) as error:
+        client.chat([ChatMessage(role="user", content="hello")])
+
+    assert secret not in str(error.value)
+    assert error.value.__cause__ is None or secret not in str(error.value.__cause__)
+
+
+def test_openai_compatible_client_suppresses_secret_stream_transport_cause() -> None:
+    secret = "sk-secret-stream"
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="http://127.0.0.1:1",
+            model="gpt-4.1",
+            api_key=f"{secret}\r\nX-Injected: leaked",
+            provider_display_name="OpenAI",
+            timeout_seconds=0.01,
+        )
+    )
+
+    with pytest.raises(ModelRuntimeRequestFailed) as error:
+        list(client.stream_chat([ChatMessage(role="user", content="hello")]))
+
+    assert secret not in str(error.value)
+    assert error.value.__cause__ is None or secret not in str(error.value.__cause__)
+
+
 def test_openai_compatible_client_rejects_done_only_stream() -> None:
     def stream_transport(url: str, payload: dict, timeout: float, headers: dict[str, str]):
         return [b"data: [DONE]\n\n"]
