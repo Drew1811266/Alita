@@ -67,6 +67,8 @@ pub fn run() {
             commands::transcribe_voice_audio,
             commands::get_sidecar_auth_token,
             commands::get_attachment_metadata,
+            commands::prepare_agent_model_session,
+            commands::test_api_provider_connection,
             commands::create_project,
             commands::open_project,
             commands::save_project,

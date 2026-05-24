@@ -1,8 +1,9 @@
 use crate::{
     agent_client::{
         AgentAttachment, AgentClient, AgentEvent, AgentMessageRequest, AsrStatusResponse,
-        AsrTranscriptionRequest, AsrTranscriptionResponse,
+        AsrTranscriptionRequest, AsrTranscriptionResponse, RegisterModelSessionRequest,
     },
+    agent_model_config::resolve_agent_model_config,
     api_credentials::{ApiCredentialStore, SystemApiCredentialStore},
     asr::{
         decode_wav_base64, remove_temp_audio_file, write_temp_audio_file,
@@ -24,10 +25,12 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    fmt,
     fs::File,
     io::Read,
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
@@ -119,6 +122,12 @@ pub struct SetAgentModelModePayload {
     pub mode: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareAgentModelSessionResponse {
+    pub model_session_id: String,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveApiProviderPayload {
@@ -129,6 +138,39 @@ pub struct SaveApiProviderPayload {
     pub model: String,
     pub enabled: bool,
     pub api_key: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestApiProviderPayload {
+    pub provider_id: Option<String>,
+    pub provider_type: String,
+    pub display_name: String,
+    pub base_url: String,
+    pub model: String,
+    pub api_key: Option<String>,
+}
+
+impl fmt::Debug for TestApiProviderPayload {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TestApiProviderPayload")
+            .field("provider_id", &self.provider_id)
+            .field("provider_type", &self.provider_type)
+            .field("display_name", &self.display_name)
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiProviderConnectionResult {
+    pub ok: bool,
+    pub message: String,
+    pub models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +210,8 @@ pub struct ArtifactLaunchCommand {
 }
 
 const MAX_ARTIFACT_PREVIEW_BYTES: u64 = 256 * 1024;
+const API_PROVIDER_TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const API_PROVIDER_ERROR_BODY_LIMIT: usize = 512;
 
 pub fn open_artifact_command(path: &str) -> ArtifactLaunchCommand {
     #[cfg(windows)]
@@ -341,6 +385,24 @@ pub async fn submit_user_message(
 }
 
 #[tauri::command]
+pub async fn prepare_agent_model_session(
+    app: AppHandle,
+) -> Result<PrepareAgentModelSessionResponse, String> {
+    let (_, preferences) = load_preferences_for_app(&app)?;
+    let config = resolve_agent_model_config(&preferences, &SystemApiCredentialStore)?;
+    let request = RegisterModelSessionRequest {
+        model_config: serde_json::to_value(config)
+            .map_err(|error| format!("failed to serialize model config: {error}"))?,
+    };
+    let client = AgentClient::new(crate::sidecar::agent_base_url())
+        .with_auth_token(crate::sidecar::sidecar_auth_token(&app)?);
+    let response = client.register_model_session(&request).await?;
+    Ok(PrepareAgentModelSessionResponse {
+        model_session_id: response.model_session_id,
+    })
+}
+
+#[tauri::command]
 pub async fn get_asr_status(app: AppHandle) -> Result<AsrStatusResponse, String> {
     let model_path = match configured_asr_model_path(&app)? {
         Some(path) => path,
@@ -400,6 +462,13 @@ pub async fn get_attachment_metadata(
         .iter()
         .map(attachment_metadata_for_path)
         .collect()
+}
+
+#[tauri::command]
+pub async fn test_api_provider_connection(
+    payload: TestApiProviderPayload,
+) -> Result<ApiProviderConnectionResult, String> {
+    Ok(test_api_provider_connection_core(payload).await)
 }
 
 pub fn attachment_metadata_for_path(
@@ -804,4 +873,248 @@ fn record_recent_project_for_app(app: &AppHandle, project_path: &str) -> Result<
     let (path, mut preferences) = load_preferences_for_app(app)?;
     record_recent_project(&mut preferences, project_path);
     save_preferences_to_path(&path, &preferences)
+}
+
+struct PreparedApiProviderTest {
+    base_url: String,
+    model: String,
+    api_key: String,
+}
+
+async fn test_api_provider_connection_core(
+    payload: TestApiProviderPayload,
+) -> ApiProviderConnectionResult {
+    let prepared = match prepare_api_provider_test_payload(payload) {
+        Ok(prepared) => prepared,
+        Err(message) => return api_provider_connection_failure(message),
+    };
+    let http = match reqwest::Client::builder()
+        .timeout(API_PROVIDER_TEST_TIMEOUT)
+        .build()
+    {
+        Ok(http) => http,
+        Err(error) => {
+            return api_provider_connection_failure(redact_api_provider_secret(
+                format!("failed to create provider test client: {error}"),
+                Some(&prepared.api_key),
+            ));
+        }
+    };
+
+    match fetch_openai_models(&http, &prepared).await {
+        Ok(models) => ApiProviderConnectionResult {
+            ok: true,
+            message: "Connection successful".to_string(),
+            models,
+        },
+        Err(model_list_error) => match probe_openai_chat_completion(&http, &prepared).await {
+            Ok(()) => ApiProviderConnectionResult {
+                ok: true,
+                message: "Connection successful; model listing is unavailable".to_string(),
+                models: vec![prepared.model],
+            },
+            Err(probe_error) => {
+                let message = format!(
+                    "Provider test failed. Model listing: {model_list_error}; chat completion probe: {probe_error}"
+                );
+                api_provider_connection_failure(redact_api_provider_secret(
+                    message,
+                    Some(&prepared.api_key),
+                ))
+            }
+        },
+    }
+}
+
+fn prepare_api_provider_test_payload(
+    payload: TestApiProviderPayload,
+) -> Result<PreparedApiProviderTest, String> {
+    let base_url = payload.base_url.trim().trim_end_matches('/').to_string();
+    if base_url.is_empty() {
+        return Err("API provider base URL is required".to_string());
+    }
+    let parsed_url = reqwest::Url::parse(&base_url)
+        .map_err(|_| "API provider base URL is invalid".to_string())?;
+    if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
+        return Err("API provider base URL must start with http:// or https://".to_string());
+    }
+
+    let model = payload.model.trim().to_string();
+    if model.is_empty() {
+        return Err("API provider model name is required".to_string());
+    }
+
+    let api_key = payload.api_key.unwrap_or_default().trim().to_string();
+    if api_key.is_empty() {
+        return Err("API provider API key is required".to_string());
+    }
+
+    Ok(PreparedApiProviderTest {
+        base_url,
+        model,
+        api_key,
+    })
+}
+
+async fn fetch_openai_models(
+    http: &reqwest::Client,
+    prepared: &PreparedApiProviderTest,
+) -> Result<Vec<String>, String> {
+    let response = http
+        .get(format!("{}/models", prepared.base_url))
+        .bearer_auth(&prepared.api_key)
+        .send()
+        .await
+        .map_err(|error| format!("model list request failed: {error}"))?;
+
+    if !response.status().is_success() {
+        return Err(api_provider_response_error(response, "model list request").await);
+    }
+
+    let value = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|error| format!("invalid model list response: {error}"))?;
+    let models = parse_openai_model_ids(&value);
+    if models.is_empty() {
+        return Err("model list response did not include model ids".to_string());
+    }
+    Ok(models)
+}
+
+async fn probe_openai_chat_completion(
+    http: &reqwest::Client,
+    prepared: &PreparedApiProviderTest,
+) -> Result<(), String> {
+    let request = serde_json::json!({
+        "model": prepared.model,
+        "messages": [
+            {
+                "role": "user",
+                "content": "ping"
+            }
+        ],
+        "stream": false,
+        "max_tokens": 1
+    });
+    let response = http
+        .post(format!("{}/chat/completions", prepared.base_url))
+        .bearer_auth(&prepared.api_key)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|error| format!("chat completion probe failed: {error}"))?;
+
+    if !response.status().is_success() {
+        return Err(api_provider_response_error(response, "chat completion probe").await);
+    }
+
+    Ok(())
+}
+
+async fn api_provider_response_error(response: reqwest::Response, label: &str) -> String {
+    let status = response.status();
+    match response.text().await {
+        Ok(body) if !body.trim().is_empty() => {
+            let body = truncate_api_provider_error_body(body.trim());
+            format!("{label} returned {status}: {body}")
+        }
+        _ => format!("{label} returned {status}"),
+    }
+}
+
+fn truncate_api_provider_error_body(body: &str) -> String {
+    if body.len() <= API_PROVIDER_ERROR_BODY_LIMIT {
+        return body.to_string();
+    }
+
+    let mut end = API_PROVIDER_ERROR_BODY_LIMIT;
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &body[..end])
+}
+
+fn api_provider_connection_failure(message: impl Into<String>) -> ApiProviderConnectionResult {
+    ApiProviderConnectionResult {
+        ok: false,
+        message: message.into(),
+        models: Vec::new(),
+    }
+}
+
+fn parse_openai_model_ids(response: &serde_json::Value) -> Vec<String> {
+    response
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("id")?.as_str())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn redact_api_provider_secret(message: String, api_key: Option<&str>) -> String {
+    match api_key.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(api_key) => message.replace(api_key, "<redacted>"),
+        None => message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_openai_model_ids_returns_non_blank_string_ids() {
+        let response = serde_json::json!({
+            "object": "list",
+            "data": [
+                { "id": "gpt-4.1" },
+                { "id": "" },
+                { "id": "   " },
+                { "id": 42 },
+                { "name": "missing-id" },
+                { "id": "deepseek-chat" }
+            ]
+        });
+
+        assert_eq!(
+            parse_openai_model_ids(&response),
+            vec!["gpt-4.1".to_string(), "deepseek-chat".to_string()]
+        );
+    }
+
+    #[test]
+    fn redact_api_provider_secret_removes_key_from_message() {
+        let message =
+            "request failed for bearer sk-test in body {\"apiKey\":\"sk-test\"}".to_string();
+
+        let redacted = redact_api_provider_secret(message, Some("sk-test"));
+
+        assert!(!redacted.contains("sk-test"));
+        assert_eq!(
+            redacted,
+            "request failed for bearer <redacted> in body {\"apiKey\":\"<redacted>\"}"
+        );
+    }
+
+    #[test]
+    fn test_api_provider_payload_debug_redacts_key() {
+        let payload = TestApiProviderPayload {
+            provider_id: Some("provider-1".to_string()),
+            provider_type: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4.1".to_string(),
+            api_key: Some("sk-test".to_string()),
+        };
+
+        let debug = format!("{payload:?}");
+
+        assert!(!debug.contains("sk-test"));
+        assert!(debug.contains("<redacted>"));
+    }
 }
