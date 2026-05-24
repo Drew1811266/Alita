@@ -1,8 +1,9 @@
 use alita_lib::{
     api_credentials::ApiCredentialStore,
     commands::{
-        delete_api_provider_config_core, preferences_view_with_api_key_status,
-        save_api_provider_config_core, SaveApiProviderPayload,
+        api_provider_test_payload_with_stored_key, delete_api_provider_config_core,
+        preferences_view_with_api_key_status, save_api_provider_config_core,
+        SaveApiProviderPayload, TestApiProviderPayload,
     },
     preferences::{upsert_api_provider_config, ApiProviderInput, AppPreferences},
 };
@@ -22,6 +23,7 @@ enum CredentialOperation {
 struct RecordingCredentialStore {
     operations: Mutex<Vec<CredentialOperation>>,
     api_keys: Mutex<HashMap<String, String>>,
+    get_error: Option<String>,
     set_error: Option<String>,
     delete_error: Option<String>,
 }
@@ -31,6 +33,7 @@ impl Default for RecordingCredentialStore {
         Self {
             operations: Mutex::new(Vec::new()),
             api_keys: Mutex::new(HashMap::new()),
+            get_error: None,
             set_error: None,
             delete_error: None,
         }
@@ -48,6 +51,13 @@ impl RecordingCredentialStore {
     fn failing_delete(error: &str) -> Self {
         Self {
             delete_error: Some(error.to_string()),
+            ..Self::default()
+        }
+    }
+
+    fn failing_get(error: &str) -> Self {
+        Self {
+            get_error: Some(error.to_string()),
             ..Self::default()
         }
     }
@@ -80,6 +90,9 @@ impl ApiCredentialStore for RecordingCredentialStore {
     }
 
     fn get_api_key(&self, credential_ref: &str) -> Result<Option<String>, String> {
+        if let Some(error) = self.get_error.as_deref() {
+            return Err(error.to_string());
+        }
         Ok(self.api_keys.lock().unwrap().get(credential_ref).cloned())
     }
 
@@ -118,8 +131,7 @@ fn api_provider_preferences_view_reports_configured_key_status_without_leaking_s
     let credential_store = RecordingCredentialStore::default();
     credential_store.insert_api_key(&provider_with_key.credential_ref, "sk-secret");
 
-    let view =
-        preferences_view_with_api_key_status(preferences, Vec::new(), &credential_store).unwrap();
+    let view = preferences_view_with_api_key_status(preferences, Vec::new(), &credential_store);
 
     let with_key = view
         .preferences
@@ -139,6 +151,61 @@ fn api_provider_preferences_view_reports_configured_key_status_without_leaking_s
     assert!(!saved_preferences.contains("hasApiKey"));
 }
 
+#[test]
+fn api_provider_preferences_view_does_not_fail_when_key_status_read_fails() {
+    let mut preferences = AppPreferences::default();
+    upsert_api_provider_config(&mut preferences, valid_api_provider_input()).unwrap();
+    let credential_store = RecordingCredentialStore::failing_get("credential store unavailable");
+
+    let view = preferences_view_with_api_key_status(preferences, Vec::new(), &credential_store);
+
+    assert_eq!(view.preferences.api_provider_configs[0].has_api_key, None);
+}
+
+#[test]
+fn api_provider_helper_payload_uses_saved_key_for_existing_provider() {
+    let mut preferences = AppPreferences::default();
+    let provider =
+        upsert_api_provider_config(&mut preferences, valid_api_provider_input()).unwrap();
+    let credential_store = RecordingCredentialStore::default();
+    credential_store.insert_api_key(&provider.credential_ref, "sk-saved");
+    let payload = valid_test_payload(Some(provider.provider_id.clone()), None);
+
+    let hydrated =
+        api_provider_test_payload_with_stored_key(&preferences, payload, &credential_store)
+            .unwrap();
+
+    assert_eq!(hydrated.api_key.as_deref(), Some("sk-saved"));
+}
+
+#[test]
+fn api_provider_helper_payload_does_not_replace_explicit_blank_key() {
+    let mut preferences = AppPreferences::default();
+    let provider =
+        upsert_api_provider_config(&mut preferences, valid_api_provider_input()).unwrap();
+    let credential_store = RecordingCredentialStore::default();
+    credential_store.insert_api_key(&provider.credential_ref, "sk-saved");
+    let payload = valid_test_payload(Some(provider.provider_id.clone()), Some("   ".to_string()));
+
+    let hydrated =
+        api_provider_test_payload_with_stored_key(&preferences, payload, &credential_store)
+            .unwrap();
+
+    assert_eq!(hydrated.api_key.as_deref(), Some("   "));
+}
+
+#[test]
+fn api_provider_helper_payload_rejects_unknown_saved_provider_id() {
+    let preferences = AppPreferences::default();
+    let credential_store = RecordingCredentialStore::default();
+    let payload = valid_test_payload(Some("missing-provider".to_string()), None);
+
+    let error = api_provider_test_payload_with_stored_key(&preferences, payload, &credential_store)
+        .unwrap_err();
+
+    assert_eq!(error, "unknown API provider id: missing-provider");
+}
+
 fn valid_save_payload(api_key: Option<&str>) -> SaveApiProviderPayload {
     SaveApiProviderPayload {
         provider_id: None,
@@ -148,6 +215,20 @@ fn valid_save_payload(api_key: Option<&str>) -> SaveApiProviderPayload {
         model: "gpt-4.1".to_string(),
         enabled: true,
         api_key: api_key.map(str::to_string),
+    }
+}
+
+fn valid_test_payload(
+    provider_id: Option<String>,
+    api_key: Option<String>,
+) -> TestApiProviderPayload {
+    TestApiProviderPayload {
+        provider_id,
+        provider_type: "openai".to_string(),
+        display_name: "OpenAI".to_string(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        model: "gpt-4.1".to_string(),
+        api_key,
     }
 }
 
