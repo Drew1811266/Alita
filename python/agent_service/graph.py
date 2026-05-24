@@ -84,7 +84,7 @@ def _model_client_for_message(
         if session_config is None:
             raise ModelRuntimeDisabled("Agent model session expired or was not found")
         return model_client_factory(_client_config_from_session(session_config))
-    return create_model_client()
+    return model_client_factory()
 
 
 def classify_intent(state: AgentState) -> AgentState:

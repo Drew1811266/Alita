@@ -164,9 +164,15 @@ def cancel_graph_run(
 
 
 def _model_client_for_session(model_session_id: str | None):
-    if not model_session_id:
+    if model_session_id is None:
         return create_model_client()
-    config = DEFAULT_MODEL_SESSION_REGISTRY.consume(model_session_id)
+    session_id = model_session_id.strip()
+    if not session_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Agent model session expired or was not found",
+        )
+    config = DEFAULT_MODEL_SESSION_REGISTRY.consume(session_id)
     if config is None:
         raise HTTPException(
             status_code=409,

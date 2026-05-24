@@ -93,6 +93,59 @@ def test_run_agent_uses_model_session_client_for_chat() -> None:
     assert events[0].payload["message"]["content"] == "api session reply"
 
 
+def test_run_agent_uses_model_client_factory_without_session() -> None:
+    from agent_service.graph import run_agent
+    from agent_service.schemas import UserMessage
+
+    created_clients = []
+
+    class FakeClient:
+        def chat(self, messages, *, temperature=0.2, max_tokens=1024):
+            return "factory reply"
+
+    def model_client_factory():
+        created_clients.append("created")
+        return FakeClient()
+
+    events = run_agent(
+        UserMessage(task_id="task-1", content="hello"),
+        model_client_factory=model_client_factory,
+    )
+
+    assert created_clients == ["created"]
+    assert events[0].payload["message"]["content"] == "factory reply"
+
+
+def test_run_agent_prefers_explicit_model_client_without_consuming_session() -> None:
+    from agent_service.graph import run_agent
+    from agent_service.model_sessions import ModelSessionRegistry
+    from agent_service.schemas import AgentModelConfig, UserMessage
+
+    registry = ModelSessionRegistry()
+    session_id = registry.register(
+        AgentModelConfig(
+            mode="api",
+            provider_id="provider-1",
+            provider_type="openai",
+            display_name="OpenAI",
+            base_url="https://api.openai.com/v1",
+            model="gpt-4.1",
+            api_key="sk-test",
+        )
+    )
+    client = FakeModelClient("explicit reply")
+
+    events = run_agent(
+        UserMessage(task_id="task-1", content="hello", model_session_id=session_id),
+        model_client=client,
+        model_client_factory=lambda config: pytest.fail("factory should not be called"),
+        model_session_registry=registry,
+    )
+
+    assert events[0].payload["message"]["content"] == "explicit reply"
+    assert registry.consume(session_id) is not None
+
+
 def test_plain_chat_streams_local_model_message_deltas() -> None:
     client = FakeModelClient()
 

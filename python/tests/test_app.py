@@ -50,6 +50,25 @@ def test_agent_endpoints_require_sidecar_token_when_configured(monkeypatch) -> N
     assert authenticated_response.status_code == 200
 
 
+def test_agent_message_returns_409_for_whitespace_model_session_id(monkeypatch) -> None:
+    monkeypatch.setenv("ALITA_SIDECAR_TOKEN", "secret-token")
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/agent/message",
+        json={
+            "task_id": "task-whitespace-session",
+            "content": "hello",
+            "attachments": [],
+            "model_session_id": "   ",
+        },
+        headers={"X-Alita-Sidecar-Token": "secret-token"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Agent model session expired or was not found"
+
+
 def test_agent_endpoints_reject_non_alita_sidecar_token_header(monkeypatch) -> None:
     monkeypatch.setenv("ALITA_SIDECAR_TOKEN", "secret-token")
     client = TestClient(app)
