@@ -211,7 +211,9 @@ pub struct ArtifactLaunchCommand {
 
 const MAX_ARTIFACT_PREVIEW_BYTES: u64 = 256 * 1024;
 const API_PROVIDER_TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const API_PROVIDER_ERROR_BODY_READ_LIMIT: usize = 4096;
 const API_PROVIDER_ERROR_BODY_LIMIT: usize = 512;
+const API_PROVIDER_KEY_PREFIX_REDACTION_MIN_BYTES: usize = 8;
 
 pub fn open_artifact_command(path: &str) -> ArtifactLaunchCommand {
     #[cfg(windows)]
@@ -902,11 +904,7 @@ async fn test_api_provider_connection_core(
     };
 
     match fetch_openai_models(&http, &prepared).await {
-        Ok(models) => ApiProviderConnectionResult {
-            ok: true,
-            message: "Connection successful".to_string(),
-            models,
-        },
+        Ok(models) => api_provider_model_list_result(&prepared.model, models),
         Err(model_list_error) => match probe_openai_chat_completion(&http, &prepared).await {
             Ok(()) => ApiProviderConnectionResult {
                 ok: true,
@@ -938,6 +936,11 @@ fn prepare_api_provider_test_payload(
     if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
         return Err("API provider base URL must start with http:// or https://".to_string());
     }
+    if parsed_url.scheme() == "http" && !is_local_api_provider_host(&parsed_url) {
+        return Err(
+            "API provider base URL must use HTTPS unless it points to localhost".to_string(),
+        );
+    }
 
     let model = payload.model.trim().to_string();
     if model.is_empty() {
@@ -954,6 +957,33 @@ fn prepare_api_provider_test_payload(
         model,
         api_key,
     })
+}
+
+fn is_local_api_provider_host(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host.eq_ignore_ascii_case("127.0.0.1")
+        || host == "::1"
+        || host.to_ascii_lowercase().ends_with(".localhost")
+}
+
+fn api_provider_model_list_result(
+    selected_model: &str,
+    models: Vec<String>,
+) -> ApiProviderConnectionResult {
+    if models.iter().any(|model| model == selected_model) {
+        return ApiProviderConnectionResult {
+            ok: true,
+            message: "Connection successful".to_string(),
+            models,
+        };
+    }
+
+    api_provider_connection_failure(format!(
+        "selected model '{selected_model}' was not found in the provider model list"
+    ))
 }
 
 async fn fetch_openai_models(
@@ -1028,10 +1058,31 @@ async fn api_provider_response_error(
     api_key: Option<&str>,
 ) -> String {
     let status = response.status();
-    match response.text().await {
-        Ok(body) => api_provider_error_message(label, status, Some(&body), api_key),
+    match read_api_provider_error_body(response).await {
+        Ok((body, was_truncated)) => {
+            api_provider_error_message(label, status, Some(&body), api_key, was_truncated)
+        }
         _ => format!("{label} returned {status}"),
     }
+}
+
+async fn read_api_provider_error_body(
+    mut response: reqwest::Response,
+) -> Result<(String, bool), reqwest::Error> {
+    let mut bytes = Vec::new();
+    while bytes.len() < API_PROVIDER_ERROR_BODY_READ_LIMIT {
+        let Some(chunk) = response.chunk().await? else {
+            return Ok((String::from_utf8_lossy(&bytes).to_string(), false));
+        };
+        let remaining = API_PROVIDER_ERROR_BODY_READ_LIMIT - bytes.len();
+        if chunk.len() > remaining {
+            bytes.extend_from_slice(&chunk[..remaining]);
+            return Ok((String::from_utf8_lossy(&bytes).to_string(), true));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    Ok((String::from_utf8_lossy(&bytes).to_string(), true))
 }
 
 fn api_provider_error_message(
@@ -1039,12 +1090,16 @@ fn api_provider_error_message(
     status: reqwest::StatusCode,
     body: Option<&str>,
     api_key: Option<&str>,
+    body_was_truncated: bool,
 ) -> String {
     let Some(body) = body.map(str::trim).filter(|body| !body.is_empty()) else {
         return format!("{label} returned {status}");
     };
     let redacted_body = redact_api_provider_secret(body.to_string(), api_key);
-    let body = truncate_api_provider_error_body(&redacted_body);
+    let mut body = truncate_api_provider_error_body(&redacted_body);
+    if body_was_truncated && !body.ends_with("...") {
+        body.push_str("...");
+    }
     format!("{label} returned {status}: {body}")
 }
 
@@ -1083,14 +1138,43 @@ fn parse_openai_model_ids(response: &serde_json::Value) -> Vec<String> {
 
 fn redact_api_provider_secret(message: String, api_key: Option<&str>) -> String {
     match api_key.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(api_key) => message.replace(api_key, "<redacted>"),
+        Some(api_key) => {
+            redact_api_provider_secret_prefixes(message.replace(api_key, "<redacted>"), api_key)
+        }
         None => message,
     }
+}
+
+fn redact_api_provider_secret_prefixes(mut message: String, api_key: &str) -> String {
+    if api_key.len() <= API_PROVIDER_KEY_PREFIX_REDACTION_MIN_BYTES {
+        return message;
+    }
+
+    for end in (API_PROVIDER_KEY_PREFIX_REDACTION_MIN_BYTES..api_key.len()).rev() {
+        if api_key.is_char_boundary(end) {
+            let prefix = &api_key[..end];
+            if message.contains(prefix) {
+                message = message.replace(prefix, "<redacted>");
+            }
+        }
+    }
+    message
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn valid_test_provider_payload(base_url: &str, model: &str) -> TestApiProviderPayload {
+        TestApiProviderPayload {
+            provider_id: Some("provider-1".to_string()),
+            provider_type: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            base_url: base_url.to_string(),
+            model: model.to_string(),
+            api_key: Some("sk-test".to_string()),
+        }
+    }
 
     #[test]
     fn parse_openai_model_ids_returns_non_blank_string_ids() {
@@ -1110,6 +1194,49 @@ mod tests {
             parse_openai_model_ids(&response),
             vec!["gpt-4.1".to_string(), "deepseek-chat".to_string()]
         );
+    }
+
+    #[test]
+    fn provider_test_rejects_plain_http_for_non_local_hosts() {
+        let error = match prepare_api_provider_test_payload(valid_test_provider_payload(
+            "http://example.com/v1",
+            "gpt-4.1",
+        )) {
+            Ok(_) => panic!("plain HTTP to non-local hosts must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("HTTPS"));
+    }
+
+    #[test]
+    fn provider_test_allows_plain_http_for_loopback_hosts() {
+        assert!(
+            prepare_api_provider_test_payload(valid_test_provider_payload(
+                "http://127.0.0.1:8766/v1",
+                "local-chat",
+            ))
+            .is_ok()
+        );
+        assert!(
+            prepare_api_provider_test_payload(valid_test_provider_payload(
+                "http://localhost:8766/v1",
+                "local-chat",
+            ))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn provider_model_list_result_rejects_missing_selected_model() {
+        let result = api_provider_model_list_result(
+            "gpt-4.1",
+            vec!["deepseek-chat".to_string(), "qwen-chat".to_string()],
+        );
+
+        assert!(!result.ok);
+        assert!(result.message.contains("selected model"));
+        assert!(result.models.is_empty());
     }
 
     #[test]
@@ -1138,6 +1265,30 @@ mod tests {
             reqwest::StatusCode::UNAUTHORIZED,
             Some(&body),
             Some(api_key),
+            false,
+        );
+
+        assert!(!message.contains(api_key));
+        assert!(!message.contains(key_prefix));
+        assert!(message.contains("<redacted>"));
+    }
+
+    #[test]
+    fn provider_error_body_redacts_partial_key_prefix_from_bounded_body() {
+        let api_key = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
+        let key_prefix = &api_key[..20];
+        let body = format!(
+            "{}{key_prefix}{}",
+            "x".repeat(API_PROVIDER_ERROR_BODY_LIMIT - key_prefix.len()),
+            "y".repeat(API_PROVIDER_ERROR_BODY_READ_LIMIT)
+        );
+
+        let message = api_provider_error_message(
+            "model list request",
+            reqwest::StatusCode::UNAUTHORIZED,
+            Some(&body),
+            Some(api_key),
+            true,
         );
 
         assert!(!message.contains(api_key));
@@ -1147,14 +1298,7 @@ mod tests {
 
     #[test]
     fn test_api_provider_payload_debug_redacts_key() {
-        let payload = TestApiProviderPayload {
-            provider_id: Some("provider-1".to_string()),
-            provider_type: "openai".to_string(),
-            display_name: "OpenAI".to_string(),
-            base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-4.1".to_string(),
-            api_key: Some("sk-test".to_string()),
-        };
+        let payload = valid_test_provider_payload("https://api.openai.com/v1", "gpt-4.1");
 
         let debug = format!("{payload:?}");
 
