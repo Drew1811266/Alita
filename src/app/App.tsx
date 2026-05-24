@@ -1032,7 +1032,9 @@ export function App() {
   const handleSaveApiProvider = async (payload: SaveApiProviderPayload) => {
     try {
       setPreferencesError(null);
-      applyPreferencesView(await saveApiProviderConfig(payload));
+      const view = await saveApiProviderConfig(payload);
+      applyPreferencesView(view);
+      return view;
     } catch (error) {
       setPreferencesError(String(error));
       throw error;

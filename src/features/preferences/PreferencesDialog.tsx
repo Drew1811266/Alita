@@ -24,7 +24,9 @@ type PreferencesDialogProps = {
   onImportModel(): void;
   onScanModelDirectory(): void;
   onSetAgentModelMode(mode: AgentModelMode): void;
-  onSaveApiProvider(payload: SaveApiProviderPayload): void | Promise<void>;
+  onSaveApiProvider(
+    payload: SaveApiProviderPayload,
+  ): void | PreferencesView | Promise<void | PreferencesView>;
   onTestApiProviderConnection(
     payload: SaveApiProviderPayload,
   ): ApiProviderConnectionResult | Promise<ApiProviderConnectionResult>;
@@ -316,7 +318,9 @@ function ApiProviderForm({
   onTestApiProviderConnection,
 }: {
   providers: ApiProviderConfig[];
-  onSaveApiProvider(payload: SaveApiProviderPayload): void | Promise<void>;
+  onSaveApiProvider(
+    payload: SaveApiProviderPayload,
+  ): void | PreferencesView | Promise<void | PreferencesView>;
   onTestApiProviderConnection(
     payload: SaveApiProviderPayload,
   ): ApiProviderConnectionResult | Promise<ApiProviderConnectionResult>;
@@ -343,10 +347,16 @@ function ApiProviderForm({
       onSubmit={async (event) => {
         event.preventDefault();
         const form = event.currentTarget;
+        const payload = readApiProviderPayload(form);
+        let updatedView: PreferencesView | void;
         try {
-          await onSaveApiProvider(readApiProviderPayload(form));
+          updatedView = await onSaveApiProvider(payload);
         } catch {
           return;
+        }
+        const savedProvider = findSavedApiProviderAfterSave(payload, updatedView);
+        if (savedProvider) {
+          fillApiProviderForm(form, savedProvider);
         }
         setFormFieldValue(form, "apiKey", "");
         markApiProviderFormChanged(form);
@@ -503,6 +513,51 @@ function readApiProviderPayload(form: ProviderFormLike): SaveApiProviderPayload 
     payload.apiKey = apiKey;
   }
   return payload;
+}
+
+function findSavedApiProviderAfterSave(
+  payload: SaveApiProviderPayload,
+  view: PreferencesView | void,
+): ApiProviderConfig | null {
+  const providers = view?.preferences.apiProviderConfigs ?? [];
+  if (providers.length === 0) {
+    return null;
+  }
+  if (payload.providerId) {
+    return (
+      providers.find((provider) => provider.providerId === payload.providerId) ??
+      null
+    );
+  }
+
+  const payloadBaseUrl = normalizeComparableBaseUrl(payload.baseUrl);
+  const matches = providers.filter(
+    (provider) =>
+      provider.providerType === payload.providerType &&
+      provider.displayName === payload.displayName &&
+      provider.baseUrl === payloadBaseUrl &&
+      provider.model === payload.model &&
+      provider.enabled === payload.enabled,
+  );
+  return latestApiProviderConfig(matches);
+}
+
+function normalizeComparableBaseUrl(baseUrl: string): string {
+  try {
+    return new URL(baseUrl.trim().replace(/\/+$/, "")).toString().replace(/\/+$/, "");
+  } catch {
+    return baseUrl.trim().replace(/\/+$/, "");
+  }
+}
+
+function latestApiProviderConfig(
+  providers: ApiProviderConfig[],
+): ApiProviderConfig | null {
+  return (
+    [...providers].sort((left, right) => {
+      return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+    })[0] ?? null
+  );
 }
 
 function fieldValue(form: ProviderFormLike | null, name: string): string {

@@ -537,6 +537,61 @@ describe("PreferencesDialog", () => {
     expect(fields.model.value).toBe("deepseek-chat");
   });
 
+  it("binds the form to a newly saved API provider before helper actions run", async () => {
+    const savedView: PreferencesView = {
+      ...view,
+      preferences: {
+        ...view.preferences,
+        apiProviderConfigs: [
+          ...view.preferences.apiProviderConfigs,
+          {
+            providerId: "api-3",
+            providerType: "deepseek",
+            displayName: "DeepSeek",
+            baseUrl: "https://api.deepseek.com",
+            model: "deepseek-chat",
+            credentialRef: "alita.api-provider.api-3",
+            enabled: true,
+            capabilities: ["chat_completions", "streaming"],
+            hasApiKey: true,
+            apiKeyStatus: "configured",
+            createdAt: "2026-05-24T00:00:00.000Z",
+            updatedAt: "2026-05-24T00:01:00.000Z",
+          },
+        ],
+      },
+    };
+    const onSaveApiProvider = vi.fn(() => Promise.resolve(savedView));
+    const onFetchApiProviderModels = vi.fn(() =>
+      Promise.resolve({ ok: true, message: "", models: [] }),
+    );
+    const elements = renderPreferenceElements({
+      onFetchApiProviderModels,
+      onSaveApiProvider,
+    });
+    const { fields, form } = createProviderForm(providerFormValues);
+
+    await findFormByLabel(elements, "API 供应商表单").props.onSubmit?.({
+      currentTarget: form,
+      preventDefault: () => undefined,
+    });
+    await findButtonsByText(elements, "拉取模型列表")[0].props.onClick?.({
+      currentTarget: { form },
+    });
+
+    expect(fields.providerId.value).toBe("api-3");
+    expect(fields.savedProvider.value).toBe("api-3");
+    expect(fields.apiKey.value).toBe("");
+    expect(onFetchApiProviderModels).toHaveBeenCalledWith({
+      providerId: "api-3",
+      providerType: "deepseek",
+      displayName: "DeepSeek",
+      baseUrl: "https://api.deepseek.com",
+      model: "deepseek-chat",
+      enabled: true,
+    } satisfies SaveApiProviderPayload);
+  });
+
   it("keeps the API key when saving the provider fails", async () => {
     const saveError = new Error("save failed");
     const onSaveApiProvider = vi.fn(() => Promise.reject(saveError));
