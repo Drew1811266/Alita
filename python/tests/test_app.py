@@ -155,6 +155,8 @@ def test_register_model_session_requires_sidecar_token(monkeypatch) -> None:
 def test_register_model_session_returns_session_id_with_valid_sidecar_token(
     monkeypatch,
 ) -> None:
+    from agent_service.model_sessions import DEFAULT_MODEL_SESSION_REGISTRY
+
     monkeypatch.setenv("ALITA_SIDECAR_TOKEN", "expected-token")
     client = TestClient(app)
 
@@ -175,4 +177,16 @@ def test_register_model_session_returns_session_id_with_valid_sidecar_token(
     )
 
     assert response.status_code == 200
-    assert response.json()["modelSessionId"].startswith("model-session-")
+    session_id = response.json()["modelSessionId"]
+    assert session_id.startswith("model-session-")
+
+    stored_config = DEFAULT_MODEL_SESSION_REGISTRY.consume(session_id)
+    assert stored_config is not None
+    assert stored_config.mode == "api"
+    assert stored_config.provider_id == "provider-1"
+    assert stored_config.provider_type == "openai"
+    assert stored_config.display_name == "OpenAI"
+    assert stored_config.base_url == "https://api.openai.com/v1"
+    assert stored_config.model == "gpt-4.1"
+    assert stored_config.api_key == "sk-test"
+    assert DEFAULT_MODEL_SESSION_REGISTRY.consume(session_id) is None
