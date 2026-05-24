@@ -4,7 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     api_credentials::ApiCredentialStore,
-    preferences::{agent_model_path, AppPreferences},
+    preferences::{
+        agent_model_path, normalize_api_provider_api_key, normalize_api_provider_base_url,
+        normalize_api_provider_display_name, normalize_api_provider_model,
+        normalize_api_provider_type, AppPreferences,
+    },
 };
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -110,21 +114,23 @@ fn resolve_api_config(
         .iter()
         .find(|provider| provider.provider_id == active_id)
         .ok_or_else(|| format!("active API provider does not exist: {active_id}"))?;
+    let provider_type = normalize_api_provider_type(&provider.provider_type)?;
+    let display_name = normalize_api_provider_display_name(&provider.display_name)?;
+    let base_url = normalize_api_provider_base_url(&provider.base_url)?;
+    let model = normalize_api_provider_model(&provider.model)?;
     if !provider.enabled {
-        return Err(format!(
-            "API provider '{}' is disabled",
-            provider.display_name
-        ));
+        return Err(format!("API provider '{display_name}' is disabled"));
     }
     let api_key = credential_store
         .get_api_key(&provider.credential_ref)?
-        .ok_or_else(|| format!("API key is not configured for {}", provider.display_name))?;
+        .ok_or_else(|| format!("API key is not configured for {display_name}"))
+        .and_then(|api_key| normalize_api_provider_api_key(&api_key))?;
     Ok(AgentModelConfig::Api {
         provider_id: provider.provider_id.clone(),
-        provider_type: provider.provider_type.clone(),
-        display_name: provider.display_name.clone(),
-        base_url: provider.base_url.clone(),
-        model: provider.model.clone(),
+        provider_type,
+        display_name,
+        base_url,
+        model,
         api_key,
     })
 }

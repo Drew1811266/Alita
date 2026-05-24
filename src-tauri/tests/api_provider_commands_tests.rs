@@ -147,13 +147,31 @@ fn delete_api_provider_core_does_not_delete_key_when_preference_save_fails() {
 }
 
 #[test]
-fn save_api_provider_core_skips_blank_api_key() {
+fn save_api_provider_core_rejects_explicit_blank_api_key_without_saving() {
+    let mut preferences = AppPreferences::default();
+    let credential_store = RecordingCredentialStore::default();
+
+    let error = save_api_provider_config_core(
+        &mut preferences,
+        valid_save_payload(Some("   ")),
+        &credential_store,
+        |_| Ok(()),
+    )
+    .unwrap_err();
+
+    assert_eq!(error, "API provider API key is required");
+    assert!(credential_store.operations().is_empty());
+    assert!(preferences.api_provider_configs.is_empty());
+}
+
+#[test]
+fn save_api_provider_core_preserves_secret_when_api_key_is_not_provided() {
     let mut preferences = AppPreferences::default();
     let credential_store = RecordingCredentialStore::default();
 
     save_api_provider_config_core(
         &mut preferences,
-        valid_save_payload(Some("   ")),
+        valid_save_payload(None),
         &credential_store,
         |_| Ok(()),
     )

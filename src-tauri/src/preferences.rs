@@ -246,6 +246,45 @@ pub fn provider_default_capabilities(provider_type: &str) -> Vec<String> {
     }
 }
 
+pub fn normalize_api_provider_type(provider_type: &str) -> Result<String, String> {
+    let provider_type = provider_type.trim().to_ascii_lowercase();
+    if !matches!(
+        provider_type.as_str(),
+        "openai" | "deepseek" | "kimi" | "glm" | "minimax" | "custom"
+    ) {
+        return Err(format!("unknown API provider type: {provider_type}"));
+    }
+
+    Ok(provider_type)
+}
+
+pub fn normalize_api_provider_display_name(display_name: &str) -> Result<String, String> {
+    let display_name = display_name.trim().to_string();
+    if display_name.is_empty() {
+        return Err("API provider display name is required".to_string());
+    }
+
+    Ok(display_name)
+}
+
+pub fn normalize_api_provider_model(model: &str) -> Result<String, String> {
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        return Err("API provider model name is required".to_string());
+    }
+
+    Ok(model)
+}
+
+pub fn normalize_api_provider_api_key(api_key: &str) -> Result<String, String> {
+    let api_key = api_key.trim().to_string();
+    if api_key.is_empty() {
+        return Err("API provider API key is required".to_string());
+    }
+
+    Ok(api_key)
+}
+
 pub fn set_agent_model_mode(preferences: &mut AppPreferences, mode: &str) -> Result<(), String> {
     match mode {
         "local" | "api" => {
@@ -305,26 +344,10 @@ pub fn upsert_api_provider_config(
     preferences: &mut AppPreferences,
     input: ApiProviderInput,
 ) -> Result<ApiProviderConfig, String> {
-    let provider_type = input.provider_type.trim().to_ascii_lowercase();
-    if !matches!(
-        provider_type.as_str(),
-        "openai" | "deepseek" | "kimi" | "glm" | "minimax" | "custom"
-    ) {
-        return Err(format!(
-            "unknown API provider type: {}",
-            input.provider_type
-        ));
-    }
-
-    let display_name = input.display_name.trim().to_string();
-    if display_name.is_empty() {
-        return Err("API provider display name is required".to_string());
-    }
+    let provider_type = normalize_api_provider_type(&input.provider_type)?;
+    let display_name = normalize_api_provider_display_name(&input.display_name)?;
     let base_url = normalize_api_provider_base_url(&input.base_url)?;
-    let model = input.model.trim().to_string();
-    if model.is_empty() {
-        return Err("API provider model name is required".to_string());
-    }
+    let model = normalize_api_provider_model(&input.model)?;
 
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     if let Some(provider_id) = input.provider_id.as_deref() {

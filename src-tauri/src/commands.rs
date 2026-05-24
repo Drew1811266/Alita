@@ -12,7 +12,9 @@ use crate::{
     preferences::{
         add_manual_model, add_speech_to_text_model, delete_api_provider_config,
         import_model_to_storage, load_preferences_with_model_recovery,
-        model_recovery_candidate_dirs, normalize_api_provider_base_url,
+        model_recovery_candidate_dirs, normalize_api_provider_api_key,
+        normalize_api_provider_base_url, normalize_api_provider_display_name,
+        normalize_api_provider_model, normalize_api_provider_type,
         previous_preferences_path_for_current_path, record_recent_project,
         save_preferences_to_path, scan_model_directory, set_active_api_provider,
         set_agent_model_mode, set_default_model, set_model_assignment, set_model_storage_dir,
@@ -643,6 +645,10 @@ where
         enabled,
         api_key,
     } = payload;
+    let api_key = api_key
+        .as_deref()
+        .map(normalize_api_provider_api_key)
+        .transpose()?;
     let provider = upsert_api_provider_config(
         preferences,
         ApiProviderInput {
@@ -655,7 +661,7 @@ where
         },
     )?;
     save_preferences(preferences)?;
-    if let Some(api_key) = api_key.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(api_key) = api_key.as_deref() {
         if let Err(error) = credential_store.set_api_key(&provider.credential_ref, api_key) {
             return rollback_preferences_after_credential_error(
                 preferences,
@@ -955,23 +961,9 @@ async fn test_api_provider_connection_core(
 fn prepare_api_provider_test_payload(
     payload: TestApiProviderPayload,
 ) -> Result<PreparedApiProviderTest, String> {
-    let provider_type = payload.provider_type.trim().to_ascii_lowercase();
-    if !matches!(
-        provider_type.as_str(),
-        "openai" | "deepseek" | "kimi" | "glm" | "minimax" | "custom"
-    ) {
-        return Err(redact_api_provider_secret(
-            format!(
-                "unknown API provider type: {}",
-                payload.provider_type.trim()
-            ),
-            payload.api_key.as_deref(),
-        ));
-    }
-
-    if payload.display_name.trim().is_empty() {
-        return Err("API provider display name is required".to_string());
-    }
+    normalize_api_provider_type(&payload.provider_type)
+        .map_err(|error| redact_api_provider_secret(error, payload.api_key.as_deref()))?;
+    normalize_api_provider_display_name(&payload.display_name)?;
 
     let base_url = normalize_api_provider_base_url(&payload.base_url)?;
     let mut parsed_url = reqwest::Url::parse(&base_url)
@@ -982,15 +974,8 @@ fn prepare_api_provider_test_payload(
         parsed_url.set_path(&path);
     }
 
-    let model = payload.model.trim().to_string();
-    if model.is_empty() {
-        return Err("API provider model name is required".to_string());
-    }
-
-    let api_key = payload.api_key.unwrap_or_default().trim().to_string();
-    if api_key.is_empty() {
-        return Err("API provider API key is required".to_string());
-    }
+    let model = normalize_api_provider_model(&payload.model)?;
+    let api_key = normalize_api_provider_api_key(payload.api_key.as_deref().unwrap_or_default())?;
 
     Ok(PreparedApiProviderTest {
         base_url: parsed_url,
@@ -1247,10 +1232,10 @@ fn is_valid_openai_chat_completion_choice(choice: &serde_json::Value) -> bool {
 }
 
 fn is_assistant_chat_message(message: &serde_json::Map<String, serde_json::Value>) -> bool {
-    match message.get("role") {
-        Some(role) => role.as_str().is_some_and(|role| role == "assistant"),
-        None => true,
-    }
+    message
+        .get("role")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|role| role == "assistant")
 }
 
 fn is_valid_openai_tool_call(tool_call: &serde_json::Value) -> bool {
@@ -1497,8 +1482,10 @@ mod tests {
             "not json",
             "{\"id\":\"chatcmpl-test\",\"choices\":[]}",
             "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"content\":\"\"}}]}",
+            "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"content\":\"pong\"}}]}",
             "{\"id\":\"chatcmpl-test\",\"choices\":[{\"text\":\"pong\"}]}",
             "{\"id\":\"chatcmpl-test\",\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}",
+            "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"tool_calls\":[]}}]}",
             "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"function\":{}}]}}]}",
         ] {
             let (base_url, server) = spawn_test_server_sequence(vec![
@@ -1582,6 +1569,51 @@ mod tests {
                                 "function": {
                                     "name": "lookup_weather",
                                     "arguments": "{}"
+                                }
+                            }
+                        ]
+                    },
+                    "finish_reason": "tool_calls"
+                }
+            ]
+        })
+        .to_string();
+        let (base_url, server) = spawn_test_server_sequence(vec![
+            (
+                "503 Service Unavailable",
+                "{\"error\":\"models unavailable\"}",
+            ),
+            ("200 OK", chat_body.as_str()),
+        ]);
+
+        let result = tauri::async_runtime::block_on(test_api_provider_connection_core(
+            valid_test_provider_payload(&base_url, "gpt-4.1"),
+        ));
+        let requests = server.join().expect("server should finish");
+
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].path, "/models");
+        assert_eq!(requests[1].path, "/chat/completions");
+        assert!(result.ok);
+        assert_eq!(result.models, vec!["gpt-4.1".to_string()]);
+    }
+
+    #[test]
+    fn provider_test_accepts_valid_fallback_chat_completion_function_name_tool_call_response() {
+        let chat_body = serde_json::json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup_weather"
                                 }
                             }
                         ]

@@ -15,7 +15,54 @@ use agent_model_config::{
     resolve_agent_model_config, AgentModelConfig, RegisterModelSessionRequest,
 };
 use api_credentials::{ApiCredentialStore, MemoryApiCredentialStore};
-use preferences::{add_manual_model, upsert_api_provider_config, ApiProviderInput, AppPreferences};
+use preferences::{
+    add_manual_model, upsert_api_provider_config, ApiProviderConfig, ApiProviderInput,
+    AppPreferences,
+};
+
+struct StaticCredentialStore {
+    api_key: Option<String>,
+}
+
+impl ApiCredentialStore for StaticCredentialStore {
+    fn set_api_key(&self, _credential_ref: &str, _api_key: &str) -> Result<(), String> {
+        unimplemented!("agent model config tests only read credentials")
+    }
+
+    fn get_api_key(&self, _credential_ref: &str) -> Result<Option<String>, String> {
+        Ok(self.api_key.clone())
+    }
+
+    fn delete_api_key(&self, _credential_ref: &str) -> Result<(), String> {
+        unimplemented!("agent model config tests only read credentials")
+    }
+}
+
+fn legacy_api_preferences(mut provider: ApiProviderConfig) -> AppPreferences {
+    provider.provider_id = "provider-1".to_string();
+    provider.credential_ref = "alita.api-provider.provider-1".to_string();
+    AppPreferences {
+        agent_model_mode: "api".to_string(),
+        active_api_provider_id: Some(provider.provider_id.clone()),
+        api_provider_configs: vec![provider],
+        ..AppPreferences::default()
+    }
+}
+
+fn legacy_valid_provider() -> ApiProviderConfig {
+    ApiProviderConfig {
+        provider_id: "provider-1".to_string(),
+        provider_type: "openai".to_string(),
+        display_name: "OpenAI".to_string(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        model: "gpt-4.1".to_string(),
+        credential_ref: "alita.api-provider.provider-1".to_string(),
+        enabled: true,
+        capabilities: vec!["chat_completions".to_string()],
+        created_at: "2026-05-24T00:00:00.000Z".to_string(),
+        updated_at: "2026-05-24T00:00:00.000Z".to_string(),
+    }
+}
 
 #[test]
 fn resolves_api_agent_model_config_with_secret_from_store() {
@@ -142,6 +189,73 @@ fn disabled_api_provider_returns_disabled_provider_error() {
     let error = resolve_agent_model_config(&preferences, &store).unwrap_err();
 
     assert_eq!(error, "API provider 'OpenAI' is disabled");
+}
+
+#[test]
+fn api_mode_rejects_unsafe_legacy_provider_base_url_before_session_registration() {
+    let mut provider = legacy_valid_provider();
+    provider.base_url = "https://api.openai.com/v1?api_key=sk-leaked".to_string();
+    let preferences = legacy_api_preferences(provider);
+    let store = StaticCredentialStore {
+        api_key: Some("sk-session-secret".to_string()),
+    };
+
+    let error = resolve_agent_model_config(&preferences, &store).unwrap_err();
+
+    assert!(error.contains("base URL"));
+    assert!(!error.contains("sk-session-secret"));
+    assert!(!error.contains("sk-leaked"));
+}
+
+#[test]
+fn api_mode_rejects_blank_api_key_returned_by_credential_store() {
+    let preferences = legacy_api_preferences(legacy_valid_provider());
+    let store = StaticCredentialStore {
+        api_key: Some("   ".to_string()),
+    };
+
+    let error = resolve_agent_model_config(&preferences, &store).unwrap_err();
+
+    assert_eq!(error, "API provider API key is required");
+}
+
+#[test]
+fn api_mode_rejects_invalid_legacy_provider_required_fields() {
+    let cases = [
+        (
+            ApiProviderConfig {
+                provider_type: "anthropic".to_string(),
+                ..legacy_valid_provider()
+            },
+            "unknown API provider type",
+        ),
+        (
+            ApiProviderConfig {
+                display_name: "  ".to_string(),
+                ..legacy_valid_provider()
+            },
+            "display name",
+        ),
+        (
+            ApiProviderConfig {
+                model: "  ".to_string(),
+                ..legacy_valid_provider()
+            },
+            "model name",
+        ),
+    ];
+
+    for (provider, expected_error) in cases {
+        let preferences = legacy_api_preferences(provider);
+        let store = StaticCredentialStore {
+            api_key: Some("sk-session-secret".to_string()),
+        };
+
+        let error = resolve_agent_model_config(&preferences, &store).unwrap_err();
+
+        assert!(error.contains(expected_error), "{error}");
+        assert!(!error.contains("sk-session-secret"));
+    }
 }
 
 #[test]
