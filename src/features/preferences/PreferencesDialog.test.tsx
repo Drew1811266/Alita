@@ -1,7 +1,7 @@
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PreferencesDialog } from "./PreferencesDialog";
 import type {
@@ -135,6 +135,10 @@ type TestForm = ReactElement<{
 
 type TestFormField = {
   checked?: boolean;
+  appendChild?(child: unknown): void;
+  children?: Array<{ textContent: string | null; value: string }>;
+  innerHTML?: string;
+  textContent?: string | null;
   value: string;
 };
 
@@ -185,6 +189,10 @@ function renderPreferenceElements(
     />,
   );
 }
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function collectElements(node: ReactNode): ReactElement[] {
   const elements: ReactElement[] = [];
@@ -286,12 +294,16 @@ function findSelectByName(elements: ReactElement[], name: string): TestSelect {
 }
 
 function createProviderForm(
-  values: Record<string, string | boolean>,
+  values: Record<string, string | boolean | TestFormField>,
 ): { form: TestFormElement; fields: Record<string, TestFormField> } {
   const fields = Object.fromEntries(
     Object.entries(values).map(([name, value]) => [
       name,
-      typeof value === "boolean" ? { checked: value, value: "" } : { value },
+      typeof value === "boolean"
+        ? { checked: value, value: "" }
+        : typeof value === "string"
+          ? { value }
+          : value,
     ]),
   ) as Record<string, TestFormField>;
 
@@ -305,6 +317,53 @@ function createProviderForm(
       },
     },
   };
+}
+
+function createOptionField(value: string): TestFormField {
+  return {
+    textContent: value,
+    value,
+  };
+}
+
+function createSelectField(options: string[]): TestFormField {
+  const field = {
+    children: options.map((value) => ({ textContent: value, value })),
+    value: options[0] ?? "",
+    appendChild(child: unknown) {
+      const option = child as { textContent?: string | null; value?: string };
+      this.children?.push({
+        textContent: option.textContent ?? null,
+        value: option.value ?? "",
+      });
+      if (!this.value) {
+        this.value = option.value ?? "";
+      }
+    },
+  } satisfies TestFormField;
+  let innerHTML = options.join("");
+  Object.defineProperty(field, "innerHTML", {
+    get() {
+      return innerHTML;
+    },
+    set(value: string) {
+      innerHTML = value;
+      if (value === "") {
+        field.children = [];
+      }
+    },
+  });
+  return field;
+}
+
+function optionValues(field: TestFormField): string[] {
+  return field.children?.map((child) => child.value) ?? [];
+}
+
+function stubDocumentCreateElement(): void {
+  vi.stubGlobal("document", {
+    createElement: () => createOptionField(""),
+  });
 }
 
 const providerFormValues = {
@@ -360,6 +419,7 @@ describe("PreferencesDialog", () => {
     expect(markup).toContain("添加 API 供应商");
     expect(markup).toContain("测试连接");
     expect(markup).toContain("拉取模型列表");
+    expect(markup).toContain('role="status"');
     expect(markup).toContain("供应商类型");
     expect(markup).toContain("显示名称");
     expect(markup).toContain("Base URL");
@@ -552,5 +612,143 @@ describe("PreferencesDialog", () => {
     } satisfies SaveApiProviderPayload;
     expect(onTestApiProviderConnection).toHaveBeenCalledWith(expectedPayload);
     expect(onFetchApiProviderModels).toHaveBeenCalledWith(expectedPayload);
+  });
+
+  it("clears stale fetched models when fetch returns an empty or failed result", async () => {
+    stubDocumentCreateElement();
+    const onFetchApiProviderModels = vi
+      .fn<() => Promise<ApiProviderConnectionResult>>()
+      .mockResolvedValueOnce({
+        ok: true,
+        message: "Fetched models",
+        models: ["deepseek-chat"],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        message: "",
+        models: [],
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        message: "Fetch failed",
+        models: ["wrong-provider-model"],
+      });
+    const elements = renderPreferenceElements({ onFetchApiProviderModels });
+    const fetchedModel = createSelectField(["stale-model"]);
+    const providerHelperMessage = {
+      textContent: "Old helper message",
+      value: "",
+    } satisfies TestFormField;
+    const { form } = createProviderForm({
+      ...providerFormValues,
+      fetchedModel,
+      providerHelperMessage,
+    });
+    const event = { currentTarget: { form } };
+    const fetchButton = findButtonsByText(elements, "拉取模型列表")[0];
+
+    await fetchButton.props.onClick?.(event);
+
+    expect(optionValues(fetchedModel)).toEqual(["deepseek-chat"]);
+    expect(providerHelperMessage.textContent).toBe("Fetched models");
+
+    await fetchButton.props.onClick?.(event);
+
+    expect(optionValues(fetchedModel)).toEqual([""]);
+    expect(fetchedModel.value).toBe("");
+    expect(providerHelperMessage.textContent).toBe("");
+
+    await fetchButton.props.onClick?.(event);
+
+    expect(optionValues(fetchedModel)).toEqual([""]);
+    expect(fetchedModel.value).toBe("");
+    expect(providerHelperMessage.textContent).toBe("Fetch failed");
+  });
+
+  it("handles helper rejections without rejecting the click promise", async () => {
+    stubDocumentCreateElement();
+    const onFetchApiProviderModels = vi
+      .fn<() => Promise<ApiProviderConnectionResult>>()
+      .mockResolvedValueOnce({
+        ok: true,
+        message: "Fetched models",
+        models: ["deepseek-chat"],
+      })
+      .mockRejectedValueOnce(new Error("network unavailable"));
+    const elements = renderPreferenceElements({ onFetchApiProviderModels });
+    const fetchedModel = createSelectField(["stale-model"]);
+    const providerHelperMessage = {
+      textContent: "Old helper message",
+      value: "",
+    } satisfies TestFormField;
+    const { form } = createProviderForm({
+      ...providerFormValues,
+      fetchedModel,
+      providerHelperMessage,
+    });
+    const event = { currentTarget: { form } };
+    const fetchButton = findButtonsByText(elements, "拉取模型列表")[0];
+
+    await fetchButton.props.onClick?.(event);
+    await expect(fetchButton.props.onClick?.(event)).resolves.toBeUndefined();
+
+    expect(optionValues(fetchedModel)).toEqual([""]);
+    expect(fetchedModel.value).toBe("");
+    expect(providerHelperMessage.textContent).toContain("network unavailable");
+  });
+
+  it("clears fetched models and helper message when provider selections change", () => {
+    const elements = renderPreferenceElements();
+    const fetchedModel = createSelectField(["stale-model"]);
+    const providerHelperMessage = {
+      textContent: "Fetched models",
+      value: "",
+    } satisfies TestFormField;
+    const { fields, form } = createProviderForm({
+      ...providerFormValues,
+      savedProvider: "api-1",
+      providerId: "api-1",
+      providerType: "deepseek",
+      fetchedModel,
+      providerHelperMessage,
+    });
+
+    findSelectByName(elements, "providerType").props.onChange?.({
+      currentTarget: { form },
+    });
+
+    expect(optionValues(fetchedModel)).toEqual([""]);
+    expect(fetchedModel.value).toBe("");
+    expect(providerHelperMessage.textContent).toBe("");
+
+    fetchedModel.children = [{ textContent: "stale-model", value: "stale-model" }];
+    fetchedModel.value = "stale-model";
+    providerHelperMessage.textContent = "Fetched models";
+    fields.savedProvider.value = "api-2";
+
+    findSelectByName(elements, "savedProvider").props.onChange?.({
+      currentTarget: { form },
+    });
+
+    expect(fields.providerId.value).toBe("api-2");
+    expect(fields.model.value).toBe("deepseek-chat");
+    expect(optionValues(fetchedModel)).toEqual([""]);
+    expect(fetchedModel.value).toBe("");
+    expect(providerHelperMessage.textContent).toBe("");
+
+    fetchedModel.children = [{ textContent: "stale-model", value: "stale-model" }];
+    fetchedModel.value = "stale-model";
+    providerHelperMessage.textContent = "Fetched models";
+    fields.savedProvider.value = "";
+
+    findSelectByName(elements, "savedProvider").props.onChange?.({
+      currentTarget: { form },
+    });
+
+    expect(fields.providerId.value).toBe("");
+    expect(fields.model.value).toBe("deepseek-chat");
+    expect(optionValues(fetchedModel)).toEqual([""]);
+    expect(fetchedModel.value).toBe("");
+    expect(providerHelperMessage.textContent).toBe("");
   });
 });

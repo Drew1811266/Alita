@@ -289,6 +289,8 @@ const API_PROVIDER_PRESETS: Array<{
   },
 ];
 
+const FETCHED_MODEL_PLACEHOLDER = "尚未拉取模型";
+
 type ProviderFormField = {
   checked?: boolean;
   textContent?: string | null;
@@ -457,10 +459,14 @@ function ApiProviderForm({
             );
           }}
         >
-          <option value="">尚未拉取模型</option>
+          <option value="">{FETCHED_MODEL_PLACEHOLDER}</option>
         </select>
       </div>
-      <output className="apiProviderHelperMessage" name="providerHelperMessage" />
+      <output
+        className="apiProviderHelperMessage"
+        name="providerHelperMessage"
+        role="status"
+      />
     </form>
   );
 }
@@ -520,6 +526,7 @@ function applyProviderPresetToForm(form: ProviderFormLike | null): void {
   }
   setFormFieldValue(form, "displayName", preset.displayName);
   setFormFieldValue(form, "baseUrl", preset.baseUrl);
+  clearApiProviderHelperState(form);
 }
 
 function applySavedProviderToForm(
@@ -560,6 +567,7 @@ function fillApiProviderForm(
   setFormFieldValue(form, "model", provider.model);
   setFormFieldValue(form, "apiKey", "");
   setFormCheckbox(form, "enabled", provider.enabled);
+  clearApiProviderHelperState(form);
 }
 
 async function runApiProviderHelper(
@@ -572,23 +580,56 @@ async function runApiProviderHelper(
   if (!form) {
     return;
   }
-  const result = await handler(readApiProviderPayload(form));
+  let result: ApiProviderConnectionResult;
+  try {
+    result = await handler(readApiProviderPayload(form));
+  } catch (error) {
+    clearFetchedModelSelect(form);
+    setHelperMessage(form, errorToMessage(error));
+    return;
+  }
+
   setHelperMessage(form, result.message);
-  if (result.models.length > 0) {
+  if (result.ok && result.models.length > 0) {
     populateFetchedModelSelect(form, result.models);
     if (fillFirstModel && !fieldValue(form, "model")) {
       setFormFieldValue(form, "model", result.models[0]);
     }
+    return;
   }
+
+  clearFetchedModelSelect(form);
 }
 
-function setHelperMessage(form: ProviderFormLike, message: string): void {
+function errorToMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function clearApiProviderHelperState(form: ProviderFormLike | null): void {
+  clearFetchedModelSelect(form);
+  setHelperMessage(form, "");
+}
+
+function setHelperMessage(
+  form: ProviderFormLike | null,
+  message: string,
+): void {
   const output =
-    form.elements.namedItem("providerHelperMessage") ??
-    form.querySelector?.("[name='providerHelperMessage']");
+    form?.elements.namedItem("providerHelperMessage") ??
+    form?.querySelector?.("[name='providerHelperMessage']");
   if (output) {
     output.textContent = message;
   }
+}
+
+function clearFetchedModelSelect(form: ProviderFormLike | null): void {
+  const select = form?.elements.namedItem("fetchedModel");
+  if (!select) {
+    return;
+  }
+  select.value = "";
+  select.innerHTML = "";
+  select.appendChild?.(createOption("", FETCHED_MODEL_PLACEHOLDER));
 }
 
 function populateFetchedModelSelect(
@@ -599,13 +640,21 @@ function populateFetchedModelSelect(
   if (!select) {
     return;
   }
+  select.value = "";
   select.innerHTML = "";
   for (const model of models) {
-    const option = document.createElement("option");
-    option.value = model;
-    option.textContent = model;
-    select.appendChild?.(option);
+    select.appendChild?.(createOption(model, model));
   }
+}
+
+function createOption(value: string, textContent: string): unknown {
+  if (typeof document !== "undefined") {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = textContent;
+    return option;
+  }
+  return { textContent, value };
 }
 
 function ApiProviderList({
