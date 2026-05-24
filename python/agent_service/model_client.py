@@ -238,16 +238,12 @@ class OpenAICompatibleModelClient:
 
                 try:
                     payload = json.loads(data)
-                    delta = payload["choices"][0]["delta"].get("content", "")
+                    delta = _extract_api_stream_delta(payload)
                 except (json.JSONDecodeError, KeyError, IndexError, TypeError) as error:
                     raise ModelRuntimeRequestFailed(
                         "OpenAI-compatible API returned an unexpected streaming chat response shape"
                     ) from error
 
-                if not isinstance(delta, str):
-                    raise ModelRuntimeRequestFailed(
-                        "OpenAI-compatible API returned an unexpected streaming chat response shape"
-                    )
                 if delta:
                     yield delta
         except UnicodeDecodeError as error:
@@ -430,6 +426,38 @@ def _extract_api_chat_content(response: dict) -> str:
     if not isinstance(content, str):
         raise ModelRuntimeRequestFailed(
             "OpenAI-compatible API returned an unexpected chat response shape"
+        )
+    return content
+
+
+def _extract_api_stream_delta(response: dict) -> str:
+    if not isinstance(response, dict):
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an unexpected streaming chat response shape"
+        )
+
+    try:
+        choice = response["choices"][0]
+    except (KeyError, IndexError, TypeError) as error:
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an unexpected streaming chat response shape"
+        ) from error
+
+    if not isinstance(choice, dict):
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an unexpected streaming chat response shape"
+        )
+
+    delta = choice.get("delta")
+    if not isinstance(delta, dict):
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an unexpected streaming chat response shape"
+        )
+
+    content = delta.get("content", "")
+    if not isinstance(content, str):
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an unexpected streaming chat response shape"
         )
     return content
 

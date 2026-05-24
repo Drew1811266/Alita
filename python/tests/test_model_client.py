@@ -309,6 +309,29 @@ def test_openai_compatible_client_wraps_malformed_stream_bytes() -> None:
         list(client.stream_chat([ChatMessage(role="user", content="hello")]))
 
 
+def test_openai_compatible_client_rejects_non_object_stream_delta() -> None:
+    def stream_transport(url: str, payload: dict, timeout: float, headers: dict[str, str]):
+        return ['data: {"choices":[{"delta":null}]}\n\n']
+
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4.1",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+        ),
+        stream_transport=stream_transport,
+    )
+
+    with pytest.raises(
+        ModelRuntimeRequestFailed,
+        match="OpenAI-compatible API returned an unexpected streaming chat response shape",
+    ):
+        list(client.stream_chat([ChatMessage(role="user", content="hello")]))
+
+
 def test_openai_compatible_client_rejects_missing_api_key() -> None:
     client = OpenAICompatibleModelClient(
         AgentModelClientConfig(
