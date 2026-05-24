@@ -881,6 +881,7 @@ def _event_record(record: dict) -> dict:
         "completedAt": record.get("completedAt"),
         "artifactRefs": record.get("artifactRefs", []),
         "error": record.get("error"),
+        "values": record.get("values", {}),
     }
 
 
