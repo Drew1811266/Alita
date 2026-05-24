@@ -4,7 +4,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import { PreferencesDialog } from "./PreferencesDialog";
-import type { PreferencesView } from "./preferencesApi";
+import type {
+  ApiProviderConnectionResult,
+  PreferencesView,
+  SaveApiProviderPayload,
+} from "./preferencesApi";
 
 const view: PreferencesView = {
   preferences: {
@@ -117,8 +121,28 @@ type TestButton = ReactElement<{
   "aria-label"?: string;
   "aria-pressed"?: boolean | "true" | "false";
   children?: ReactNode;
-  onClick?: () => void;
+  onClick?: (event?: unknown) => void | Promise<void>;
 }>;
+
+type TestForm = ReactElement<{
+  "aria-label"?: string;
+  children?: ReactNode;
+  onSubmit?: (event: {
+    preventDefault(): void;
+    currentTarget: TestFormElement;
+  }) => void | Promise<void>;
+}>;
+
+type TestFormField = {
+  checked?: boolean;
+  value: string;
+};
+
+type TestFormElement = {
+  elements: {
+    namedItem(name: string): TestFormField | null;
+  };
+};
 
 function renderPreferenceElements(
   props: Partial<ComponentProps<typeof PreferencesDialog>> = {},
@@ -133,6 +157,9 @@ function renderPreferenceElements(
       onImportModel={() => undefined}
       onScanModelDirectory={() => undefined}
       onDeleteApiProvider={() => undefined}
+      onFetchApiProviderModels={() =>
+        Promise.resolve({ ok: true, message: "", models: [] })
+      }
       onSaveApiProvider={() => undefined}
       onSetActiveApiProvider={() => undefined}
       onSetDefaultModel={() => undefined}
@@ -140,6 +167,9 @@ function renderPreferenceElements(
       onSetModelAssignment={() => undefined}
       onSetModelStorageDirectory={() => undefined}
       onSetToolEnabled={() => undefined}
+      onTestApiProviderConnection={() =>
+        Promise.resolve({ ok: true, message: "", models: [] })
+      }
       open
       view={view}
       {...props}
@@ -218,6 +248,52 @@ function findButtonsByText(
   );
 }
 
+function findFormByLabel(elements: ReactElement[], label: string): TestForm {
+  const form = elements.find(
+    (element): element is TestForm =>
+      element.type === "form" &&
+      (element.props as { "aria-label"?: string })["aria-label"] === label,
+  );
+
+  if (!form) {
+    throw new Error(`Form with aria-label "${label}" was not found.`);
+  }
+
+  return form;
+}
+
+function createProviderForm(
+  values: Record<string, string | boolean>,
+): { form: TestFormElement; fields: Record<string, TestFormField> } {
+  const fields = Object.fromEntries(
+    Object.entries(values).map(([name, value]) => [
+      name,
+      typeof value === "boolean" ? { checked: value, value: "" } : { value },
+    ]),
+  ) as Record<string, TestFormField>;
+
+  return {
+    fields,
+    form: {
+      elements: {
+        namedItem(name: string) {
+          return fields[name] ?? null;
+        },
+      },
+    },
+  };
+}
+
+const providerFormValues = {
+  providerId: "",
+  providerType: "deepseek",
+  displayName: "DeepSeek",
+  baseUrl: "https://api.deepseek.com",
+  model: "deepseek-chat",
+  apiKey: "sk-form",
+  enabled: true,
+};
+
 describe("PreferencesDialog", () => {
   it("renders model storage and tool management sections", () => {
     const markup = renderToStaticMarkup(
@@ -230,6 +306,9 @@ describe("PreferencesDialog", () => {
         onImportModel={() => undefined}
         onScanModelDirectory={() => undefined}
         onDeleteApiProvider={() => undefined}
+        onFetchApiProviderModels={() =>
+          Promise.resolve({ ok: true, message: "", models: [] })
+        }
         onSaveApiProvider={() => undefined}
         onSetActiveApiProvider={() => undefined}
         onSetDefaultModel={() => undefined}
@@ -237,6 +316,9 @@ describe("PreferencesDialog", () => {
         onSetModelAssignment={() => undefined}
         onSetModelStorageDirectory={() => undefined}
         onSetToolEnabled={() => undefined}
+        onTestApiProviderConnection={() =>
+          Promise.resolve({ ok: true, message: "", models: [] })
+        }
         open
         view={view}
       />,
@@ -251,6 +333,15 @@ describe("PreferencesDialog", () => {
     expect(markup).toContain("本地模型");
     expect(markup).toContain("API 模型");
     expect(markup).toContain("API 供应商");
+    expect(markup).toContain("添加 API 供应商");
+    expect(markup).toContain("测试连接");
+    expect(markup).toContain("拉取模型列表");
+    expect(markup).toContain("供应商类型");
+    expect(markup).toContain("显示名称");
+    expect(markup).toContain("Base URL");
+    expect(markup).toContain("模型名称");
+    expect(markup).toContain("API 密钥");
+    expect(markup).toContain("启用供应商");
     expect(markup).toContain("OpenAI");
     expect(markup).toContain("gpt-4.1");
     expect(markup).toContain("https://api.openai.com/v1");
@@ -261,6 +352,7 @@ describe("PreferencesDialog", () => {
     expect(markup).toContain("删除 API 供应商：DeepSeek");
     expect(markup).toContain("删除");
     expect(markup).not.toContain("sk-test");
+    expect(markup).not.toContain("credentialRef");
     expect(markup).not.toContain("alita.api-provider.api-1");
     expect(markup).not.toContain("alita.api-provider.api-2");
     expect(markup).toContain("模型");
@@ -324,5 +416,57 @@ describe("PreferencesDialog", () => {
 
     expect(onDeleteApiProvider).toHaveBeenNthCalledWith(1, "api-1");
     expect(onDeleteApiProvider).toHaveBeenNthCalledWith(2, "api-2");
+  });
+
+  it("submits the API provider form payload and clears only the API key", async () => {
+    const onSaveApiProvider = vi.fn(() => Promise.resolve());
+    const elements = renderPreferenceElements({ onSaveApiProvider });
+    const { fields, form } = createProviderForm(providerFormValues);
+
+    await findFormByLabel(elements, "API 供应商表单").props.onSubmit?.({
+      currentTarget: form,
+      preventDefault: () => undefined,
+    });
+
+    expect(onSaveApiProvider).toHaveBeenCalledWith({
+      providerType: "deepseek",
+      displayName: "DeepSeek",
+      baseUrl: "https://api.deepseek.com",
+      model: "deepseek-chat",
+      enabled: true,
+      apiKey: "sk-form",
+    } satisfies SaveApiProviderPayload);
+    expect(fields.apiKey.value).toBe("");
+    expect(fields.model.value).toBe("deepseek-chat");
+  });
+
+  it("tests and fetches API provider helpers with the current form payload", async () => {
+    const helperResult: ApiProviderConnectionResult = {
+      ok: true,
+      message: "Fetched models",
+      models: ["deepseek-chat"],
+    };
+    const onTestApiProviderConnection = vi.fn(() => Promise.resolve(helperResult));
+    const onFetchApiProviderModels = vi.fn(() => Promise.resolve(helperResult));
+    const elements = renderPreferenceElements({
+      onFetchApiProviderModels,
+      onTestApiProviderConnection,
+    });
+    const { form } = createProviderForm(providerFormValues);
+    const event = { currentTarget: { form } };
+
+    await findButtonsByText(elements, "测试连接")[0].props.onClick?.(event);
+    await findButtonsByText(elements, "拉取模型列表")[0].props.onClick?.(event);
+
+    const expectedPayload = {
+      providerType: "deepseek",
+      displayName: "DeepSeek",
+      baseUrl: "https://api.deepseek.com",
+      model: "deepseek-chat",
+      enabled: true,
+      apiKey: "sk-form",
+    } satisfies SaveApiProviderPayload;
+    expect(onTestApiProviderConnection).toHaveBeenCalledWith(expectedPayload);
+    expect(onFetchApiProviderModels).toHaveBeenCalledWith(expectedPayload);
   });
 });

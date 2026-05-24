@@ -69,6 +69,7 @@ pub fn run() {
             commands::get_attachment_metadata,
             commands::prepare_agent_model_session,
             commands::test_api_provider_connection,
+            commands::fetch_api_provider_models,
             commands::create_project,
             commands::open_project,
             commands::save_project,

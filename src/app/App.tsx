@@ -45,6 +45,7 @@ import {
   addModelFile,
   addSpeechToTextModelDirectory,
   deleteApiProviderConfig,
+  fetchApiProviderModels,
   getPreferences,
   importModelFile,
   pickModelDirectory,
@@ -59,6 +60,8 @@ import {
   setModelAssignment,
   setModelStorageDirectory,
   setToolEnabled,
+  testApiProviderConnection,
+  type ApiProviderConnectionResult,
   type ModelAssignmentRole,
   type PreferencesView,
   type SaveApiProviderPayload,
@@ -1035,6 +1038,38 @@ export function App() {
     }
   };
 
+  const handleTestApiProviderConnection = async (
+    payload: SaveApiProviderPayload,
+  ): Promise<ApiProviderConnectionResult> => {
+    try {
+      setPreferencesError(null);
+      const result = await testApiProviderConnection(payload);
+      if (!result.ok) {
+        setPreferencesError(result.message);
+      }
+      return result;
+    } catch (error) {
+      setPreferencesError(String(error));
+      return { ok: false, message: String(error), models: [] };
+    }
+  };
+
+  const handleFetchApiProviderModels = async (
+    payload: SaveApiProviderPayload,
+  ): Promise<ApiProviderConnectionResult> => {
+    try {
+      setPreferencesError(null);
+      const result = await fetchApiProviderModels(payload);
+      if (!result.ok) {
+        setPreferencesError(result.message);
+      }
+      return result;
+    } catch (error) {
+      setPreferencesError(String(error));
+      return { ok: false, message: String(error), models: [] };
+    }
+  };
+
   const handleDeleteApiProvider = async (providerId: string) => {
     try {
       setPreferencesError(null);
@@ -1069,6 +1104,7 @@ export function App() {
       onAddSpeechToTextModel={handleAddSpeechToTextModel}
       onClose={() => setPreferencesOpen(false)}
       onDeleteApiProvider={handleDeleteApiProvider}
+      onFetchApiProviderModels={handleFetchApiProviderModels}
       onImportModel={handleImportModel}
       onScanModelDirectory={handleScanModelDirectory}
       onSaveApiProvider={handleSaveApiProvider}
@@ -1078,6 +1114,7 @@ export function App() {
       onSetModelAssignment={handleSetModelAssignment}
       onSetModelStorageDirectory={handleSetModelStorageDirectory}
       onSetToolEnabled={handleSetToolEnabled}
+      onTestApiProviderConnection={handleTestApiProviderConnection}
       open={preferencesOpen}
       view={preferencesView}
     />

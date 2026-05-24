@@ -502,6 +502,13 @@ pub async fn test_api_provider_connection(
     Ok(test_api_provider_connection_core(payload).await)
 }
 
+#[tauri::command]
+pub async fn fetch_api_provider_models(
+    payload: TestApiProviderPayload,
+) -> Result<ApiProviderConnectionResult, String> {
+    Ok(fetch_api_provider_models_core(payload).await)
+}
+
 pub fn attachment_metadata_for_path(
     path: impl AsRef<Path>,
 ) -> Result<SubmitAttachmentPayload, String> {
@@ -965,8 +972,55 @@ async fn test_api_provider_connection_core(
     }
 }
 
+async fn fetch_api_provider_models_core(
+    payload: TestApiProviderPayload,
+) -> ApiProviderConnectionResult {
+    let prepared = match prepare_api_provider_fetch_models_payload(payload) {
+        Ok(prepared) => prepared,
+        Err(message) => return api_provider_connection_failure(message),
+    };
+    let http = match reqwest::Client::builder()
+        .timeout(API_PROVIDER_TEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
+        Ok(http) => http,
+        Err(error) => {
+            return api_provider_connection_failure(redact_api_provider_secret(
+                format!("failed to create provider model client: {error}"),
+                Some(&prepared.api_key),
+            ));
+        }
+    };
+
+    match fetch_openai_models(&http, &prepared).await {
+        Ok(models) => ApiProviderConnectionResult {
+            ok: true,
+            message: "Model list fetched successfully".to_string(),
+            models,
+        },
+        Err(error) => api_provider_connection_failure(redact_api_provider_secret(
+            format!("Model list fetch failed: {error}"),
+            Some(&prepared.api_key),
+        )),
+    }
+}
+
 fn prepare_api_provider_test_payload(
     payload: TestApiProviderPayload,
+) -> Result<PreparedApiProviderTest, String> {
+    prepare_api_provider_payload(payload, false)
+}
+
+fn prepare_api_provider_fetch_models_payload(
+    payload: TestApiProviderPayload,
+) -> Result<PreparedApiProviderTest, String> {
+    prepare_api_provider_payload(payload, true)
+}
+
+fn prepare_api_provider_payload(
+    payload: TestApiProviderPayload,
+    allow_blank_model: bool,
 ) -> Result<PreparedApiProviderTest, String> {
     normalize_api_provider_type(&payload.provider_type)
         .map_err(|error| redact_api_provider_secret(error, payload.api_key.as_deref()))?;
@@ -981,7 +1035,11 @@ fn prepare_api_provider_test_payload(
         parsed_url.set_path(&path);
     }
 
-    let model = normalize_api_provider_model(&payload.model)?;
+    let model = if allow_blank_model && payload.model.trim().is_empty() {
+        String::new()
+    } else {
+        normalize_api_provider_model(&payload.model)?
+    };
     let api_key = normalize_api_provider_api_key(payload.api_key.as_deref().unwrap_or_default())?;
 
     Ok(PreparedApiProviderTest {
@@ -1678,6 +1736,28 @@ mod tests {
         assert!(!result.ok);
         assert!(result.message.contains("selected model"));
         assert!(result.models.is_empty());
+    }
+
+    #[test]
+    fn provider_model_fetch_allows_blank_model_and_returns_models() {
+        let (base_url, server) = spawn_test_server(
+            "200 OK",
+            "{\"data\":[{\"id\":\"deepseek-chat\"},{\"id\":\"deepseek-reasoner\"}]}",
+        );
+        let mut payload = valid_test_provider_payload(&base_url, "   ");
+        payload.provider_type = "deepseek".to_string();
+        payload.display_name = "DeepSeek".to_string();
+
+        let result = tauri::async_runtime::block_on(fetch_api_provider_models_core(payload));
+        let request = server.join().expect("server should finish");
+
+        assert_eq!(request.path, "/models");
+        assert!(result.ok);
+        assert_eq!(result.message, "Model list fetched successfully");
+        assert_eq!(
+            result.models,
+            vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()]
+        );
     }
 
     #[test]

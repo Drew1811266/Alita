@@ -140,6 +140,22 @@ export async function saveApiProviderConfig(
   return invoke<PreferencesView>("save_api_provider_config", { payload });
 }
 
+export async function testApiProviderConnection(
+  payload: SaveApiProviderPayload,
+): Promise<ApiProviderConnectionResult> {
+  return invoke<ApiProviderConnectionResult>("test_api_provider_connection", {
+    payload,
+  });
+}
+
+export async function fetchApiProviderModels(
+  payload: SaveApiProviderPayload,
+): Promise<ApiProviderConnectionResult> {
+  return invoke<ApiProviderConnectionResult>("fetch_api_provider_models", {
+    payload,
+  });
+}
+
 export async function deleteApiProviderConfig(
   providerId: string,
 ): Promise<PreferencesView> {

@@ -3,10 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   deleteApiProviderConfig,
+  fetchApiProviderModels,
   prepareAgentModelSession,
   saveApiProviderConfig,
   setActiveApiProvider,
   setAgentModelMode,
+  testApiProviderConnection,
   type SaveApiProviderPayload,
 } from "./preferencesApi";
 import type { PreferencesView } from "../../shared/types";
@@ -74,6 +76,53 @@ describe("preferences API provider commands", () => {
     await expect(saveApiProviderConfig(payload)).resolves.toBe(preferencesView);
 
     expect(invokeMock).toHaveBeenCalledWith("save_api_provider_config", {
+      payload,
+    });
+  });
+
+  it("tests API provider connections with the expected command", async () => {
+    const payload: SaveApiProviderPayload = {
+      providerId: "provider-1",
+      providerType: "openai",
+      displayName: "OpenAI",
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-4.1",
+      enabled: true,
+      apiKey: "secret",
+    };
+    const result = {
+      ok: true,
+      message: "Connection successful",
+      models: ["gpt-4.1"],
+    };
+    invokeMock.mockResolvedValue(result);
+
+    await expect(testApiProviderConnection(payload)).resolves.toBe(result);
+
+    expect(invokeMock).toHaveBeenCalledWith("test_api_provider_connection", {
+      payload,
+    });
+  });
+
+  it("fetches API provider models with the expected command", async () => {
+    const payload: SaveApiProviderPayload = {
+      providerType: "deepseek",
+      displayName: "DeepSeek",
+      baseUrl: "https://api.deepseek.com",
+      model: "",
+      enabled: true,
+      apiKey: "secret",
+    };
+    const result = {
+      ok: true,
+      message: "Fetched 2 models",
+      models: ["deepseek-chat", "deepseek-reasoner"],
+    };
+    invokeMock.mockResolvedValue(result);
+
+    await expect(fetchApiProviderModels(payload)).resolves.toBe(result);
+
+    expect(invokeMock).toHaveBeenCalledWith("fetch_api_provider_models", {
       payload,
     });
   });

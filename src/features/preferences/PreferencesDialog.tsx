@@ -1,10 +1,15 @@
 import type {
   AgentModelMode,
   ApiProviderConfig,
+  ApiProviderType,
   ModelEntry,
   ToolSummary,
 } from "../../shared/types";
-import type { PreferencesView, SaveApiProviderPayload } from "./preferencesApi";
+import type {
+  ApiProviderConnectionResult,
+  PreferencesView,
+  SaveApiProviderPayload,
+} from "./preferencesApi";
 
 type ModelAssignmentRole = "agentChat" | "speechToText";
 
@@ -19,7 +24,13 @@ type PreferencesDialogProps = {
   onImportModel(): void;
   onScanModelDirectory(): void;
   onSetAgentModelMode(mode: AgentModelMode): void;
-  onSaveApiProvider(payload: SaveApiProviderPayload): void;
+  onSaveApiProvider(payload: SaveApiProviderPayload): void | Promise<void>;
+  onTestApiProviderConnection(
+    payload: SaveApiProviderPayload,
+  ): ApiProviderConnectionResult | Promise<ApiProviderConnectionResult>;
+  onFetchApiProviderModels(
+    payload: SaveApiProviderPayload,
+  ): ApiProviderConnectionResult | Promise<ApiProviderConnectionResult>;
   onDeleteApiProvider(providerId: string): void;
   onSetActiveApiProvider(providerId: string): void;
   onSetDefaultModel(modelId: string): void;
@@ -40,11 +51,14 @@ export function PreferencesDialog({
   onScanModelDirectory,
   onSetAgentModelMode,
   onDeleteApiProvider,
+  onFetchApiProviderModels,
+  onSaveApiProvider,
   onSetActiveApiProvider,
   onSetDefaultModel,
   onSetModelAssignment,
   onSetModelStorageDirectory,
   onSetToolEnabled,
+  onTestApiProviderConnection,
 }: PreferencesDialogProps) {
   if (!open) {
     return null;
@@ -124,12 +138,20 @@ export function PreferencesDialog({
                 </div>
 
                 {view.preferences.agentModelMode === "api" ? (
-                  <ApiProviderList
-                    activeApiProviderId={view.preferences.activeApiProviderId}
-                    providers={view.preferences.apiProviderConfigs}
-                    onDeleteApiProvider={onDeleteApiProvider}
-                    onSetActiveApiProvider={onSetActiveApiProvider}
-                  />
+                  <>
+                    <ApiProviderForm
+                      providers={view.preferences.apiProviderConfigs}
+                      onFetchApiProviderModels={onFetchApiProviderModels}
+                      onSaveApiProvider={onSaveApiProvider}
+                      onTestApiProviderConnection={onTestApiProviderConnection}
+                    />
+                    <ApiProviderList
+                      activeApiProviderId={view.preferences.activeApiProviderId}
+                      providers={view.preferences.apiProviderConfigs}
+                      onDeleteApiProvider={onDeleteApiProvider}
+                      onSetActiveApiProvider={onSetActiveApiProvider}
+                    />
+                  </>
                 ) : null}
               </section>
 
@@ -230,6 +252,360 @@ export function PreferencesDialog({
   );
 }
 
+const API_PROVIDER_PRESETS: Array<{
+  providerType: ApiProviderType;
+  displayName: string;
+  baseUrl: string;
+}> = [
+  {
+    providerType: "openai",
+    displayName: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+  },
+  {
+    providerType: "deepseek",
+    displayName: "DeepSeek",
+    baseUrl: "https://api.deepseek.com",
+  },
+  {
+    providerType: "kimi",
+    displayName: "Kimi",
+    baseUrl: "https://api.moonshot.ai/v1",
+  },
+  {
+    providerType: "glm",
+    displayName: "GLM",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+  },
+  {
+    providerType: "minimax",
+    displayName: "MiniMax",
+    baseUrl: "https://api.minimax.io/v1",
+  },
+  {
+    providerType: "custom",
+    displayName: "Custom API",
+    baseUrl: "",
+  },
+];
+
+type ProviderFormField = {
+  checked?: boolean;
+  textContent?: string | null;
+  value?: string;
+  innerHTML?: string;
+  appendChild?(child: unknown): void;
+};
+
+type ProviderFormLike = {
+  elements: {
+    namedItem(name: string): ProviderFormField | null;
+  };
+  querySelector?(selector: string): ProviderFormField | null;
+};
+
+function ApiProviderForm({
+  providers,
+  onFetchApiProviderModels,
+  onSaveApiProvider,
+  onTestApiProviderConnection,
+}: {
+  providers: ApiProviderConfig[];
+  onSaveApiProvider(payload: SaveApiProviderPayload): void | Promise<void>;
+  onTestApiProviderConnection(
+    payload: SaveApiProviderPayload,
+  ): ApiProviderConnectionResult | Promise<ApiProviderConnectionResult>;
+  onFetchApiProviderModels(
+    payload: SaveApiProviderPayload,
+  ): ApiProviderConnectionResult | Promise<ApiProviderConnectionResult>;
+}) {
+  return (
+    <form
+      aria-label="API 供应商表单"
+      className="apiProviderForm"
+      id="api-provider-form"
+      name="api-provider-form"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        await onSaveApiProvider(readApiProviderPayload(form));
+        setFormFieldValue(form, "apiKey", "");
+      }}
+    >
+      <div className="apiProviderFormHeader">
+        <h4>添加 API 供应商</h4>
+        <button className="secondaryButton compactButton" type="reset">
+          添加 API 供应商
+        </button>
+      </div>
+      <input name="providerId" type="hidden" />
+
+      <div className="apiProviderFields">
+        <label>
+          <span>已保存供应商</span>
+          <select
+            defaultValue=""
+            name="savedProvider"
+            onChange={(event) =>
+              applySavedProviderToForm(event.currentTarget.form, providers)
+            }
+          >
+            <option value="">新建供应商</option>
+            {providers.map((provider) => (
+              <option key={provider.providerId} value={provider.providerId}>
+                {provider.displayName}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>供应商类型</span>
+          <select
+            defaultValue="openai"
+            name="providerType"
+            onChange={(event) =>
+              applyProviderPresetToForm(event.currentTarget.form)
+            }
+          >
+            {API_PROVIDER_PRESETS.map((preset) => (
+              <option key={preset.providerType} value={preset.providerType}>
+                {preset.providerType}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>显示名称</span>
+          <input
+            defaultValue="OpenAI"
+            name="displayName"
+            type="text"
+            autoComplete="off"
+          />
+        </label>
+        <label>
+          <span>Base URL</span>
+          <input
+            defaultValue="https://api.openai.com/v1"
+            name="baseUrl"
+            type="url"
+            autoComplete="off"
+          />
+        </label>
+        <label>
+          <span>模型名称</span>
+          <input name="model" type="text" autoComplete="off" />
+        </label>
+        <label>
+          <span>API 密钥</span>
+          <input
+            name="apiKey"
+            type="password"
+            autoComplete="new-password"
+            placeholder="仅用于本次保存或测试"
+          />
+        </label>
+        <label className="apiProviderEnabledToggle">
+          <input defaultChecked name="enabled" type="checkbox" />
+          <span>启用供应商</span>
+        </label>
+      </div>
+
+      <div className="apiProviderHelperRow">
+        <button className="primaryButton compactButton" type="submit">
+          保存
+        </button>
+        <button
+          className="secondaryButton compactButton"
+          onClick={(event) =>
+            runApiProviderHelper(
+              event.currentTarget.form,
+              onTestApiProviderConnection,
+              false,
+            )
+          }
+          type="button"
+        >
+          测试连接
+        </button>
+        <button
+          className="secondaryButton compactButton"
+          onClick={(event) =>
+            runApiProviderHelper(
+              event.currentTarget.form,
+              onFetchApiProviderModels,
+              true,
+            )
+          }
+          type="button"
+        >
+          拉取模型列表
+        </button>
+        <select
+          aria-label="已拉取模型列表"
+          className="apiProviderModelSelect"
+          name="fetchedModel"
+          onChange={(event) => {
+            setFormFieldValue(
+              event.currentTarget.form,
+              "model",
+              event.currentTarget.value,
+            );
+          }}
+        >
+          <option value="">尚未拉取模型</option>
+        </select>
+      </div>
+      <output className="apiProviderHelperMessage" name="providerHelperMessage" />
+    </form>
+  );
+}
+
+function readApiProviderPayload(form: ProviderFormLike): SaveApiProviderPayload {
+  const payload: SaveApiProviderPayload = {
+    providerType: fieldValue(form, "providerType") as ApiProviderType,
+    displayName: fieldValue(form, "displayName"),
+    baseUrl: fieldValue(form, "baseUrl"),
+    model: fieldValue(form, "model"),
+    enabled: Boolean(form.elements.namedItem("enabled")?.checked),
+  };
+  const providerId = fieldValue(form, "providerId");
+  const apiKey = fieldValue(form, "apiKey");
+  if (providerId) {
+    payload.providerId = providerId;
+  }
+  if (apiKey) {
+    payload.apiKey = apiKey;
+  }
+  return payload;
+}
+
+function fieldValue(form: ProviderFormLike | null, name: string): string {
+  return form?.elements.namedItem(name)?.value?.trim() ?? "";
+}
+
+function setFormFieldValue(
+  form: ProviderFormLike | null,
+  name: string,
+  value: string,
+): void {
+  const field = form?.elements.namedItem(name);
+  if (field) {
+    field.value = value;
+  }
+}
+
+function setFormCheckbox(
+  form: ProviderFormLike | null,
+  name: string,
+  checked: boolean,
+): void {
+  const field = form?.elements.namedItem(name);
+  if (field) {
+    field.checked = checked;
+  }
+}
+
+function applyProviderPresetToForm(form: ProviderFormLike | null): void {
+  const providerType = fieldValue(form, "providerType");
+  const preset = API_PROVIDER_PRESETS.find(
+    (candidate) => candidate.providerType === providerType,
+  );
+  if (!preset) {
+    return;
+  }
+  setFormFieldValue(form, "providerId", "");
+  setFormFieldValue(form, "savedProvider", "");
+  setFormFieldValue(form, "displayName", preset.displayName);
+  setFormFieldValue(form, "baseUrl", preset.baseUrl);
+}
+
+function applySavedProviderToForm(
+  form: ProviderFormLike | null,
+  providers: ApiProviderConfig[],
+): void {
+  const providerId = fieldValue(form, "savedProvider");
+  if (!providerId) {
+    setFormFieldValue(form, "providerId", "");
+    applyProviderPresetToForm(form);
+    return;
+  }
+  const provider = providers.find(
+    (candidate) => candidate.providerId === providerId,
+  );
+  if (!provider) {
+    return;
+  }
+  fillApiProviderForm(form, provider);
+}
+
+function fillApiProviderFormFromConfig(provider: ApiProviderConfig): void {
+  const form = document.getElementById("api-provider-form") as
+    | ProviderFormLike
+    | null;
+  fillApiProviderForm(form, provider);
+}
+
+function fillApiProviderForm(
+  form: ProviderFormLike | null,
+  provider: ApiProviderConfig,
+): void {
+  setFormFieldValue(form, "providerId", provider.providerId);
+  setFormFieldValue(form, "savedProvider", provider.providerId);
+  setFormFieldValue(form, "providerType", provider.providerType);
+  setFormFieldValue(form, "displayName", provider.displayName);
+  setFormFieldValue(form, "baseUrl", provider.baseUrl);
+  setFormFieldValue(form, "model", provider.model);
+  setFormFieldValue(form, "apiKey", "");
+  setFormCheckbox(form, "enabled", provider.enabled);
+}
+
+async function runApiProviderHelper(
+  form: ProviderFormLike | null,
+  handler: (
+    payload: SaveApiProviderPayload,
+  ) => ApiProviderConnectionResult | Promise<ApiProviderConnectionResult>,
+  fillFirstModel: boolean,
+): Promise<void> {
+  if (!form) {
+    return;
+  }
+  const result = await handler(readApiProviderPayload(form));
+  setHelperMessage(form, result.message);
+  if (result.models.length > 0) {
+    populateFetchedModelSelect(form, result.models);
+    if (fillFirstModel && !fieldValue(form, "model")) {
+      setFormFieldValue(form, "model", result.models[0]);
+    }
+  }
+}
+
+function setHelperMessage(form: ProviderFormLike, message: string): void {
+  const output =
+    form.elements.namedItem("providerHelperMessage") ??
+    form.querySelector?.("[name='providerHelperMessage']");
+  if (output) {
+    output.textContent = message;
+  }
+}
+
+function populateFetchedModelSelect(
+  form: ProviderFormLike,
+  models: string[],
+): void {
+  const select = form.elements.namedItem("fetchedModel");
+  if (!select) {
+    return;
+  }
+  select.innerHTML = "";
+  for (const model of models) {
+    const option = document.createElement("option");
+    option.value = model;
+    option.textContent = model;
+    select.appendChild?.(option);
+  }
+}
+
 function ApiProviderList({
   activeApiProviderId,
   providers,
@@ -276,6 +652,14 @@ function ApiProviderList({
                   设为当前 API
                 </button>
               ) : null}
+              <button
+                aria-label={`编辑 API 供应商：${provider.displayName}`}
+                className="secondaryButton compactButton"
+                onClick={() => fillApiProviderFormFromConfig(provider)}
+                type="button"
+              >
+                编辑
+              </button>
               <button
                 aria-label={`删除 API 供应商：${provider.displayName}`}
                 className="secondaryButton compactButton"
