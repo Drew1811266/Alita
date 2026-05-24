@@ -50,6 +50,7 @@ import {
   pickModelDirectory,
   pickModelFile,
   pickSpeechToTextModelDirectory,
+  prepareAgentModelSession,
   saveApiProviderConfig,
   scanModelDirectory,
   setActiveApiProvider,
@@ -130,6 +131,14 @@ function createMessage(
     createdAt: new Date().toISOString(),
   };
 }
+
+export const createAgentSession = async (): Promise<string | null> => {
+  try {
+    return await prepareAgentModelSession();
+  } catch (error) {
+    throw new Error(`Agent 模型配置不可用：${formatUnknownError(error)}`);
+  }
+};
 
 export function App() {
   const [activeProject, setActiveProject] = useState<AlitaProject | null>(
@@ -443,6 +452,7 @@ export function App() {
     try {
       setProjectError(null);
       const disabledToolIds = await resolveDisabledToolIds();
+      const modelSessionId = await createAgentSession();
       setGraphRunning(true);
       setGraphCancelling(false);
       setActiveRunId(runId);
@@ -456,6 +466,7 @@ export function App() {
           attachments: contextAttachments,
           mode,
           disabledToolIds,
+          modelSessionId,
         },
         applyBackendEvent,
       );
@@ -736,16 +747,22 @@ export function App() {
 
       let receivedStreamEvent = false;
       try {
-        await submitUserMessageStream(payload, (event) => {
-          receivedStreamEvent = true;
-          applyBackendEvent(event);
-        });
+        await submitUserMessageStream(
+          { ...payload, modelSessionId: await createAgentSession() },
+          (event) => {
+            receivedStreamEvent = true;
+            applyBackendEvent(event);
+          },
+        );
       } catch (streamError) {
         if (receivedStreamEvent) {
           throw streamError;
         }
 
-        const events = await submitUserMessage(payload);
+        const events = await submitUserMessage({
+          ...payload,
+          modelSessionId: await createAgentSession(),
+        });
         for (const event of events) {
           applyBackendEvent(event);
         }

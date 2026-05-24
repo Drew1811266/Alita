@@ -6,6 +6,7 @@ import {
   createSseEventParser,
   submitUserMessage,
   runNodeGraphStream,
+  toSidecarMessageForTest,
 } from "./useTaskEvents";
 import type { BackendEvent } from "../../shared/events";
 import type { NodeGraph } from "../../shared/types";
@@ -51,6 +52,22 @@ describe("createSseEventParser", () => {
 });
 
 describe("runNodeGraphStream", () => {
+  it("includes model session id in sidecar message payload", () => {
+    expect(
+      toSidecarMessageForTest({
+        taskId: "task-1",
+        content: "hello",
+        attachments: [],
+        modelSessionId: "model-session-1",
+      }),
+    ).toEqual({
+      task_id: "task-1",
+      content: "hello",
+      attachments: [],
+      model_session_id: "model-session-1",
+    });
+  });
+
   it("posts model session ids with sidecar message requests", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify([]), {

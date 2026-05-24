@@ -187,6 +187,8 @@ function toSidecarMessage(payload: SubmitMessagePayload) {
   };
 }
 
+export const toSidecarMessageForTest = toSidecarMessage;
+
 async function readSseResponse(
   response: Response,
   onEvent: (event: BackendEvent) => void,

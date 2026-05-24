@@ -1,8 +1,30 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { App, shouldRefreshAsrForPreferencesUpdate } from "./App";
-import type { PreferencesView } from "../features/preferences/preferencesApi";
+import {
+  prepareAgentModelSession,
+  type PreferencesView,
+} from "../features/preferences/preferencesApi";
+import {
+  App,
+  createAgentSession,
+  shouldRefreshAsrForPreferencesUpdate,
+} from "./App";
+
+vi.mock("../features/preferences/preferencesApi", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../features/preferences/preferencesApi")>();
+  return {
+    ...actual,
+    prepareAgentModelSession: vi.fn(),
+  };
+});
+
+const prepareAgentModelSessionMock = vi.mocked(prepareAgentModelSession);
+
+beforeEach(() => {
+  prepareAgentModelSessionMock.mockReset();
+});
 
 function preferencesViewWithSpeechModel(
   speechToTextModelId: string | null,
@@ -53,5 +75,21 @@ describe("App", () => {
     expect(
       shouldRefreshAsrForPreferencesUpdate(withSpeechModel, withSpeechModel),
     ).toBe(false);
+  });
+
+  it("creates agent model sessions through preferences", async () => {
+    prepareAgentModelSessionMock.mockResolvedValue("model-session-1");
+
+    await expect(createAgentSession()).resolves.toBe("model-session-1");
+
+    expect(prepareAgentModelSessionMock).toHaveBeenCalledOnce();
+  });
+
+  it("wraps unavailable agent model configuration errors", async () => {
+    prepareAgentModelSessionMock.mockRejectedValue(new Error("missing config"));
+
+    await expect(createAgentSession()).rejects.toThrow(
+      "Agent 模型配置不可用：missing config",
+    );
   });
 });
