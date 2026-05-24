@@ -155,7 +155,7 @@ Behavior:
 
 - Creating an API provider stores the key under its credential reference.
 - Editing a provider can replace the key without changing the provider ID.
-- Editing non-sensitive fields does not require re-entering the key.
+- Editing non-sensitive fields does not require re-entering the key, except that changing provider type or base URL requires a new key entry so a saved key is not silently reused against a different endpoint.
 - Deleting a provider also deletes its credential.
 - If credential deletion fails, the UI reports the cleanup failure and keeps enough context for retry.
 - The frontend receives `hasApiKey`, never the saved key value.
