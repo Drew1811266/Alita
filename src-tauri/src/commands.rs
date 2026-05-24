@@ -530,11 +530,12 @@ pub fn save_api_provider_config_core<F>(
     preferences: &mut AppPreferences,
     payload: SaveApiProviderPayload,
     credential_store: &dyn ApiCredentialStore,
-    save_preferences: F,
+    mut save_preferences: F,
 ) -> Result<(), String>
 where
-    F: FnOnce(&AppPreferences) -> Result<(), String>,
+    F: FnMut(&AppPreferences) -> Result<(), String>,
 {
+    let original_preferences = preferences.clone();
     let SaveApiProviderPayload {
         provider_id,
         provider_type,
@@ -557,7 +558,14 @@ where
     )?;
     save_preferences(preferences)?;
     if let Some(api_key) = api_key.as_deref().filter(|value| !value.trim().is_empty()) {
-        credential_store.set_api_key(&provider.credential_ref, api_key)?;
+        if let Err(error) = credential_store.set_api_key(&provider.credential_ref, api_key) {
+            return rollback_preferences_after_credential_error(
+                preferences,
+                original_preferences,
+                &mut save_preferences,
+                error,
+            );
+        }
     }
     Ok(())
 }
@@ -582,15 +590,42 @@ pub fn delete_api_provider_config_core<F>(
     preferences: &mut AppPreferences,
     provider_id: &str,
     credential_store: &dyn ApiCredentialStore,
-    save_preferences: F,
+    mut save_preferences: F,
 ) -> Result<(), String>
 where
-    F: FnOnce(&AppPreferences) -> Result<(), String>,
+    F: FnMut(&AppPreferences) -> Result<(), String>,
 {
+    let original_preferences = preferences.clone();
     let removed = delete_api_provider_config(preferences, provider_id)?;
     save_preferences(preferences)?;
-    credential_store.delete_api_key(&removed.credential_ref)?;
+    if let Err(error) = credential_store.delete_api_key(&removed.credential_ref) {
+        return rollback_preferences_after_credential_error(
+            preferences,
+            original_preferences,
+            &mut save_preferences,
+            error,
+        );
+    }
     Ok(())
+}
+
+fn rollback_preferences_after_credential_error<F>(
+    preferences: &mut AppPreferences,
+    original_preferences: AppPreferences,
+    save_preferences: &mut F,
+    credential_error: String,
+) -> Result<(), String>
+where
+    F: FnMut(&AppPreferences) -> Result<(), String>,
+{
+    *preferences = original_preferences;
+    match save_preferences(preferences) {
+        Ok(()) => Err(credential_error),
+        Err(rollback_error) => Err(format!(
+            "API credential operation failed after preferences were saved: {credential_error}; \
+             failed to roll back preferences: {rollback_error}"
+        )),
+    }
 }
 
 #[tauri::command]
