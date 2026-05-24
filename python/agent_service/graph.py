@@ -11,13 +11,18 @@ from agent_service.context_manager import build_context_bundle
 from agent_service.goal_spec import GoalSpec, parse_goal_spec
 from agent_service.graph_compiler import compile_task_graph_to_node_graph
 from agent_service.model_client import (
+    AgentModelClientConfig,
     ChatMessage as ModelChatMessage,
-    LlamaCppModelClient,
     ModelRuntimeDisabled,
     ModelRuntimeRequestFailed,
+    create_model_client,
+)
+from agent_service.model_sessions import (
+    DEFAULT_MODEL_SESSION_REGISTRY,
+    ModelSessionRegistry,
 )
 from agent_service.planner_v2 import PlannerV2
-from agent_service.schemas import AgentEvent, UserMessage
+from agent_service.schemas import AgentEvent, AgentModelConfig, UserMessage
 from agent_service.tool_execution import default_tool_packages_root
 from agent_service.tool_registry import ToolRegistry
 
@@ -50,6 +55,36 @@ class AgentState(TypedDict, total=False):
     events: list[AgentEvent]
     intent: AgentIntent
     goal_spec: GoalSpec
+
+
+def _client_config_from_session(config: AgentModelConfig) -> AgentModelClientConfig:
+    return AgentModelClientConfig(
+        mode=config.mode,
+        enabled=True,
+        base_url=config.base_url,
+        model=config.model,
+        api_key=config.api_key,
+        provider_display_name=config.display_name
+        or config.provider_type
+        or "API provider",
+    )
+
+
+def _model_client_for_message(
+    message: UserMessage,
+    *,
+    model_client: ModelClient | None,
+    model_client_factory=create_model_client,
+    model_session_registry: ModelSessionRegistry = DEFAULT_MODEL_SESSION_REGISTRY,
+) -> ModelClient:
+    if model_client is not None:
+        return model_client
+    if message.model_session_id:
+        session_config = model_session_registry.consume(message.model_session_id)
+        if session_config is None:
+            raise ModelRuntimeDisabled("Agent model session expired or was not found")
+        return model_client_factory(_client_config_from_session(session_config))
+    return create_model_client()
 
 
 def classify_intent(state: AgentState) -> AgentState:
@@ -94,14 +129,24 @@ def plan_node_graph(state: AgentState) -> AgentState:
     }
 
 
-def build_graph(model_client: ModelClient | None = None):
+def build_graph(
+    model_client: ModelClient | None = None,
+    *,
+    model_client_factory=create_model_client,
+    model_session_registry: ModelSessionRegistry = DEFAULT_MODEL_SESSION_REGISTRY,
+):
     graph = StateGraph(AgentState)
     graph.add_node("classify_intent", classify_intent)
     graph.add_node("request_required_inputs", request_required_inputs)
     graph.add_node("plan_node_graph", plan_node_graph)
     graph.add_node(
         "answer_with_model",
-        lambda state: answer_with_model(state, model_client=model_client),
+        lambda state: answer_with_model(
+            state,
+            model_client=model_client,
+            model_client_factory=model_client_factory,
+            model_session_registry=model_session_registry,
+        ),
     )
     graph.set_entry_point("classify_intent")
     graph.add_conditional_edges(
@@ -123,8 +168,15 @@ def answer_with_model(
     state: AgentState,
     *,
     model_client: ModelClient | None = None,
+    model_client_factory=create_model_client,
+    model_session_registry: ModelSessionRegistry = DEFAULT_MODEL_SESSION_REGISTRY,
 ) -> AgentState:
-    client = model_client or LlamaCppModelClient()
+    client = _model_client_for_message(
+        state["message"],
+        model_client=model_client,
+        model_client_factory=model_client_factory,
+        model_session_registry=model_session_registry,
+    )
 
     try:
         content = client.chat(
@@ -152,8 +204,14 @@ def run_agent(
     message: UserMessage,
     *,
     model_client: ModelClient | None = None,
+    model_client_factory=create_model_client,
+    model_session_registry: ModelSessionRegistry = DEFAULT_MODEL_SESSION_REGISTRY,
 ) -> list[AgentEvent]:
-    app = build_graph(model_client=model_client)
+    app = build_graph(
+        model_client=model_client,
+        model_client_factory=model_client_factory,
+        model_session_registry=model_session_registry,
+    )
     result = app.invoke({"message": message, "events": []})
     return result["events"]
 
@@ -162,13 +220,25 @@ def stream_agent_events(
     message: UserMessage,
     *,
     model_client: ModelClient | None = None,
+    model_client_factory=create_model_client,
+    model_session_registry: ModelSessionRegistry = DEFAULT_MODEL_SESSION_REGISTRY,
 ) -> Iterator[AgentEvent]:
     intent = _classify_message(message)
     if intent != "chat":
-        yield from run_agent(message, model_client=model_client)
+        yield from run_agent(
+            message,
+            model_client=model_client,
+            model_client_factory=model_client_factory,
+            model_session_registry=model_session_registry,
+        )
         return
 
-    client = model_client or LlamaCppModelClient()
+    client = _model_client_for_message(
+        message,
+        model_client=model_client,
+        model_client_factory=model_client_factory,
+        model_session_registry=model_session_registry,
+    )
     assistant_message = _assistant_message("")
     message_id = assistant_message["messageId"]
     yield AgentEvent(

@@ -137,6 +137,30 @@ def test_document_flow_model_nodes_use_model_runtime(tmp_path: Path) -> None:
     ]
 
 
+def test_document_flow_executor_uses_injected_model_client_for_model_nodes() -> None:
+    from agent_service.execution import DocumentFlowExecutor
+    from agent_service.node_output import NodeOutput
+    from agent_service.schemas import RunGraphRequest, RunGraph
+
+    class FakeModelClient:
+        def chat(self, messages, *, temperature=0.2, max_tokens=1024):
+            return "model output"
+
+    request = RunGraphRequest(
+        task_id="task-1",
+        project_path="D:\\Project\\demo.alita",
+        graph=RunGraph(graphId="graph-1", nodes=[], edges=[]),
+    )
+    executor = DocumentFlowExecutor(request, model_client=FakeModelClient())
+
+    output = executor.run(
+        "content-organize",
+        {"document-parse": NodeOutput(values={"text": "source text"})},
+    )
+
+    assert output.values["outline"] == "model output"
+
+
 def test_rejects_graph_with_missing_dependency(tmp_path: Path) -> None:
     request = RunGraphRequest(
         task_id="task-1",

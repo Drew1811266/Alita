@@ -20,6 +20,7 @@ from agent_service.asr import (
 )
 from agent_service.execution import run_graph_events
 from agent_service.graph import run_agent, stream_agent_events
+from agent_service.model_client import AgentModelClientConfig, create_model_client
 from agent_service.model_sessions import DEFAULT_MODEL_SESSION_REGISTRY
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY
 from agent_service.schemas import (
@@ -124,7 +125,10 @@ def agent_message(
     message: UserMessage,
     _auth: None = Depends(require_sidecar_token),
 ) -> list[AgentEvent]:
-    return run_agent(message)
+    return run_agent(
+        message,
+        model_client=_model_client_for_session(message.model_session_id),
+    )
 
 
 @app.post("/agent/message/stream")
@@ -132,8 +136,9 @@ def agent_message_stream(
     message: UserMessage,
     _auth: None = Depends(require_sidecar_token),
 ) -> StreamingResponse:
+    model_client = _model_client_for_session(message.model_session_id)
     return StreamingResponse(
-        _serialize_sse_events(message),
+        _serialize_sse_events(message, model_client=model_client),
         media_type="text/event-stream",
     )
 
@@ -143,8 +148,9 @@ def graph_run_stream(
     request: RunGraphRequest,
     _auth: None = Depends(require_sidecar_token),
 ) -> StreamingResponse:
+    model_client = _model_client_for_session(request.model_session_id)
     return StreamingResponse(
-        _serialize_graph_sse_events(request),
+        _serialize_graph_sse_events(request, model_client=model_client),
         media_type="text/event-stream",
     )
 
@@ -157,11 +163,38 @@ def cancel_graph_run(
     return {"cancelled": DEFAULT_RUN_REGISTRY.cancel(request.run_id)}
 
 
-def _serialize_sse_events(message: UserMessage):
-    for event in stream_agent_events(message):
+def _model_client_for_session(model_session_id: str | None):
+    if not model_session_id:
+        return create_model_client()
+    config = DEFAULT_MODEL_SESSION_REGISTRY.consume(model_session_id)
+    if config is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Agent model session expired or was not found",
+        )
+    return create_model_client(
+        AgentModelClientConfig(
+            mode=config.mode,
+            enabled=True,
+            base_url=config.base_url,
+            model=config.model,
+            api_key=config.api_key,
+            provider_display_name=config.display_name
+            or config.provider_type
+            or "API provider",
+        )
+    )
+
+
+def _serialize_sse_events(message: UserMessage, *, model_client):
+    for event in stream_agent_events(message, model_client=model_client):
         yield f"data: {event.model_dump_json()}\n\n"
 
 
-def _serialize_graph_sse_events(request: RunGraphRequest):
-    for event in run_graph_events(request, registry=DEFAULT_RUN_REGISTRY):
+def _serialize_graph_sse_events(request: RunGraphRequest, *, model_client):
+    for event in run_graph_events(
+        request,
+        model_client=model_client,
+        registry=DEFAULT_RUN_REGISTRY,
+    ):
         yield f"data: {event.model_dump_json()}\n\n"
