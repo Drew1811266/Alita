@@ -475,7 +475,7 @@ describe("PreferencesDialog", () => {
         currentTarget: form,
         preventDefault: () => undefined,
       }),
-    ).rejects.toThrow(saveError);
+    ).resolves.toBeUndefined();
 
     expect(onSaveApiProvider).toHaveBeenCalledWith({
       providerType: "deepseek",

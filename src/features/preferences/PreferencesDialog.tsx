@@ -328,7 +328,11 @@ function ApiProviderForm({
       onSubmit={async (event) => {
         event.preventDefault();
         const form = event.currentTarget;
-        await onSaveApiProvider(readApiProviderPayload(form));
+        try {
+          await onSaveApiProvider(readApiProviderPayload(form));
+        } catch {
+          return;
+        }
         setFormFieldValue(form, "apiKey", "");
       }}
     >
