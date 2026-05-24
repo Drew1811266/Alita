@@ -165,20 +165,51 @@ fn save_api_provider_core_rejects_explicit_blank_api_key_without_saving() {
 }
 
 #[test]
-fn save_api_provider_core_preserves_secret_when_api_key_is_not_provided() {
+fn save_api_provider_core_rejects_new_provider_when_api_key_is_not_provided() {
     let mut preferences = AppPreferences::default();
     let credential_store = RecordingCredentialStore::default();
 
-    save_api_provider_config_core(
+    let error = save_api_provider_config_core(
         &mut preferences,
         valid_save_payload(None),
         &credential_store,
         |_| Ok(()),
     )
+    .unwrap_err();
+
+    assert_eq!(error, "API provider API key is required");
+    assert!(credential_store.operations().is_empty());
+    assert!(preferences.api_provider_configs.is_empty());
+}
+
+#[test]
+fn save_api_provider_core_preserves_secret_when_existing_api_key_is_not_provided() {
+    let mut preferences = AppPreferences::default();
+    let credential_store = RecordingCredentialStore::default();
+
+    save_api_provider_config_core(
+        &mut preferences,
+        valid_save_payload(Some("sk-secret")),
+        &credential_store,
+        |_| Ok(()),
+    )
     .unwrap();
+    let provider_id = preferences.api_provider_configs[0].provider_id.clone();
+    let mut payload = valid_save_payload(None);
+    payload.provider_id = Some(provider_id.clone());
+    payload.display_name = "Updated OpenAI".to_string();
+    credential_store.operations.lock().unwrap().clear();
+
+    save_api_provider_config_core(&mut preferences, payload, &credential_store, |_| Ok(()))
+        .unwrap();
 
     assert!(credential_store.operations().is_empty());
     assert_eq!(preferences.api_provider_configs.len(), 1);
+    assert_eq!(preferences.api_provider_configs[0].provider_id, provider_id);
+    assert_eq!(
+        preferences.api_provider_configs[0].display_name,
+        "Updated OpenAI"
+    );
 }
 
 #[test]

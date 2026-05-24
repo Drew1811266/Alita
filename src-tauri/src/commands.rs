@@ -645,10 +645,17 @@ where
         enabled,
         api_key,
     } = payload;
-    let api_key = api_key
-        .as_deref()
-        .map(normalize_api_provider_api_key)
-        .transpose()?;
+    let is_existing_provider = provider_id.as_deref().is_some_and(|provider_id| {
+        preferences
+            .api_provider_configs
+            .iter()
+            .any(|provider| provider.provider_id == provider_id)
+    });
+    let api_key = match api_key.as_deref() {
+        Some(api_key) => Some(normalize_api_provider_api_key(api_key)?),
+        None if is_existing_provider => None,
+        None => return Err("API provider API key is required".to_string()),
+    };
     let provider = upsert_api_provider_config(
         preferences,
         ApiProviderInput {
@@ -1242,12 +1249,22 @@ fn is_valid_openai_tool_call(tool_call: &serde_json::Value) -> bool {
     let Some(tool_call) = tool_call.as_object() else {
         return false;
     };
+    let Some(function) = tool_call
+        .get("function")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return false;
+    };
 
     tool_call.get("id").is_some_and(has_non_empty_string)
-        || tool_call
-            .get("function")
-            .and_then(|function| function.get("name"))
-            .is_some_and(has_non_empty_string)
+        && tool_call
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|tool_type| tool_type == "function")
+        && function.get("name").is_some_and(has_non_empty_string)
+        && function
+            .get("arguments")
+            .is_some_and(|arguments| arguments.as_str().is_some())
 }
 
 fn has_non_empty_string(value: &serde_json::Value) -> bool {
@@ -1486,7 +1503,12 @@ mod tests {
             "{\"id\":\"chatcmpl-test\",\"choices\":[{\"text\":\"pong\"}]}",
             "{\"id\":\"chatcmpl-test\",\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}",
             "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"tool_calls\":[]}}]}",
+            "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\"}]}}]}",
             "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"function\":{}}]}}]}",
+            "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"function\":{\"name\":\"lookup_weather\"}}]}}]}",
+            "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"custom\",\"function\":{\"name\":\"lookup_weather\",\"arguments\":\"{}\"}}]}}]}",
+            "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup_weather\"}}]}}]}",
+            "{\"id\":\"chatcmpl-test\",\"choices\":[{\"message\":{\"role\":\"assistant\",\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"lookup_weather\",\"arguments\":{}}}]}}]}",
         ] {
             let (base_url, server) = spawn_test_server_sequence(vec![
                 (
@@ -1599,7 +1621,8 @@ mod tests {
     }
 
     #[test]
-    fn provider_test_accepts_valid_fallback_chat_completion_function_name_tool_call_response() {
+    fn provider_test_accepts_valid_fallback_chat_completion_tool_call_response_with_empty_arguments(
+    ) {
         let chat_body = serde_json::json!({
             "id": "chatcmpl-test",
             "object": "chat.completion",
@@ -1611,9 +1634,11 @@ mod tests {
                         "content": null,
                         "tool_calls": [
                             {
+                                "id": "call_1",
                                 "type": "function",
                                 "function": {
-                                    "name": "lookup_weather"
+                                    "name": "lookup_weather",
+                                    "arguments": ""
                                 }
                             }
                         ]
