@@ -119,7 +119,7 @@ pub struct SetAgentModelModePayload {
     pub mode: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveApiProviderPayload {
     pub provider_id: Option<String>,
@@ -516,27 +516,50 @@ pub async fn save_api_provider_config(
     payload: SaveApiProviderPayload,
 ) -> Result<PreferencesView, String> {
     let (path, mut preferences) = load_preferences_for_app(&app)?;
-    let provider = upsert_api_provider_config(
+    save_api_provider_config_core(
         &mut preferences,
-        ApiProviderInput {
-            provider_id: payload.provider_id,
-            provider_type: payload.provider_type,
-            display_name: payload.display_name,
-            base_url: payload.base_url,
-            model: payload.model,
-            enabled: payload.enabled,
-        },
+        payload,
+        &SystemApiCredentialStore,
+        |prefs| save_preferences_to_path(&path, prefs),
     )?;
-    if let Some(api_key) = payload
-        .api_key
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        SystemApiCredentialStore.set_api_key(&provider.credential_ref, api_key)?;
-    }
-    save_preferences_to_path(&path, &preferences)?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
     Ok(PreferencesView { preferences, tools })
+}
+
+pub fn save_api_provider_config_core<F>(
+    preferences: &mut AppPreferences,
+    payload: SaveApiProviderPayload,
+    credential_store: &dyn ApiCredentialStore,
+    save_preferences: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&AppPreferences) -> Result<(), String>,
+{
+    let SaveApiProviderPayload {
+        provider_id,
+        provider_type,
+        display_name,
+        base_url,
+        model,
+        enabled,
+        api_key,
+    } = payload;
+    let provider = upsert_api_provider_config(
+        preferences,
+        ApiProviderInput {
+            provider_id,
+            provider_type,
+            display_name,
+            base_url,
+            model,
+            enabled,
+        },
+    )?;
+    save_preferences(preferences)?;
+    if let Some(api_key) = api_key.as_deref().filter(|value| !value.trim().is_empty()) {
+        credential_store.set_api_key(&provider.credential_ref, api_key)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -545,11 +568,29 @@ pub async fn delete_api_provider_config_command(
     payload: ApiProviderIdPayload,
 ) -> Result<PreferencesView, String> {
     let (path, mut preferences) = load_preferences_for_app(&app)?;
-    let removed = delete_api_provider_config(&mut preferences, &payload.provider_id)?;
-    SystemApiCredentialStore.delete_api_key(&removed.credential_ref)?;
-    save_preferences_to_path(&path, &preferences)?;
+    delete_api_provider_config_core(
+        &mut preferences,
+        &payload.provider_id,
+        &SystemApiCredentialStore,
+        |prefs| save_preferences_to_path(&path, prefs),
+    )?;
     let tools = summarize_tool_manifests(packages_root(), &preferences);
     Ok(PreferencesView { preferences, tools })
+}
+
+pub fn delete_api_provider_config_core<F>(
+    preferences: &mut AppPreferences,
+    provider_id: &str,
+    credential_store: &dyn ApiCredentialStore,
+    save_preferences: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&AppPreferences) -> Result<(), String>,
+{
+    let removed = delete_api_provider_config(preferences, provider_id)?;
+    save_preferences(preferences)?;
+    credential_store.delete_api_key(&removed.credential_ref)?;
+    Ok(())
 }
 
 #[tauri::command]
