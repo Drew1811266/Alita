@@ -8,7 +8,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const PREFERENCES_SCHEMA_VERSION: u32 = 2;
+const PREFERENCES_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +24,31 @@ impl Default for ModelAssignments {
             speech_to_text_model_id: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiProviderConfig {
+    pub provider_id: String,
+    pub provider_type: String,
+    pub display_name: String,
+    pub base_url: String,
+    pub model: String,
+    pub credential_ref: String,
+    pub enabled: bool,
+    pub capabilities: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiProviderInput {
+    pub provider_id: Option<String>,
+    pub provider_type: String,
+    pub display_name: String,
+    pub base_url: String,
+    pub model: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +69,12 @@ pub struct AppPreferences {
     pub default_model_id: Option<String>,
     #[serde(default)]
     pub model_assignments: ModelAssignments,
+    #[serde(default = "default_agent_model_mode")]
+    pub agent_model_mode: String,
+    #[serde(default)]
+    pub active_api_provider_id: Option<String>,
+    #[serde(default)]
+    pub api_provider_configs: Vec<ApiProviderConfig>,
     pub tool_enablement: HashMap<String, bool>,
 }
 
@@ -57,6 +88,9 @@ impl Default for AppPreferences {
             models: Vec::new(),
             default_model_id: None,
             model_assignments: ModelAssignments::default(),
+            agent_model_mode: default_agent_model_mode(),
+            active_api_provider_id: None,
+            api_provider_configs: Vec::new(),
             tool_enablement: HashMap::new(),
         }
     }
@@ -85,6 +119,10 @@ fn default_agent_model_kind() -> String {
 
 fn default_file_path_kind() -> String {
     "file".to_string()
+}
+
+pub fn default_agent_model_mode() -> String {
+    "local".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -123,7 +161,7 @@ pub fn load_preferences_from_path(path: impl AsRef<Path>) -> Result<AppPreferenc
         .unwrap_or(1) as u32;
 
     let mut preferences: AppPreferences = match schema_version {
-        1 | 2 => serde_json::from_value(value).map_err(|error| {
+        1 | 2 | 3 => serde_json::from_value(value).map_err(|error| {
             format!("failed to parse preferences '{}': {error}", path.display())
         })?,
         version => return Err(format!("unsupported preferences schema version: {version}")),
@@ -154,6 +192,147 @@ fn normalize_preferences(preferences: &mut AppPreferences) {
         preferences.model_assignments.agent_chat_model_id = preferences.default_model_id.clone();
     }
     preferences.default_model_id = preferences.model_assignments.agent_chat_model_id.clone();
+    if !matches!(preferences.agent_model_mode.as_str(), "local" | "api") {
+        preferences.agent_model_mode = default_agent_model_mode();
+    }
+    if let Some(active_provider_id) = preferences.active_api_provider_id.as_deref() {
+        if !preferences
+            .api_provider_configs
+            .iter()
+            .any(|provider| provider.provider_id == active_provider_id)
+        {
+            preferences.active_api_provider_id = None;
+        }
+    }
+}
+
+pub fn api_provider_credential_ref(provider_id: &str) -> String {
+    format!("alita.api-provider.{provider_id}")
+}
+
+pub fn provider_default_capabilities(provider_type: &str) -> Vec<String> {
+    match provider_type {
+        "custom" => vec!["chat_completions".to_string(), "streaming".to_string()],
+        _ => vec![
+            "chat_completions".to_string(),
+            "streaming".to_string(),
+            "model_list".to_string(),
+        ],
+    }
+}
+
+pub fn set_agent_model_mode(preferences: &mut AppPreferences, mode: &str) -> Result<(), String> {
+    match mode {
+        "local" | "api" => {
+            preferences.agent_model_mode = mode.to_string();
+            Ok(())
+        }
+        other => Err(format!("unknown agent model mode: {other}")),
+    }
+}
+
+pub fn upsert_api_provider_config(
+    preferences: &mut AppPreferences,
+    input: ApiProviderInput,
+) -> Result<ApiProviderConfig, String> {
+    let provider_type = input.provider_type.trim().to_ascii_lowercase();
+    if !matches!(
+        provider_type.as_str(),
+        "openai" | "deepseek" | "kimi" | "glm" | "minimax" | "custom"
+    ) {
+        return Err(format!(
+            "unknown API provider type: {}",
+            input.provider_type
+        ));
+    }
+
+    let display_name = input.display_name.trim().to_string();
+    if display_name.is_empty() {
+        return Err("API provider display name is required".to_string());
+    }
+    let base_url = input.base_url.trim().trim_end_matches('/').to_string();
+    if base_url.is_empty() {
+        return Err("API provider base URL is required".to_string());
+    }
+    let model = input.model.trim().to_string();
+    if model.is_empty() {
+        return Err("API provider model name is required".to_string());
+    }
+
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    if let Some(provider_id) = input.provider_id.as_deref() {
+        let existing = preferences
+            .api_provider_configs
+            .iter_mut()
+            .find(|provider| provider.provider_id == provider_id)
+            .ok_or_else(|| format!("unknown API provider id: {provider_id}"))?;
+        existing.provider_type = provider_type;
+        existing.display_name = display_name;
+        existing.base_url = base_url;
+        existing.model = model;
+        existing.enabled = input.enabled;
+        existing.capabilities = provider_default_capabilities(&existing.provider_type);
+        existing.updated_at = now;
+        preferences.agent_model_mode = "api".to_string();
+        return Ok(existing.clone());
+    }
+
+    let provider_id = Uuid::new_v4().to_string();
+    let capabilities = provider_default_capabilities(&provider_type);
+    let config = ApiProviderConfig {
+        credential_ref: api_provider_credential_ref(&provider_id),
+        provider_id: provider_id.clone(),
+        provider_type,
+        display_name,
+        base_url,
+        model,
+        enabled: input.enabled,
+        capabilities,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    preferences.api_provider_configs.push(config.clone());
+    preferences.agent_model_mode = "api".to_string();
+    if preferences.active_api_provider_id.is_none() {
+        preferences.active_api_provider_id = Some(provider_id);
+    }
+    Ok(config)
+}
+
+pub fn set_active_api_provider(
+    preferences: &mut AppPreferences,
+    provider_id: Option<&str>,
+) -> Result<(), String> {
+    let Some(provider_id) = provider_id else {
+        preferences.active_api_provider_id = None;
+        return Ok(());
+    };
+    if !preferences
+        .api_provider_configs
+        .iter()
+        .any(|provider| provider.provider_id == provider_id)
+    {
+        return Err(format!("unknown API provider id: {provider_id}"));
+    }
+    preferences.active_api_provider_id = Some(provider_id.to_string());
+    preferences.agent_model_mode = "api".to_string();
+    Ok(())
+}
+
+pub fn delete_api_provider_config(
+    preferences: &mut AppPreferences,
+    provider_id: &str,
+) -> Result<ApiProviderConfig, String> {
+    let index = preferences
+        .api_provider_configs
+        .iter()
+        .position(|provider| provider.provider_id == provider_id)
+        .ok_or_else(|| format!("unknown API provider id: {provider_id}"))?;
+    let removed = preferences.api_provider_configs.remove(index);
+    if preferences.active_api_provider_id.as_deref() == Some(provider_id) {
+        preferences.active_api_provider_id = None;
+    }
+    Ok(removed)
 }
 
 pub fn load_preferences_with_model_recovery(

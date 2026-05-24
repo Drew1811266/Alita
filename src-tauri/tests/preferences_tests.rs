@@ -1,19 +1,23 @@
 use alita_lib::commands::model_assignment_role_from_payload;
 use alita_lib::preferences::{
     add_manual_model, add_speech_to_text_model, agent_model_path, default_model_path,
-    ensure_model_storage_dir, import_model_to_storage, load_preferences_from_path,
-    record_recent_project, recover_model_preferences, save_preferences_to_path,
-    scan_model_directory, set_default_model, set_model_assignment, set_model_storage_dir,
-    speech_to_text_model_path, summarize_tool_manifests, tool_enabled, AppPreferences,
-    ModelAssignmentRole, ModelEntry,
+    default_agent_model_mode, delete_api_provider_config, ensure_model_storage_dir,
+    import_model_to_storage, load_preferences_from_path, record_recent_project,
+    recover_model_preferences, save_preferences_to_path, scan_model_directory,
+    set_active_api_provider, set_agent_model_mode, set_default_model, set_model_assignment,
+    set_model_storage_dir, speech_to_text_model_path, summarize_tool_manifests, tool_enabled,
+    upsert_api_provider_config, ApiProviderInput, AppPreferences, ModelAssignmentRole, ModelEntry,
 };
 use std::fs;
 
 #[test]
-fn default_preferences_have_schema_version_two() {
+fn default_preferences_have_schema_version_three_and_local_agent_mode() {
     let preferences = AppPreferences::default();
 
-    assert_eq!(preferences.schema_version, 2);
+    assert_eq!(preferences.schema_version, 3);
+    assert_eq!(preferences.agent_model_mode, "local");
+    assert!(preferences.active_api_provider_id.is_none());
+    assert!(preferences.api_provider_configs.is_empty());
     assert!(preferences.recent_projects.is_empty());
     assert!(preferences.models.is_empty());
     assert!(preferences.model_directories.is_empty());
@@ -40,7 +44,7 @@ fn saves_and_loads_preferences() {
 }
 
 #[test]
-fn loads_version_one_preferences_as_version_two_model_library() {
+fn loads_version_one_preferences_as_version_three_model_library() {
     let temp_dir = tempfile::tempdir().unwrap();
     let preferences_path = temp_dir.path().join("preferences.json");
     let model_path = temp_dir.path().join("agent.gguf");
@@ -73,7 +77,7 @@ fn loads_version_one_preferences_as_version_two_model_library() {
 
     let preferences = load_preferences_from_path(&preferences_path).unwrap();
 
-    assert_eq!(preferences.schema_version, 2);
+    assert_eq!(preferences.schema_version, 3);
     assert_eq!(preferences.models[0].model_kind, "agent_llm");
     assert_eq!(preferences.models[0].path_kind, "file");
     assert_eq!(
@@ -81,6 +85,130 @@ fn loads_version_one_preferences_as_version_two_model_library() {
         Some("model-1")
     );
     assert_eq!(agent_model_path(&preferences), Some(model_path));
+}
+
+#[test]
+fn loads_version_two_preferences_as_version_three_local_mode() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let preferences_path = temp_dir.path().join("preferences.json");
+    fs::write(
+        &preferences_path,
+        r#"{
+          "schemaVersion": 2,
+          "recentProjects": [],
+          "modelDirectories": [],
+          "modelStorageDir": "",
+          "models": [],
+          "defaultModelId": null,
+          "modelAssignments": {"agentChatModelId": null, "speechToTextModelId": null},
+          "toolEnablement": {}
+        }"#,
+    )
+    .unwrap();
+
+    let preferences = load_preferences_from_path(&preferences_path).unwrap();
+
+    assert_eq!(preferences.schema_version, 3);
+    assert_eq!(preferences.agent_model_mode, "local");
+    assert!(preferences.active_api_provider_id.is_none());
+    assert!(preferences.api_provider_configs.is_empty());
+}
+
+#[test]
+fn agent_model_mode_helper_defaults_to_local_and_rejects_unknown_modes() {
+    let mut preferences = AppPreferences::default();
+
+    assert_eq!(default_agent_model_mode(), "local");
+    set_agent_model_mode(&mut preferences, "api").unwrap();
+    assert_eq!(preferences.agent_model_mode, "api");
+
+    let error = set_agent_model_mode(&mut preferences, "remote").unwrap_err();
+
+    assert!(error.contains("unknown agent model mode"));
+    assert_eq!(preferences.agent_model_mode, "api");
+}
+
+#[test]
+fn api_provider_configs_do_not_store_api_keys() {
+    let mut preferences = AppPreferences::default();
+    let provider = upsert_api_provider_config(
+        &mut preferences,
+        ApiProviderInput {
+            provider_id: None,
+            provider_type: "deepseek".to_string(),
+            display_name: "DeepSeek".to_string(),
+            base_url: "https://api.deepseek.com".to_string(),
+            model: "deepseek-chat".to_string(),
+            enabled: true,
+        },
+    )
+    .unwrap();
+    set_active_api_provider(&mut preferences, Some(&provider.provider_id)).unwrap();
+
+    let serialized = serde_json::to_string(&preferences).unwrap();
+
+    assert!(serialized.contains("deepseek-chat"));
+    assert!(serialized.contains("alita.api-provider."));
+    assert!(!serialized.contains("sk-"));
+    assert_eq!(preferences.agent_model_mode, "api");
+    assert_eq!(
+        preferences.active_api_provider_id,
+        Some(provider.provider_id)
+    );
+}
+
+#[test]
+fn deleting_active_api_provider_clears_active_selection() {
+    let mut preferences = AppPreferences::default();
+    let provider = upsert_api_provider_config(
+        &mut preferences,
+        ApiProviderInput {
+            provider_id: None,
+            provider_type: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4.1".to_string(),
+            enabled: true,
+        },
+    )
+    .unwrap();
+    set_active_api_provider(&mut preferences, Some(&provider.provider_id)).unwrap();
+
+    let removed = delete_api_provider_config(&mut preferences, &provider.provider_id).unwrap();
+
+    assert_eq!(
+        removed.credential_ref,
+        format!("alita.api-provider.{}", provider.provider_id)
+    );
+    assert!(preferences.active_api_provider_id.is_none());
+    assert!(preferences.api_provider_configs.is_empty());
+}
+
+#[test]
+fn upsert_api_provider_config_normalizes_custom_provider_input() {
+    let mut preferences = AppPreferences::default();
+
+    let provider = upsert_api_provider_config(
+        &mut preferences,
+        ApiProviderInput {
+            provider_id: None,
+            provider_type: " Custom ".to_string(),
+            display_name: "  Custom Gateway  ".to_string(),
+            base_url: " https://gateway.example.com/// ".to_string(),
+            model: "  gateway-chat  ".to_string(),
+            enabled: true,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(provider.provider_type, "custom");
+    assert_eq!(provider.display_name, "Custom Gateway");
+    assert_eq!(provider.base_url, "https://gateway.example.com");
+    assert_eq!(provider.model, "gateway-chat");
+    assert_eq!(
+        provider.capabilities,
+        vec!["chat_completions".to_string(), "streaming".to_string()]
+    );
 }
 
 #[test]
