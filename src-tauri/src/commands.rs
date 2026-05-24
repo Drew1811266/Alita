@@ -211,6 +211,7 @@ pub struct ArtifactLaunchCommand {
 
 const MAX_ARTIFACT_PREVIEW_BYTES: u64 = 256 * 1024;
 const API_PROVIDER_TEST_TIMEOUT: Duration = Duration::from_secs(10);
+const API_PROVIDER_SUCCESS_BODY_READ_LIMIT: usize = 256 * 1024;
 const API_PROVIDER_ERROR_BODY_READ_LIMIT: usize = 4096;
 const API_PROVIDER_ERROR_BODY_LIMIT: usize = 512;
 const API_PROVIDER_KEY_PREFIX_REDACTION_MIN_BYTES: usize = 8;
@@ -878,7 +879,7 @@ fn record_recent_project_for_app(app: &AppHandle, project_path: &str) -> Result<
 }
 
 struct PreparedApiProviderTest {
-    base_url: String,
+    base_url: reqwest::Url,
     model: String,
     api_key: String,
 }
@@ -892,6 +893,7 @@ async fn test_api_provider_connection_core(
     };
     let http = match reqwest::Client::builder()
         .timeout(API_PROVIDER_TEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
     {
         Ok(http) => http,
@@ -927,19 +929,47 @@ async fn test_api_provider_connection_core(
 fn prepare_api_provider_test_payload(
     payload: TestApiProviderPayload,
 ) -> Result<PreparedApiProviderTest, String> {
+    let provider_type = payload.provider_type.trim().to_ascii_lowercase();
+    if !matches!(
+        provider_type.as_str(),
+        "openai" | "deepseek" | "kimi" | "glm" | "minimax" | "custom"
+    ) {
+        return Err(redact_api_provider_secret(
+            format!(
+                "unknown API provider type: {}",
+                payload.provider_type.trim()
+            ),
+            payload.api_key.as_deref(),
+        ));
+    }
+
     let base_url = payload.base_url.trim().trim_end_matches('/').to_string();
     if base_url.is_empty() {
         return Err("API provider base URL is required".to_string());
     }
-    let parsed_url = reqwest::Url::parse(&base_url)
+    let mut parsed_url = reqwest::Url::parse(&base_url)
         .map_err(|_| "API provider base URL is invalid".to_string())?;
     if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
         return Err("API provider base URL must start with http:// or https://".to_string());
+    }
+    if !parsed_url.username().is_empty()
+        || parsed_url.password().is_some()
+        || parsed_url.query().is_some()
+        || parsed_url.fragment().is_some()
+    {
+        return Err(
+            "API provider base URL must not include credentials, query, or fragment".to_string(),
+        );
     }
     if parsed_url.scheme() == "http" && !is_local_api_provider_host(&parsed_url) {
         return Err(
             "API provider base URL must use HTTPS unless it points to localhost".to_string(),
         );
+    }
+    if !parsed_url.path().ends_with('/') {
+        let mut path = parsed_url.path().to_string();
+        path.push('/');
+        parsed_url.set_path(&path);
     }
 
     let model = payload.model.trim().to_string();
@@ -953,7 +983,7 @@ fn prepare_api_provider_test_payload(
     }
 
     Ok(PreparedApiProviderTest {
-        base_url,
+        base_url: parsed_url,
         model,
         api_key,
     })
@@ -990,8 +1020,12 @@ async fn fetch_openai_models(
     http: &reqwest::Client,
     prepared: &PreparedApiProviderTest,
 ) -> Result<Vec<String>, String> {
+    let models_url = prepared
+        .base_url
+        .join("models")
+        .map_err(|_| "model list request URL is invalid".to_string())?;
     let response = http
-        .get(format!("{}/models", prepared.base_url))
+        .get(models_url)
         .bearer_auth(&prepared.api_key)
         .send()
         .await
@@ -1006,9 +1040,15 @@ async fn fetch_openai_models(
         .await);
     }
 
-    let value = response
-        .json::<serde_json::Value>()
-        .await
+    let (body, was_truncated) =
+        read_api_provider_success_body(response, API_PROVIDER_SUCCESS_BODY_READ_LIMIT)
+            .await
+            .map_err(|error| format!("model list response read failed: {error}"))?;
+    if was_truncated {
+        return Err("model list response was too large".to_string());
+    }
+
+    let value = serde_json::from_slice::<serde_json::Value>(&body)
         .map_err(|error| format!("invalid model list response: {error}"))?;
     let models = parse_openai_model_ids(&value);
     if models.is_empty() {
@@ -1021,6 +1061,10 @@ async fn probe_openai_chat_completion(
     http: &reqwest::Client,
     prepared: &PreparedApiProviderTest,
 ) -> Result<(), String> {
+    let chat_url = prepared
+        .base_url
+        .join("chat/completions")
+        .map_err(|_| "chat completion probe URL is invalid".to_string())?;
     let request = serde_json::json!({
         "model": prepared.model,
         "messages": [
@@ -1033,7 +1077,7 @@ async fn probe_openai_chat_completion(
         "max_tokens": 1
     });
     let response = http
-        .post(format!("{}/chat/completions", prepared.base_url))
+        .post(chat_url)
         .bearer_auth(&prepared.api_key)
         .json(&request)
         .send()
@@ -1049,7 +1093,40 @@ async fn probe_openai_chat_completion(
         .await);
     }
 
+    let (_, was_truncated) =
+        read_api_provider_success_body(response, API_PROVIDER_SUCCESS_BODY_READ_LIMIT)
+            .await
+            .map_err(|error| format!("chat completion probe response read failed: {error}"))?;
+    if was_truncated {
+        return Err("chat completion probe response was too large".to_string());
+    }
+
     Ok(())
+}
+
+async fn read_api_provider_success_body(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<(Vec<u8>, bool), reqwest::Error> {
+    if response
+        .content_length()
+        .is_some_and(|content_length| content_length > limit as u64)
+    {
+        return Ok((Vec::new(), true));
+    }
+
+    let mut bytes = Vec::new();
+    loop {
+        let Some(chunk) = response.chunk().await? else {
+            return Ok((bytes, false));
+        };
+        let remaining = limit - bytes.len();
+        if chunk.len() > remaining {
+            bytes.extend_from_slice(&chunk[..remaining]);
+            return Ok((bytes, true));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
 }
 
 async fn api_provider_response_error(
@@ -1164,6 +1241,12 @@ fn redact_api_provider_secret_prefixes(mut message: String, api_key: &str) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{Read, Write},
+        net::{TcpListener, TcpStream},
+        thread,
+        time::Duration,
+    };
 
     fn valid_test_provider_payload(base_url: &str, model: &str) -> TestApiProviderPayload {
         TestApiProviderPayload {
@@ -1225,6 +1308,117 @@ mod tests {
             ))
             .is_ok()
         );
+    }
+
+    #[test]
+    fn provider_test_rejects_blank_provider_type() {
+        let mut payload = valid_test_provider_payload("https://api.openai.com/v1", "gpt-4.1");
+        payload.provider_type = "  ".to_string();
+
+        let error = match prepare_api_provider_test_payload(payload) {
+            Ok(_) => panic!("blank provider type must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("unknown API provider type"));
+        assert!(!error.contains("sk-test"));
+    }
+
+    #[test]
+    fn provider_test_rejects_unknown_provider_type() {
+        let mut payload = valid_test_provider_payload("https://api.openai.com/v1", "gpt-4.1");
+        payload.provider_type = "anthropic".to_string();
+
+        let error = match prepare_api_provider_test_payload(payload) {
+            Ok(_) => panic!("unknown provider type must be rejected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, "unknown API provider type: anthropic");
+    }
+
+    #[test]
+    fn provider_test_rejects_provider_type_without_leaking_api_key() {
+        let mut payload = valid_test_provider_payload("https://api.openai.com/v1", "gpt-4.1");
+        payload.provider_type = "sk-test".to_string();
+
+        let error = match prepare_api_provider_test_payload(payload) {
+            Ok(_) => panic!("unknown provider type must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(!error.contains("sk-test"));
+        assert!(error.contains("<redacted>"));
+    }
+
+    #[test]
+    fn provider_test_rejects_base_urls_with_query_fragment_or_userinfo() {
+        for base_url in [
+            "https://api.openai.com/v1?api_key=sk-test",
+            "https://api.openai.com/v1#models",
+            "https://sk-test@api.openai.com/v1",
+        ] {
+            let error = match prepare_api_provider_test_payload(valid_test_provider_payload(
+                base_url, "gpt-4.1",
+            )) {
+                Ok(_) => panic!("invalid base URL must be rejected"),
+                Err(error) => error,
+            };
+
+            assert!(error.contains("base URL"));
+            assert!(!error.contains("sk-test"));
+        }
+    }
+
+    #[test]
+    fn fetch_openai_models_rejects_oversized_success_body() {
+        let body = format!(
+            "{{\"data\":[{{\"id\":\"gpt-4.1\"}}],\"padding\":\"{}\"}}",
+            "x".repeat(API_PROVIDER_SUCCESS_BODY_READ_LIMIT + 1)
+        );
+        let (base_url, server) = spawn_test_server("200 OK", &body);
+        let prepared = PreparedApiProviderTest {
+            base_url: reqwest::Url::parse(&format!("{base_url}/")).expect("base URL should parse"),
+            model: "gpt-4.1".to_string(),
+            api_key: "sk-test".to_string(),
+        };
+        let http = reqwest::Client::builder()
+            .timeout(API_PROVIDER_TEST_TIMEOUT)
+            .build()
+            .expect("test client should build");
+
+        let error = tauri::async_runtime::block_on(fetch_openai_models(&http, &prepared))
+            .expect_err("oversized model list bodies must be rejected");
+        let request = server.join().expect("server should finish");
+
+        assert_eq!(request.path, "/models");
+        assert!(error.contains("too large"));
+        assert!(!error.contains("gpt-4.1"));
+        assert!(!error.contains("sk-test"));
+    }
+
+    #[test]
+    fn provider_test_does_not_follow_redirects() {
+        let redirected_body = "{\"data\":[{\"id\":\"gpt-4.1\"}]}";
+        let (redirected_url, redirected_server) =
+            spawn_optional_test_server("200 OK", redirected_body);
+        let location = format!("{redirected_url}/models");
+        let (base_url, redirect_server) = spawn_test_redirect_server(&location);
+
+        let result = tauri::async_runtime::block_on(test_api_provider_connection_core(
+            valid_test_provider_payload(&base_url, "gpt-4.1"),
+        ));
+        let redirect_request = redirect_server
+            .join()
+            .expect("redirect server should finish");
+
+        assert_eq!(redirect_request.path, "/models");
+        assert!(!result.ok);
+        assert!(result.message.contains("302"));
+        assert!(redirected_server
+            .join()
+            .expect("redirect target server should finish")
+            .is_none());
     }
 
     #[test]
@@ -1304,5 +1498,143 @@ mod tests {
 
         assert!(!debug.contains("sk-test"));
         assert!(debug.contains("<redacted>"));
+    }
+
+    #[derive(Debug)]
+    struct CapturedRequest {
+        path: String,
+    }
+
+    fn spawn_test_server(
+        status: &'static str,
+        response_body: &str,
+    ) -> (String, thread::JoinHandle<CapturedRequest>) {
+        spawn_test_server_with_headers(status, Vec::new(), response_body.to_string())
+    }
+
+    fn spawn_optional_test_server(
+        status: &'static str,
+        response_body: &str,
+    ) -> (String, thread::JoinHandle<Option<CapturedRequest>>) {
+        spawn_optional_test_server_with_headers(status, Vec::new(), response_body.to_string())
+    }
+
+    fn spawn_test_redirect_server(location: &str) -> (String, thread::JoinHandle<CapturedRequest>) {
+        spawn_test_server_with_headers(
+            "302 Found",
+            vec![("Location".to_string(), location.to_string())],
+            String::new(),
+        )
+    }
+
+    fn spawn_test_server_with_headers(
+        status: &'static str,
+        headers: Vec<(String, String)>,
+        response_body: String,
+    ) -> (String, thread::JoinHandle<CapturedRequest>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+        let address = listener
+            .local_addr()
+            .expect("test server should have address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("server should accept request");
+            let request = read_http_request(&mut stream);
+            let mut response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+                response_body.len()
+            );
+            for (name, value) in headers {
+                response.push_str(&format!("{name}: {value}\r\n"));
+            }
+            response.push_str("\r\n");
+            response.push_str(&response_body);
+            stream
+                .write_all(response.as_bytes())
+                .expect("server should write response");
+
+            request
+        });
+
+        (format!("http://{address}"), server)
+    }
+
+    fn spawn_optional_test_server_with_headers(
+        status: &'static str,
+        headers: Vec<(String, String)>,
+        response_body: String,
+    ) -> (String, thread::JoinHandle<Option<CapturedRequest>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+        listener
+            .set_nonblocking(true)
+            .expect("test server should become nonblocking");
+        let address = listener
+            .local_addr()
+            .expect("test server should have address");
+        let server = thread::spawn(move || {
+            let start = std::time::Instant::now();
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if start.elapsed() > Duration::from_millis(250) {
+                            return None;
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("server should accept request: {error}"),
+                }
+            };
+            let request = read_http_request(&mut stream);
+            let mut response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+                response_body.len()
+            );
+            for (name, value) in headers {
+                response.push_str(&format!("{name}: {value}\r\n"));
+            }
+            response.push_str("\r\n");
+            response.push_str(&response_body);
+            stream
+                .write_all(response.as_bytes())
+                .expect("server should write response");
+
+            Some(request)
+        });
+
+        (format!("http://{address}"), server)
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> CapturedRequest {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout should be set");
+
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let read = stream
+                .read(&mut buffer)
+                .expect("server should read request");
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+            if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let headers = String::from_utf8_lossy(&bytes);
+        let request_line = headers
+            .lines()
+            .next()
+            .expect("request should include request line");
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .expect("request should include path")
+            .to_string();
+
+        CapturedRequest { path }
     }
 }
