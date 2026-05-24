@@ -1,7 +1,7 @@
 use alita_lib::commands::model_assignment_role_from_payload;
 use alita_lib::preferences::{
-    add_manual_model, add_speech_to_text_model, agent_model_path, default_model_path,
-    default_agent_model_mode, delete_api_provider_config, ensure_model_storage_dir,
+    add_manual_model, add_speech_to_text_model, agent_model_path, default_agent_model_mode,
+    default_model_path, delete_api_provider_config, ensure_model_storage_dir,
     import_model_to_storage, load_preferences_from_path, record_recent_project,
     recover_model_preferences, save_preferences_to_path, scan_model_directory,
     set_active_api_provider, set_agent_model_mode, set_default_model, set_model_assignment,
@@ -310,7 +310,8 @@ fn upsert_api_provider_config_updates_existing_provider_without_changing_secret_
 fn first_api_provider_is_auto_selected() {
     let mut preferences = AppPreferences::default();
 
-    let provider = upsert_api_provider_config(&mut preferences, valid_api_provider_input()).unwrap();
+    let provider =
+        upsert_api_provider_config(&mut preferences, valid_api_provider_input()).unwrap();
 
     assert_eq!(
         preferences.active_api_provider_id.as_deref(),
