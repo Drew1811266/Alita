@@ -228,6 +228,24 @@ fn api_provider_helper_payload_allows_saved_key_when_model_changes() {
 }
 
 #[test]
+fn api_provider_helper_payload_allows_saved_key_when_display_name_changes() {
+    let mut preferences = AppPreferences::default();
+    let provider =
+        upsert_api_provider_config(&mut preferences, valid_api_provider_input()).unwrap();
+    let credential_store = RecordingCredentialStore::default();
+    credential_store.insert_api_key(&provider.credential_ref, "sk-saved");
+    let mut payload = valid_test_payload(Some(provider.provider_id.clone()), None);
+    payload.display_name = "Renamed OpenAI".to_string();
+
+    let hydrated =
+        api_provider_test_payload_with_stored_key(&preferences, payload, &credential_store)
+            .unwrap();
+
+    assert_eq!(hydrated.api_key.as_deref(), Some("sk-saved"));
+    assert_eq!(hydrated.display_name, "Renamed OpenAI");
+}
+
+#[test]
 fn api_provider_helper_payload_does_not_replace_explicit_blank_key() {
     let mut preferences = AppPreferences::default();
     let provider =
