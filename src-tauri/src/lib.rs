@@ -1,4 +1,5 @@
 pub mod agent_client;
+pub mod api_credentials;
 pub mod asr;
 pub mod commands;
 pub mod domain;
