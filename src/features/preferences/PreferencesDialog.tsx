@@ -327,6 +327,9 @@ function ApiProviderForm({
       className="apiProviderForm"
       id="api-provider-form"
       name="api-provider-form"
+      onReset={(event) => {
+        clearApiProviderHelperState(event.currentTarget);
+      }}
       onSubmit={async (event) => {
         event.preventDefault();
         const form = event.currentTarget;
@@ -580,15 +583,23 @@ async function runApiProviderHelper(
   if (!form) {
     return;
   }
+  const requestPayload = readApiProviderPayload(form);
+  const requestFingerprint = apiProviderPayloadFingerprint(requestPayload);
   let result: ApiProviderConnectionResult;
   try {
-    result = await handler(readApiProviderPayload(form));
+    result = await handler(requestPayload);
   } catch (error) {
+    if (!isCurrentApiProviderRequest(form, requestFingerprint)) {
+      return;
+    }
     clearFetchedModelSelect(form);
     setHelperMessage(form, errorToMessage(error));
     return;
   }
 
+  if (!isCurrentApiProviderRequest(form, requestFingerprint)) {
+    return;
+  }
   setHelperMessage(form, result.message);
   if (result.ok && result.models.length > 0) {
     populateFetchedModelSelect(form, result.models);
@@ -599,6 +610,28 @@ async function runApiProviderHelper(
   }
 
   clearFetchedModelSelect(form);
+}
+
+function apiProviderPayloadFingerprint(payload: SaveApiProviderPayload): string {
+  return JSON.stringify({
+    providerId: payload.providerId ?? "",
+    providerType: payload.providerType,
+    displayName: payload.displayName,
+    baseUrl: payload.baseUrl,
+    model: payload.model,
+    enabled: payload.enabled,
+    apiKey: payload.apiKey ?? "",
+  });
+}
+
+function isCurrentApiProviderRequest(
+  form: ProviderFormLike,
+  requestFingerprint: string,
+): boolean {
+  return (
+    apiProviderPayloadFingerprint(readApiProviderPayload(form)) ===
+    requestFingerprint
+  );
 }
 
 function errorToMessage(error: unknown): string {

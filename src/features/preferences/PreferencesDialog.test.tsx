@@ -127,6 +127,10 @@ type TestButton = ReactElement<{
 type TestForm = ReactElement<{
   "aria-label"?: string;
   children?: ReactNode;
+  onReset?: (event: {
+    currentTarget: TestFormElement;
+    preventDefault(): void;
+  }) => void;
   onSubmit?: (event: {
     preventDefault(): void;
     currentTarget: TestFormElement;
@@ -695,6 +699,77 @@ describe("PreferencesDialog", () => {
     expect(optionValues(fetchedModel)).toEqual([""]);
     expect(fetchedModel.value).toBe("");
     expect(providerHelperMessage.textContent).toContain("network unavailable");
+  });
+
+  it("ignores stale API provider helper responses after the form changes", async () => {
+    stubDocumentCreateElement();
+    let resolveFetch:
+      | ((result: ApiProviderConnectionResult) => void)
+      | undefined;
+    const pendingFetch = new Promise<ApiProviderConnectionResult>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const onFetchApiProviderModels = vi.fn(
+      (_payload: SaveApiProviderPayload) => pendingFetch,
+    );
+    const elements = renderPreferenceElements({ onFetchApiProviderModels });
+    const fetchedModel = createSelectField([""]);
+    const providerHelperMessage = {
+      textContent: "",
+      value: "",
+    } satisfies TestFormField;
+    const { fields, form } = createProviderForm({
+      ...providerFormValues,
+      providerId: "api-1",
+      baseUrl: "https://api.openai.com/v1",
+      model: "",
+      fetchedModel,
+      providerHelperMessage,
+    });
+    const fetchButton = findButtonsByText(elements, "拉取模型列表")[0];
+
+    const clickPromise = fetchButton.props.onClick?.({
+      currentTarget: { form },
+    });
+
+    fields.providerId.value = "api-2";
+    fields.baseUrl.value = "https://api.deepseek.com/v1";
+    resolveFetch?.({
+      ok: true,
+      message: "Fetched stale models",
+      models: ["gpt-stale"],
+    });
+    await clickPromise;
+
+    expect(optionValues(fetchedModel)).toEqual([""]);
+    expect(fetchedModel.value).toBe("");
+    expect(fields.model.value).toBe("");
+    expect(providerHelperMessage.textContent).toBe("");
+  });
+
+  it("clears fetched models and helper message on API provider form reset", () => {
+    const elements = renderPreferenceElements();
+    const fetchedModel = createSelectField(["stale-model"]);
+    const providerHelperMessage = {
+      textContent: "Fetched models",
+      value: "",
+    } satisfies TestFormField;
+    const { form } = createProviderForm({
+      ...providerFormValues,
+      fetchedModel,
+      providerHelperMessage,
+    });
+    const preventDefault = vi.fn();
+
+    findFormByLabel(elements, "API 供应商表单").props.onReset?.({
+      currentTarget: form,
+      preventDefault,
+    });
+
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(optionValues(fetchedModel)).toEqual([""]);
+    expect(fetchedModel.value).toBe("");
+    expect(providerHelperMessage.textContent).toBe("");
   });
 
   it("clears fetched models and helper message when provider selections change", () => {
