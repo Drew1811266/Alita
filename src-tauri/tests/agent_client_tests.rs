@@ -198,6 +198,78 @@ fn register_model_session_sends_auth_header_and_model_config() {
     assert_eq!(body["modelConfig"]["apiKey"], "sk-test");
 }
 
+#[test]
+fn register_model_session_debug_redacts_api_key_fields() {
+    let request = agent_client::RegisterModelSessionRequest {
+        model_config: serde_json::json!({
+            "mode": "api",
+            "apiKey": "sk-sensitive",
+            "nested": {
+                "api_key": "sk-sensitive-underscore",
+                "model": "gpt-4.1"
+            }
+        }),
+    };
+
+    let debug = format!("{request:?}");
+
+    assert!(!debug.contains("sk-sensitive"));
+    assert!(!debug.contains("sk-sensitive-underscore"));
+    assert!(debug.contains("<redacted>"));
+    assert!(debug.contains("gpt-4.1"));
+}
+
+#[test]
+fn register_model_session_redacts_api_keys_from_error_body() {
+    let error_body = r#"{"detail":[{"loc":["body","modelConfig"],"input":{"apiKey":"sk-leaked","nested":{"api_key":"sk-leaked-underscore","model":"gpt-4.1"}}}]}"#;
+    let (base_url, server) = spawn_test_server_with_status("422 Unprocessable Entity", error_body);
+    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-session");
+    let request = agent_client::RegisterModelSessionRequest {
+        model_config: serde_json::json!({
+            "mode": "api",
+            "providerId": "provider-1",
+            "providerType": "openai",
+            "displayName": "OpenAI",
+            "baseUrl": "https://api.openai.com/v1",
+            "model": "gpt-4.1",
+            "apiKey": "sk-test"
+        }),
+    };
+
+    let error = tauri::async_runtime::block_on(client.register_model_session(&request))
+        .expect_err("model session request should fail");
+    let _captured = server.join().expect("server should capture request");
+
+    assert!(!error.contains("sk-leaked"));
+    assert!(!error.contains("sk-leaked-underscore"));
+    assert!(error.contains("<redacted>"));
+    assert!(error.contains("model session request returned 422"));
+}
+
+#[test]
+fn register_model_session_omits_non_json_error_body_with_api_key() {
+    let error_body = "validation failed for apiKey=sk-plain-text";
+    let (base_url, server) = spawn_test_server_with_status("502 Bad Gateway", error_body);
+    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-session");
+    let request = agent_client::RegisterModelSessionRequest {
+        model_config: serde_json::json!({
+            "mode": "api",
+            "baseUrl": "https://api.openai.com/v1",
+            "model": "gpt-4.1",
+            "apiKey": "sk-test"
+        }),
+    };
+
+    let error = tauri::async_runtime::block_on(client.register_model_session(&request))
+        .expect_err("model session request should fail");
+    let _captured = server.join().expect("server should capture request");
+
+    assert!(!error.contains("sk-plain-text"));
+    assert!(!error.contains("apiKey=sk"));
+    assert!(error.contains("non-JSON body omitted"));
+    assert!(error.contains("model session request returned 502"));
+}
+
 #[derive(Debug)]
 struct CapturedRequest {
     method: String,
@@ -217,6 +289,13 @@ impl CapturedRequest {
 }
 
 fn spawn_test_server(response_body: &'static str) -> (String, JoinHandle<CapturedRequest>) {
+    spawn_test_server_with_status("200 OK", response_body)
+}
+
+fn spawn_test_server_with_status(
+    status: &'static str,
+    response_body: &'static str,
+) -> (String, JoinHandle<CapturedRequest>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
     let address = listener
         .local_addr()
@@ -225,7 +304,7 @@ fn spawn_test_server(response_body: &'static str) -> (String, JoinHandle<Capture
         let (mut stream, _) = listener.accept().expect("server should accept request");
         let request = read_http_request(&mut stream);
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             response_body.len(),
             response_body
         );

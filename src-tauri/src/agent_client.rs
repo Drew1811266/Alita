@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentAttachment {
@@ -22,10 +23,22 @@ pub struct AgentEvent {
     pub payload: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RegisterModelSessionRequest {
     pub model_config: serde_json::Value,
+}
+
+impl fmt::Debug for RegisterModelSessionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RegisterModelSessionRequest")
+            .field(
+                "model_config",
+                &redact_model_session_secrets(&self.model_config),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,7 +125,10 @@ impl AgentClient {
         &self,
         request: &RegisterModelSessionRequest,
     ) -> Result<RegisterModelSessionResponse, String> {
-        let url = format!("{}/agent/model/session", self.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/agent/model/session",
+            self.base_url.trim_end_matches('/')
+        );
         let mut request_builder = self.http.post(url).json(request);
         if let Some(token) = &self.auth_token {
             request_builder = request_builder.header(sidecar_token_header(), token);
@@ -124,7 +140,7 @@ impl AgentClient {
             .map_err(|error| format!("model session request failed: {error}"))?;
 
         if !response.status().is_success() {
-            return Err(sidecar_error_message(response, "model session request").await);
+            return Err(model_session_error_message(response).await);
         }
 
         response
@@ -195,10 +211,56 @@ pub fn sidecar_token_header() -> &'static str {
     "X-Alita-Sidecar-Token"
 }
 
+async fn model_session_error_message(response: reqwest::Response) -> String {
+    let status = response.status();
+    match response.text().await {
+        Ok(body) if !body.trim().is_empty() => match redact_model_session_error_body(&body) {
+            Some(redacted_body) => {
+                format!("model session request returned {status}: {redacted_body}")
+            }
+            None => format!("model session request returned {status}: non-JSON body omitted"),
+        },
+        _ => format!("model session request returned {status}"),
+    }
+}
+
 async fn sidecar_error_message(response: reqwest::Response, label: &str) -> String {
     let status = response.status();
     match response.text().await {
         Ok(body) if !body.trim().is_empty() => format!("{label} returned {status}: {body}"),
         _ => format!("{label} returned {status}"),
     }
+}
+
+fn redact_model_session_error_body(body: &str) -> Option<String> {
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(value) => Some(redact_model_session_secrets(&value).to_string()),
+        Err(_) => None,
+    }
+}
+
+fn redact_model_session_secrets(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(redact_model_session_secrets).collect())
+        }
+        serde_json::Value::Object(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| {
+                    let redacted_value = if is_model_session_secret_key(key) {
+                        serde_json::Value::String("<redacted>".to_string())
+                    } else {
+                        redact_model_session_secrets(value)
+                    };
+                    (key.clone(), redacted_value)
+                })
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn is_model_session_secret_key(key: &str) -> bool {
+    key == "apiKey" || key == "api_key"
 }
