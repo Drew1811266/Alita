@@ -514,8 +514,6 @@ function applyProviderPresetToForm(form: ProviderFormLike | null): void {
   if (!preset) {
     return;
   }
-  setFormFieldValue(form, "providerId", "");
-  setFormFieldValue(form, "savedProvider", "");
   setFormFieldValue(form, "displayName", preset.displayName);
   setFormFieldValue(form, "baseUrl", preset.baseUrl);
 }

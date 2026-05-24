@@ -138,6 +138,15 @@ type TestFormField = {
   value: string;
 };
 
+type TestSelect = ReactElement<{
+  name?: string;
+  onChange?: (event: {
+    currentTarget: {
+      form: TestFormElement;
+    };
+  }) => void;
+}>;
+
 type TestFormElement = {
   elements: {
     namedItem(name: string): TestFormField | null;
@@ -262,6 +271,20 @@ function findFormByLabel(elements: ReactElement[], label: string): TestForm {
   return form;
 }
 
+function findSelectByName(elements: ReactElement[], name: string): TestSelect {
+  const select = elements.find(
+    (element): element is TestSelect =>
+      element.type === "select" &&
+      (element.props as { name?: string }).name === name,
+  );
+
+  if (!select) {
+    throw new Error(`Select with name "${name}" was not found.`);
+  }
+
+  return select;
+}
+
 function createProviderForm(
   values: Record<string, string | boolean>,
 ): { form: TestFormElement; fields: Record<string, TestFormField> } {
@@ -286,6 +309,7 @@ function createProviderForm(
 
 const providerFormValues = {
   providerId: "",
+  savedProvider: "",
   providerType: "deepseek",
   displayName: "DeepSeek",
   baseUrl: "https://api.deepseek.com",
@@ -438,6 +462,66 @@ describe("PreferencesDialog", () => {
     } satisfies SaveApiProviderPayload);
     expect(fields.apiKey.value).toBe("");
     expect(fields.model.value).toBe("deepseek-chat");
+  });
+
+  it("keeps the API key when saving the provider fails", async () => {
+    const saveError = new Error("save failed");
+    const onSaveApiProvider = vi.fn(() => Promise.reject(saveError));
+    const elements = renderPreferenceElements({ onSaveApiProvider });
+    const { fields, form } = createProviderForm(providerFormValues);
+
+    await expect(
+      findFormByLabel(elements, "API 供应商表单").props.onSubmit?.({
+        currentTarget: form,
+        preventDefault: () => undefined,
+      }),
+    ).rejects.toThrow(saveError);
+
+    expect(onSaveApiProvider).toHaveBeenCalledWith({
+      providerType: "deepseek",
+      displayName: "DeepSeek",
+      baseUrl: "https://api.deepseek.com",
+      model: "deepseek-chat",
+      enabled: true,
+      apiKey: "sk-form",
+    } satisfies SaveApiProviderPayload);
+    expect(fields.apiKey.value).toBe("sk-form");
+  });
+
+  it("keeps the edited provider id when applying a provider type preset", async () => {
+    const onSaveApiProvider = vi.fn(() => Promise.resolve());
+    const elements = renderPreferenceElements({ onSaveApiProvider });
+    const { fields, form } = createProviderForm({
+      ...providerFormValues,
+      providerId: "api-1",
+      savedProvider: "api-1",
+      providerType: "deepseek",
+      displayName: "OpenAI",
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-4.1",
+    });
+
+    findSelectByName(elements, "providerType").props.onChange?.({
+      currentTarget: { form },
+    });
+
+    expect(fields.providerId.value).toBe("api-1");
+    expect(fields.savedProvider.value).toBe("api-1");
+
+    await findFormByLabel(elements, "API 供应商表单").props.onSubmit?.({
+      currentTarget: form,
+      preventDefault: () => undefined,
+    });
+
+    expect(onSaveApiProvider).toHaveBeenCalledWith({
+      providerId: "api-1",
+      providerType: "deepseek",
+      displayName: "DeepSeek",
+      baseUrl: "https://api.deepseek.com",
+      model: "gpt-4.1",
+      enabled: true,
+      apiKey: "sk-form",
+    } satisfies SaveApiProviderPayload);
   });
 
   it("tests and fetches API provider helpers with the current form payload", async () => {

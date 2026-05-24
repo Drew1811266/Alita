@@ -1035,6 +1035,7 @@ export function App() {
       applyPreferencesView(await saveApiProviderConfig(payload));
     } catch (error) {
       setPreferencesError(String(error));
+      throw error;
     }
   };
 
