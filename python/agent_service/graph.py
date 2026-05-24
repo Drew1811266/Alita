@@ -79,8 +79,11 @@ def _model_client_for_message(
 ) -> ModelClient:
     if model_client is not None:
         return model_client
-    if message.model_session_id:
-        session_config = model_session_registry.consume(message.model_session_id)
+    if message.model_session_id is not None:
+        session_id = message.model_session_id.strip()
+        if not session_id:
+            raise ModelRuntimeDisabled("Agent model session expired or was not found")
+        session_config = model_session_registry.consume(session_id)
         if session_config is None:
             raise ModelRuntimeDisabled("Agent model session expired or was not found")
         return model_client_factory(_client_config_from_session(session_config))

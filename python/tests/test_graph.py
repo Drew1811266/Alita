@@ -116,6 +116,21 @@ def test_run_agent_uses_model_client_factory_without_session() -> None:
     assert events[0].payload["message"]["content"] == "factory reply"
 
 
+def test_run_agent_rejects_blank_model_session_id() -> None:
+    from agent_service.graph import run_agent
+    from agent_service.model_client import ModelRuntimeDisabled
+    from agent_service.schemas import UserMessage
+
+    with pytest.raises(
+        ModelRuntimeDisabled,
+        match="Agent model session expired or was not found",
+    ):
+        run_agent(
+            UserMessage(task_id="task-1", content="hello", model_session_id="   "),
+            model_client_factory=lambda: pytest.fail("factory should not be called"),
+        )
+
+
 def test_run_agent_prefers_explicit_model_client_without_consuming_session() -> None:
     from agent_service.graph import run_agent
     from agent_service.model_sessions import ModelSessionRegistry
