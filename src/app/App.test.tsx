@@ -8,7 +8,9 @@ import {
 import {
   App,
   createAgentSession,
+  endGraphRunForTest,
   shouldRefreshAsrForPreferencesUpdate,
+  tryBeginGraphRunForTest,
 } from "./App";
 
 vi.mock("../features/preferences/preferencesApi", async (importOriginal) => {
@@ -91,5 +93,18 @@ describe("App", () => {
     await expect(createAgentSession()).rejects.toThrow(
       "Agent 模型配置不可用：missing config",
     );
+  });
+
+  it("locks graph runs synchronously until cleanup", () => {
+    const inFlightRef = { current: false };
+
+    expect(tryBeginGraphRunForTest(inFlightRef)).toBe(true);
+    expect(inFlightRef.current).toBe(true);
+    expect(tryBeginGraphRunForTest(inFlightRef)).toBe(false);
+
+    endGraphRunForTest(inFlightRef);
+
+    expect(inFlightRef.current).toBe(false);
+    expect(tryBeginGraphRunForTest(inFlightRef)).toBe(true);
   });
 });

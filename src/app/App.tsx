@@ -140,6 +140,26 @@ export const createAgentSession = async (): Promise<string | null> => {
   }
 };
 
+type GraphRunInFlightRef = {
+  current: boolean;
+};
+
+function tryBeginGraphRun(refLike: GraphRunInFlightRef): boolean {
+  if (refLike.current) {
+    return false;
+  }
+
+  refLike.current = true;
+  return true;
+}
+
+function endGraphRun(refLike: GraphRunInFlightRef): void {
+  refLike.current = false;
+}
+
+export const tryBeginGraphRunForTest = tryBeginGraphRun;
+export const endGraphRunForTest = endGraphRun;
+
 export function App() {
   const [activeProject, setActiveProject] = useState<AlitaProject | null>(
     null,
@@ -196,6 +216,7 @@ export function App() {
   const [preferencesLoading, setPreferencesLoading] = useState(false);
   const [preferencesError, setPreferencesError] = useState<string | null>(null);
   const [recentProjects, setRecentProjects] = useState<string[]>([]);
+  const graphRunInFlightRef = useRef(false);
 
   const stopRecordingStream = () => {
     if (recordingTimerRef.current !== null) {
@@ -443,7 +464,16 @@ export function App() {
   };
 
   const runGraphWithMode = async (mode: RunNodeGraphMode) => {
-    if (!activeProject || !graph || graphRunning) {
+    if (
+      !activeProject ||
+      !graph ||
+      graphRunning ||
+      graphRunInFlightRef.current
+    ) {
+      return;
+    }
+
+    if (!tryBeginGraphRun(graphRunInFlightRef)) {
       return;
     }
 
@@ -477,6 +507,7 @@ export function App() {
       ]);
       setDirty(true);
     } finally {
+      endGraphRun(graphRunInFlightRef);
       setGraphRunning(false);
       setGraphCancelling(false);
     }
