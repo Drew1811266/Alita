@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
@@ -223,6 +224,7 @@ class OpenAICompatibleModelClient:
         max_tokens: int = 1024,
     ) -> Iterator[str]:
         self._ensure_enabled()
+        yielded_content = False
 
         try:
             for data in _iter_sse_data(
@@ -245,12 +247,17 @@ class OpenAICompatibleModelClient:
                     ) from error
 
                 if delta:
+                    yielded_content = True
                     yield delta
         except UnicodeDecodeError as error:
             provider = self.config.provider_display_name.strip() or "API provider"
             raise ModelRuntimeRequestFailed(
                 f"{provider} returned a malformed streaming chat chunk"
             ) from error
+        if not yielded_content:
+            raise ModelRuntimeRequestFailed(
+                "OpenAI-compatible API returned an empty streaming chat response"
+            )
 
     def _ensure_enabled(self) -> None:
         if not self.config.api_key or not self.config.api_key.strip():
@@ -332,15 +339,14 @@ def _post_json_with_headers(
     timeout: float,
     headers: dict[str, str],
 ) -> dict:
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers=headers,
-        method="POST",
-    )
-
     try:
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=body,
+            headers=headers,
+            method="POST",
+        )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
@@ -348,11 +354,13 @@ def _post_json_with_headers(
             f"API chat request failed with HTTP status {error.code}"
         ) from error
     except urllib.error.URLError as error:
-        raise ModelRuntimeRequestFailed(f"API chat request failed: {error.reason}") from error
+        raise ModelRuntimeRequestFailed("API chat request failed") from error
     except TimeoutError as error:
         raise ModelRuntimeRequestFailed("API chat request timed out") from error
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise ModelRuntimeRequestFailed("API chat request returned invalid JSON") from error
+    except (ValueError, OSError, http.client.HTTPException) as error:
+        raise ModelRuntimeRequestFailed("API chat request failed") from error
 
 
 def _post_json_stream(url: str, payload: dict, timeout: float) -> Iterable[bytes]:
@@ -377,15 +385,14 @@ def _post_json_stream_with_headers(
     timeout: float,
     headers: dict[str, str],
 ) -> Iterable[bytes]:
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=body,
-        headers=headers,
-        method="POST",
-    )
-
     try:
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            url,
+            data=body,
+            headers=headers,
+            method="POST",
+        )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             yield from response
     except urllib.error.HTTPError as error:
@@ -393,11 +400,11 @@ def _post_json_stream_with_headers(
             f"API streaming chat request failed with HTTP status {error.code}"
         ) from error
     except urllib.error.URLError as error:
-        raise ModelRuntimeRequestFailed(
-            f"API streaming chat request failed: {error.reason}"
-        ) from error
+        raise ModelRuntimeRequestFailed("API streaming chat request failed") from error
     except TimeoutError as error:
         raise ModelRuntimeRequestFailed("API streaming chat request timed out") from error
+    except (ValueError, OSError, http.client.HTTPException) as error:
+        raise ModelRuntimeRequestFailed("API streaming chat request failed") from error
 
 
 def _extract_chat_content(response: dict) -> str:

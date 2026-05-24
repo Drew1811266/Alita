@@ -355,6 +355,95 @@ def test_openai_compatible_client_rejects_non_object_stream_delta() -> None:
         list(client.stream_chat([ChatMessage(role="user", content="hello")]))
 
 
+def test_openai_compatible_client_wraps_invalid_chat_url() -> None:
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="not a url",
+            model="gpt-4.1",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+            timeout_seconds=0.01,
+        )
+    )
+
+    with pytest.raises(ModelRuntimeRequestFailed, match="API chat request failed") as error:
+        client.chat([ChatMessage(role="user", content="hello")])
+
+    assert "sk-test" not in str(error.value)
+    assert "Authorization" not in str(error.value)
+
+
+def test_openai_compatible_client_wraps_invalid_stream_url() -> None:
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="not a url",
+            model="gpt-4.1",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+            timeout_seconds=0.01,
+        )
+    )
+
+    with pytest.raises(
+        ModelRuntimeRequestFailed,
+        match="API streaming chat request failed",
+    ) as error:
+        list(client.stream_chat([ChatMessage(role="user", content="hello")]))
+
+    assert "sk-test" not in str(error.value)
+    assert "Authorization" not in str(error.value)
+
+
+def test_openai_compatible_client_rejects_done_only_stream() -> None:
+    def stream_transport(url: str, payload: dict, timeout: float, headers: dict[str, str]):
+        return [b"data: [DONE]\n\n"]
+
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4.1",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+        ),
+        stream_transport=stream_transport,
+    )
+
+    with pytest.raises(
+        ModelRuntimeRequestFailed,
+        match="OpenAI-compatible API returned an empty streaming chat response",
+    ):
+        list(client.stream_chat([ChatMessage(role="user", content="hello")]))
+
+
+def test_openai_compatible_client_rejects_stream_without_data_lines() -> None:
+    def stream_transport(url: str, payload: dict, timeout: float, headers: dict[str, str]):
+        return [b": keepalive\n\n", b"event: ping\n\n"]
+
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4.1",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+        ),
+        stream_transport=stream_transport,
+    )
+
+    with pytest.raises(
+        ModelRuntimeRequestFailed,
+        match="OpenAI-compatible API returned an empty streaming chat response",
+    ):
+        list(client.stream_chat([ChatMessage(role="user", content="hello")]))
+
+
 def test_openai_compatible_client_rejects_missing_api_key() -> None:
     client = OpenAICompatibleModelClient(
         AgentModelClientConfig(
@@ -368,6 +457,38 @@ def test_openai_compatible_client_rejects_missing_api_key() -> None:
     )
 
     with pytest.raises(ModelRuntimeDisabled, match="API key is not configured"):
+        client.chat([ChatMessage(role="user", content="hello")])
+
+
+def test_openai_compatible_client_rejects_missing_api_base_url() -> None:
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="",
+            model="gpt-4.1",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+        )
+    )
+
+    with pytest.raises(ModelRuntimeDisabled, match="API base URL is not configured"):
+        client.chat([ChatMessage(role="user", content="hello")])
+
+
+def test_openai_compatible_client_rejects_missing_api_model() -> None:
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="https://api.openai.com/v1",
+            model="",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+        )
+    )
+
+    with pytest.raises(ModelRuntimeDisabled, match="API model is not configured"):
         client.chat([ChatMessage(role="user", content="hello")])
 
 
