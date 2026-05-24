@@ -152,6 +152,26 @@ def test_register_model_session_requires_sidecar_token(monkeypatch) -> None:
     assert response.status_code == 401
 
 
+def test_register_model_session_validation_error_redacts_api_key(monkeypatch) -> None:
+    monkeypatch.setenv("ALITA_SIDECAR_TOKEN", "expected-token")
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/model/session",
+        json={
+            "modelConfig": {
+                "mode": "api",
+                "model": "gpt-4.1",
+                "apiKey": "sk-leak",
+            }
+        },
+        headers={"X-Alita-Sidecar-Token": "expected-token"},
+    )
+
+    assert response.status_code == 422
+    assert "sk-leak" not in response.text
+
+
 def test_register_model_session_returns_session_id_with_valid_sidecar_token(
     monkeypatch,
 ) -> None:

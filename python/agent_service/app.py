@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from agent_service.asr import (
     ASRError,
@@ -39,6 +42,7 @@ app.add_middleware(
 
 SIDECAR_TOKEN_ENV = "ALITA_SIDECAR_TOKEN"
 SIDECAR_TOKEN_HEADER = "X-Alita-Sidecar-Token"
+VALIDATION_SECRET_KEYS = {"apiKey", "api_key"}
 
 
 def require_sidecar_token(
@@ -49,6 +53,33 @@ def require_sidecar_token(
         return
     if sidecar_token != expected_token:
         raise HTTPException(status_code=401, detail="invalid sidecar token")
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(
+    _request: Request,
+    error: RequestValidationError,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content=jsonable_encoder(
+            {"detail": sanitize_validation_error_detail(error.errors())}
+        ),
+    )
+
+
+def sanitize_validation_error_detail(value: Any) -> Any:
+    if isinstance(value, list):
+        return [sanitize_validation_error_detail(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: "<redacted>"
+            if key in VALIDATION_SECRET_KEYS
+            else sanitize_validation_error_detail(item)
+            for key, item in value.items()
+            if key != "input"
+        }
+    return value
 
 
 @app.get("/health")
