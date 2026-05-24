@@ -4,7 +4,7 @@ use crate::{
         AsrTranscriptionRequest, AsrTranscriptionResponse, RegisterModelSessionRequest,
     },
     agent_model_config::{resolve_agent_model_config, AgentModelConfig},
-    api_credentials::{ApiCredentialStore, SystemApiCredentialStore},
+    api_credentials::{ApiCredentialStore, ApiCredentialTarget, SystemApiCredentialStore},
     asr::{
         decode_wav_base64, remove_temp_audio_file, write_temp_audio_file,
         TranscribeVoiceAudioPayload,
@@ -201,7 +201,11 @@ pub fn preferences_view_with_api_key_status(
     credential_store: &dyn ApiCredentialStore,
 ) -> PreferencesView {
     for provider in &mut preferences.api_provider_configs {
-        match credential_store.get_api_key(&provider.credential_ref) {
+        let key_result = match api_credential_target_for_provider(provider) {
+            Ok(target) => credential_store.get_api_key(&provider.credential_ref, &target),
+            Err(error) => Err(error),
+        };
+        match key_result {
             Ok(Some(api_key)) if !api_key.trim().is_empty() => {
                 provider.has_api_key = Some(true);
                 provider.api_key_status = Some("configured".to_string());
@@ -570,7 +574,8 @@ pub fn api_provider_test_payload_with_stored_key(
         .find(|candidate| candidate.provider_id == provider_id)
         .ok_or_else(|| format!("unknown API provider id: {provider_id}"))?;
     validate_api_provider_stored_key_target(provider, &payload)?;
-    payload.api_key = credential_store.get_api_key(&provider.credential_ref)?;
+    let credential_target = api_credential_target_for_provider(provider)?;
+    payload.api_key = credential_store.get_api_key(&provider.credential_ref, &credential_target)?;
     Ok(payload)
 }
 
@@ -585,6 +590,14 @@ fn validate_api_provider_stored_key_target(
     }
 
     Err("API key is required when provider connection settings are changed".to_string())
+}
+
+fn api_credential_target_for_provider(
+    provider: &crate::preferences::ApiProviderConfig,
+) -> Result<ApiCredentialTarget, String> {
+    let provider_type = normalize_api_provider_type(&provider.provider_type)?;
+    let base_url = normalize_api_provider_base_url(&provider.base_url)?;
+    ApiCredentialTarget::new(&provider_type, &base_url)
 }
 
 pub fn attachment_metadata_for_path(
@@ -774,7 +787,10 @@ where
     )?;
     save_preferences(preferences)?;
     if let Some(api_key) = api_key.as_deref() {
-        if let Err(error) = credential_store.set_api_key(&provider.credential_ref, api_key) {
+        let credential_target = api_credential_target_for_provider(&provider)?;
+        if let Err(error) =
+            credential_store.set_api_key(&provider.credential_ref, &credential_target, api_key)
+        {
             return rollback_preferences_after_credential_error(
                 preferences,
                 original_preferences,

@@ -14,7 +14,7 @@ mod tools;
 use agent_model_config::{
     resolve_agent_model_config, AgentModelConfig, RegisterModelSessionRequest,
 };
-use api_credentials::{ApiCredentialStore, MemoryApiCredentialStore};
+use api_credentials::{ApiCredentialStore, ApiCredentialTarget, MemoryApiCredentialStore};
 use preferences::{
     add_manual_model, upsert_api_provider_config, ApiProviderConfig, ApiProviderInput,
     AppPreferences,
@@ -25,11 +25,20 @@ struct StaticCredentialStore {
 }
 
 impl ApiCredentialStore for StaticCredentialStore {
-    fn set_api_key(&self, _credential_ref: &str, _api_key: &str) -> Result<(), String> {
+    fn set_api_key(
+        &self,
+        _credential_ref: &str,
+        _target: &ApiCredentialTarget,
+        _api_key: &str,
+    ) -> Result<(), String> {
         unimplemented!("agent model config tests only read credentials")
     }
 
-    fn get_api_key(&self, _credential_ref: &str) -> Result<Option<String>, String> {
+    fn get_api_key(
+        &self,
+        _credential_ref: &str,
+        _target: &ApiCredentialTarget,
+    ) -> Result<Option<String>, String> {
         Ok(self.api_key.clone())
     }
 
@@ -66,6 +75,10 @@ fn legacy_valid_provider() -> ApiProviderConfig {
     }
 }
 
+fn credential_target_for_provider(provider: &ApiProviderConfig) -> ApiCredentialTarget {
+    ApiCredentialTarget::new(&provider.provider_type, &provider.base_url).unwrap()
+}
+
 #[test]
 fn resolves_api_agent_model_config_with_secret_from_store() {
     let mut preferences = AppPreferences::default();
@@ -83,7 +96,11 @@ fn resolves_api_agent_model_config_with_secret_from_store() {
     .unwrap();
     let store = MemoryApiCredentialStore::default();
     store
-        .set_api_key(&provider.credential_ref, "sk-test")
+        .set_api_key(
+            &provider.credential_ref,
+            &credential_target_for_provider(&provider),
+            "sk-test",
+        )
         .unwrap();
 
     let resolved = resolve_agent_model_config(&preferences, &store).unwrap();
@@ -99,6 +116,37 @@ fn resolves_api_agent_model_config_with_secret_from_store() {
             api_key: "sk-test".to_string(),
         }
     );
+}
+
+#[test]
+fn api_mode_rejects_saved_key_when_provider_target_is_tampered() {
+    let mut preferences = AppPreferences::default();
+    let provider = upsert_api_provider_config(
+        &mut preferences,
+        ApiProviderInput {
+            provider_id: None,
+            provider_type: "openai".to_string(),
+            display_name: "OpenAI".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4.1".to_string(),
+            enabled: true,
+        },
+    )
+    .unwrap();
+    let store = MemoryApiCredentialStore::default();
+    store
+        .set_api_key(
+            &provider.credential_ref,
+            &credential_target_for_provider(&provider),
+            "sk-original",
+        )
+        .unwrap();
+    preferences.api_provider_configs[0].base_url = "https://attacker.example/v1".to_string();
+
+    let error = resolve_agent_model_config(&preferences, &store).unwrap_err();
+
+    assert!(error.contains("API key is not configured"), "{error}");
+    assert!(!error.contains("sk-original"));
 }
 
 #[test]
@@ -304,7 +352,11 @@ fn agent_model_config_debug_redacts_api_key() {
     .unwrap();
     let store = MemoryApiCredentialStore::default();
     store
-        .set_api_key(&provider.credential_ref, "sk-debug-secret")
+        .set_api_key(
+            &provider.credential_ref,
+            &credential_target_for_provider(&provider),
+            "sk-debug-secret",
+        )
         .unwrap();
 
     let resolved = resolve_agent_model_config(&preferences, &store).unwrap();

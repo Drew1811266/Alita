@@ -3,7 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api_credentials::ApiCredentialStore,
+    api_credentials::{ApiCredentialStore, ApiCredentialTarget},
     preferences::{
         agent_model_path, normalize_api_provider_api_key, normalize_api_provider_base_url,
         normalize_api_provider_display_name, normalize_api_provider_model,
@@ -121,8 +121,9 @@ fn resolve_api_config(
     if !provider.enabled {
         return Err(format!("API provider '{display_name}' is disabled"));
     }
+    let credential_target = ApiCredentialTarget::new(&provider_type, &base_url)?;
     let api_key = credential_store
-        .get_api_key(&provider.credential_ref)?
+        .get_api_key(&provider.credential_ref, &credential_target)?
         .ok_or_else(|| format!("API key is not configured for {display_name}"))
         .and_then(|api_key| normalize_api_provider_api_key(&api_key))?;
     Ok(AgentModelConfig::Api {
