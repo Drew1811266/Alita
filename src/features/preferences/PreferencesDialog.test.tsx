@@ -127,6 +127,12 @@ type TestButton = ReactElement<{
 type TestForm = ReactElement<{
   "aria-label"?: string;
   children?: ReactNode;
+  onChange?: (event: {
+    currentTarget: TestFormElement;
+  }) => void;
+  onInput?: (event: {
+    currentTarget: TestFormElement;
+  }) => void;
   onReset?: (event: {
     currentTarget: TestFormElement;
     preventDefault(): void;
@@ -745,6 +751,111 @@ describe("PreferencesDialog", () => {
     expect(fetchedModel.value).toBe("");
     expect(fields.model.value).toBe("");
     expect(providerHelperMessage.textContent).toBe("");
+  });
+
+  it("ignores helper responses after the form changes back to the original payload", async () => {
+    stubDocumentCreateElement();
+    let resolveFetch:
+      | ((result: ApiProviderConnectionResult) => void)
+      | undefined;
+    const pendingFetch = new Promise<ApiProviderConnectionResult>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const onFetchApiProviderModels = vi.fn(
+      (_payload: SaveApiProviderPayload) => pendingFetch,
+    );
+    const elements = renderPreferenceElements({ onFetchApiProviderModels });
+    const fetchedModel = createSelectField([""]);
+    const providerHelperMessage = {
+      textContent: "",
+      value: "",
+    } satisfies TestFormField;
+    const { fields, form } = createProviderForm({
+      ...providerFormValues,
+      providerId: "api-1",
+      baseUrl: "https://api.openai.com/v1",
+      model: "",
+      fetchedModel,
+      providerHelperMessage,
+    });
+    const apiProviderForm = findFormByLabel(elements, "API 供应商表单");
+    const fetchButton = findButtonsByText(elements, "拉取模型列表")[0];
+
+    const clickPromise = fetchButton.props.onClick?.({
+      currentTarget: { form },
+    });
+
+    fields.providerId.value = "api-2";
+    fields.baseUrl.value = "https://api.deepseek.com/v1";
+    apiProviderForm.props.onChange?.({ currentTarget: form });
+    fields.providerId.value = "api-1";
+    fields.baseUrl.value = "https://api.openai.com/v1";
+    apiProviderForm.props.onChange?.({ currentTarget: form });
+    resolveFetch?.({
+      ok: true,
+      message: "Fetched stale models",
+      models: ["gpt-stale"],
+    });
+    await clickPromise;
+
+    expect(optionValues(fetchedModel)).toEqual([""]);
+    expect(fetchedModel.value).toBe("");
+    expect(fields.model.value).toBe("");
+    expect(providerHelperMessage.textContent).toBe("");
+  });
+
+  it("keeps the latest API provider helper response when requests finish out of order", async () => {
+    stubDocumentCreateElement();
+    let resolveFirst:
+      | ((result: ApiProviderConnectionResult) => void)
+      | undefined;
+    let resolveSecond:
+      | ((result: ApiProviderConnectionResult) => void)
+      | undefined;
+    const firstFetch = new Promise<ApiProviderConnectionResult>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const secondFetch = new Promise<ApiProviderConnectionResult>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const onFetchApiProviderModels = vi
+      .fn<() => Promise<ApiProviderConnectionResult>>()
+      .mockReturnValueOnce(firstFetch)
+      .mockReturnValueOnce(secondFetch);
+    const elements = renderPreferenceElements({ onFetchApiProviderModels });
+    const fetchedModel = createSelectField([""]);
+    const providerHelperMessage = {
+      textContent: "",
+      value: "",
+    } satisfies TestFormField;
+    const { fields, form } = createProviderForm({
+      ...providerFormValues,
+      model: "",
+      fetchedModel,
+      providerHelperMessage,
+    });
+    const fetchButton = findButtonsByText(elements, "拉取模型列表")[0];
+
+    const firstClick = fetchButton.props.onClick?.({ currentTarget: { form } });
+    const secondClick = fetchButton.props.onClick?.({ currentTarget: { form } });
+
+    resolveSecond?.({
+      ok: true,
+      message: "Fetched current models",
+      models: ["current-model"],
+    });
+    await secondClick;
+    resolveFirst?.({
+      ok: true,
+      message: "Fetched stale models",
+      models: ["stale-model"],
+    });
+    await firstClick;
+
+    expect(optionValues(fetchedModel)).toEqual(["current-model"]);
+    expect(fetchedModel.value).toBe("current-model");
+    expect(fields.model.value).toBe("current-model");
+    expect(providerHelperMessage.textContent).toBe("Fetched current models");
   });
 
   it("clears fetched models and helper message on API provider form reset", () => {

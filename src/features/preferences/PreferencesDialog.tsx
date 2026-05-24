@@ -306,6 +306,9 @@ type ProviderFormLike = {
   querySelector?(selector: string): ProviderFormField | null;
 };
 
+const apiProviderFormVersions = new WeakMap<ProviderFormLike, number>();
+const apiProviderHelperRequestIds = new WeakMap<ProviderFormLike, number>();
+
 function ApiProviderForm({
   providers,
   onFetchApiProviderModels,
@@ -327,7 +330,14 @@ function ApiProviderForm({
       className="apiProviderForm"
       id="api-provider-form"
       name="api-provider-form"
+      onChange={(event) => {
+        markApiProviderFormChanged(event.currentTarget);
+      }}
+      onInput={(event) => {
+        markApiProviderFormChanged(event.currentTarget);
+      }}
       onReset={(event) => {
+        markApiProviderFormChanged(event.currentTarget);
         clearApiProviderHelperState(event.currentTarget);
       }}
       onSubmit={async (event) => {
@@ -339,6 +349,7 @@ function ApiProviderForm({
           return;
         }
         setFormFieldValue(form, "apiKey", "");
+        markApiProviderFormChanged(form);
       }}
     >
       <div className="apiProviderFormHeader">
@@ -460,6 +471,7 @@ function ApiProviderForm({
               "model",
               event.currentTarget.value,
             );
+            markApiProviderFormChanged(event.currentTarget.form);
           }}
         >
           <option value="">{FETCHED_MODEL_PLACEHOLDER}</option>
@@ -529,6 +541,7 @@ function applyProviderPresetToForm(form: ProviderFormLike | null): void {
   }
   setFormFieldValue(form, "displayName", preset.displayName);
   setFormFieldValue(form, "baseUrl", preset.baseUrl);
+  markApiProviderFormChanged(form);
   clearApiProviderHelperState(form);
 }
 
@@ -570,6 +583,7 @@ function fillApiProviderForm(
   setFormFieldValue(form, "model", provider.model);
   setFormFieldValue(form, "apiKey", "");
   setFormCheckbox(form, "enabled", provider.enabled);
+  markApiProviderFormChanged(form);
   clearApiProviderHelperState(form);
 }
 
@@ -584,12 +598,12 @@ async function runApiProviderHelper(
     return;
   }
   const requestPayload = readApiProviderPayload(form);
-  const requestFingerprint = apiProviderPayloadFingerprint(requestPayload);
+  const requestSnapshot = apiProviderRequestSnapshot(form, requestPayload);
   let result: ApiProviderConnectionResult;
   try {
     result = await handler(requestPayload);
   } catch (error) {
-    if (!isCurrentApiProviderRequest(form, requestFingerprint)) {
+    if (!isCurrentApiProviderRequest(form, requestSnapshot)) {
       return;
     }
     clearFetchedModelSelect(form);
@@ -597,7 +611,7 @@ async function runApiProviderHelper(
     return;
   }
 
-  if (!isCurrentApiProviderRequest(form, requestFingerprint)) {
+  if (!isCurrentApiProviderRequest(form, requestSnapshot)) {
     return;
   }
   setHelperMessage(form, result.message);
@@ -610,6 +624,25 @@ async function runApiProviderHelper(
   }
 
   clearFetchedModelSelect(form);
+}
+
+type ApiProviderRequestSnapshot = {
+  fingerprint: string;
+  requestId: number;
+  version: number;
+};
+
+function apiProviderRequestSnapshot(
+  form: ProviderFormLike,
+  payload: SaveApiProviderPayload,
+): ApiProviderRequestSnapshot {
+  const requestId = (apiProviderHelperRequestIds.get(form) ?? 0) + 1;
+  apiProviderHelperRequestIds.set(form, requestId);
+  return {
+    fingerprint: apiProviderPayloadFingerprint(payload),
+    requestId,
+    version: apiProviderFormVersion(form),
+  };
 }
 
 function apiProviderPayloadFingerprint(payload: SaveApiProviderPayload): string {
@@ -626,12 +659,25 @@ function apiProviderPayloadFingerprint(payload: SaveApiProviderPayload): string 
 
 function isCurrentApiProviderRequest(
   form: ProviderFormLike,
-  requestFingerprint: string,
+  requestSnapshot: ApiProviderRequestSnapshot,
 ): boolean {
   return (
+    apiProviderHelperRequestIds.get(form) === requestSnapshot.requestId &&
+    apiProviderFormVersion(form) === requestSnapshot.version &&
     apiProviderPayloadFingerprint(readApiProviderPayload(form)) ===
-    requestFingerprint
+      requestSnapshot.fingerprint
   );
+}
+
+function apiProviderFormVersion(form: ProviderFormLike): number {
+  return apiProviderFormVersions.get(form) ?? 0;
+}
+
+function markApiProviderFormChanged(form: ProviderFormLike | null): void {
+  if (!form) {
+    return;
+  }
+  apiProviderFormVersions.set(form, apiProviderFormVersion(form) + 1);
 }
 
 function errorToMessage(error: unknown): string {
