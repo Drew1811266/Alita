@@ -44,18 +44,23 @@ import {
 import {
   addModelFile,
   addSpeechToTextModelDirectory,
+  deleteApiProviderConfig,
   getPreferences,
   importModelFile,
   pickModelDirectory,
   pickModelFile,
   pickSpeechToTextModelDirectory,
+  saveApiProviderConfig,
   scanModelDirectory,
+  setActiveApiProvider,
+  setAgentModelMode,
   setDefaultModel,
   setModelAssignment,
   setModelStorageDirectory,
   setToolEnabled,
   type ModelAssignmentRole,
   type PreferencesView,
+  type SaveApiProviderPayload,
 } from "../features/preferences/preferencesApi";
 import { PreferencesDialog } from "../features/preferences/PreferencesDialog";
 import {
@@ -78,6 +83,7 @@ import { WorkbenchTopBar } from "../features/workbench/WorkbenchTopBar";
 import { reduceBackendEvents } from "./backendEvents";
 import type {
   AlitaProject,
+  AgentModelMode,
   AgentNode,
   ArtifactRef,
   ChatAttachment,
@@ -931,6 +937,42 @@ export function App() {
     }
   };
 
+  const handleSetAgentModelMode = async (mode: AgentModelMode) => {
+    try {
+      setPreferencesError(null);
+      applyPreferencesView(await setAgentModelMode(mode));
+    } catch (error) {
+      setPreferencesError(String(error));
+    }
+  };
+
+  const handleSaveApiProvider = async (payload: SaveApiProviderPayload) => {
+    try {
+      setPreferencesError(null);
+      applyPreferencesView(await saveApiProviderConfig(payload));
+    } catch (error) {
+      setPreferencesError(String(error));
+    }
+  };
+
+  const handleDeleteApiProvider = async (providerId: string) => {
+    try {
+      setPreferencesError(null);
+      applyPreferencesView(await deleteApiProviderConfig(providerId));
+    } catch (error) {
+      setPreferencesError(String(error));
+    }
+  };
+
+  const handleSetActiveApiProvider = async (providerId: string) => {
+    try {
+      setPreferencesError(null);
+      applyPreferencesView(await setActiveApiProvider(providerId));
+    } catch (error) {
+      setPreferencesError(String(error));
+    }
+  };
+
   const handleSetToolEnabled = async (toolId: string, enabled: boolean) => {
     try {
       setPreferencesView(await setToolEnabled(toolId, enabled));
@@ -946,8 +988,12 @@ export function App() {
       onAddModel={handleAddModel}
       onAddSpeechToTextModel={handleAddSpeechToTextModel}
       onClose={() => setPreferencesOpen(false)}
+      onDeleteApiProvider={handleDeleteApiProvider}
       onImportModel={handleImportModel}
       onScanModelDirectory={handleScanModelDirectory}
+      onSaveApiProvider={handleSaveApiProvider}
+      onSetActiveApiProvider={handleSetActiveApiProvider}
+      onSetAgentModelMode={handleSetAgentModelMode}
       onSetDefaultModel={handleSetDefaultModel}
       onSetModelAssignment={handleSetModelAssignment}
       onSetModelStorageDirectory={handleSetModelStorageDirectory}

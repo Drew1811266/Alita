@@ -1332,6 +1332,13 @@ button:focus-visible {
   gap: 8px;
 }
 
+.agentModelSourceControls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .modelStorageBox {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1410,6 +1417,7 @@ button:focus-visible {
   font-size: 13px;
 }
 
+.apiProviderList,
 .modelList,
 .toolList {
   display: grid;
@@ -1419,6 +1427,7 @@ button:focus-visible {
   list-style: none;
 }
 
+.apiProviderItem,
 .modelList li,
 .toolItem {
   display: grid;
@@ -1430,6 +1439,7 @@ button:focus-visible {
   background: #ffffff;
 }
 
+.apiProviderHeader,
 .modelItemHeader {
   display: flex;
   align-items: center;
@@ -1438,11 +1448,19 @@ button:focus-visible {
   min-width: 0;
 }
 
+.apiProviderHeader strong,
 .modelItemHeader strong {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.apiProviderActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 3px;
 }
 
 .compactButton {
@@ -1465,6 +1483,7 @@ button:focus-visible {
   line-height: 16px;
 }
 
+.apiProviderItem span,
 .modelList span,
 .toolItem span {
   min-width: 0;
@@ -1591,6 +1610,10 @@ button:focus-visible {
     width: 100%;
   }
 
+  .agentModelSourceControls {
+    width: 100%;
+  }
+
   .modelStorageBox {
     grid-template-columns: 1fr;
   }
@@ -1599,14 +1622,21 @@ button:focus-visible {
     grid-template-columns: 1fr;
   }
 
+  .apiProviderHeader,
   .modelItemHeader {
     display: grid;
     grid-template-columns: 1fr;
     align-items: stretch;
   }
 
+  .apiProviderHeader strong,
   .modelItemHeader strong {
     white-space: normal;
+  }
+
+  .apiProviderActions {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .modelItemHeader .compactButton {

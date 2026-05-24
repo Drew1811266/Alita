@@ -16,9 +16,23 @@ const view: PreferencesView = {
       agentChatModelId: "model-1",
       speechToTextModelId: "asr-1",
     },
-    agentModelMode: "local",
-    activeApiProviderId: null,
-    apiProviderConfigs: [],
+    agentModelMode: "api",
+    activeApiProviderId: "api-1",
+    apiProviderConfigs: [
+      {
+        providerId: "api-1",
+        providerType: "openai",
+        displayName: "OpenAI",
+        baseUrl: "https://api.openai.com/v1",
+        model: "gpt-4.1",
+        credentialRef: "alita.api-provider.api-1",
+        enabled: true,
+        capabilities: ["chat_completions", "streaming", "model_list"],
+        hasApiKey: true,
+        createdAt: "2026-05-24T00:00:00.000Z",
+        updatedAt: "2026-05-24T00:00:00.000Z",
+      },
+    ],
     models: [
       {
         modelId: "model-1",
@@ -94,7 +108,11 @@ describe("PreferencesDialog", () => {
         onClose={() => undefined}
         onImportModel={() => undefined}
         onScanModelDirectory={() => undefined}
+        onDeleteApiProvider={() => undefined}
+        onSaveApiProvider={() => undefined}
+        onSetActiveApiProvider={() => undefined}
         onSetDefaultModel={() => undefined}
+        onSetAgentModelMode={() => undefined}
         onSetModelAssignment={() => undefined}
         onSetModelStorageDirectory={() => undefined}
         onSetToolEnabled={() => undefined}
@@ -104,6 +122,19 @@ describe("PreferencesDialog", () => {
     );
 
     expect(markup).toContain("首选项");
+    expect(markup).toContain("Agent 模型配置");
+    expect(markup).toContain("Agent 模型来源");
+    expect(markup).toContain("本地模型");
+    expect(markup).toContain("API 模型");
+    expect(markup).toContain("API 供应商");
+    expect(markup).toContain("OpenAI");
+    expect(markup).toContain("gpt-4.1");
+    expect(markup).toContain("https://api.openai.com/v1");
+    expect(markup).toContain("密钥已配置");
+    expect(markup).toContain("当前 Agent API");
+    expect(markup).toContain("删除");
+    expect(markup).not.toContain("sk-test");
+    expect(markup).not.toContain("alita.api-provider.api-1");
     expect(markup).toContain("模型");
     expect(markup).toContain("模型存储目录");
     expect(markup).toContain("更改目录");

@@ -1,5 +1,10 @@
-import type { ModelEntry, ToolSummary } from "../../shared/types";
-import type { PreferencesView } from "./preferencesApi";
+import type {
+  AgentModelMode,
+  ApiProviderConfig,
+  ModelEntry,
+  ToolSummary,
+} from "../../shared/types";
+import type { PreferencesView, SaveApiProviderPayload } from "./preferencesApi";
 
 type ModelAssignmentRole = "agentChat" | "speechToText";
 
@@ -13,6 +18,10 @@ type PreferencesDialogProps = {
   onAddSpeechToTextModel(): void;
   onImportModel(): void;
   onScanModelDirectory(): void;
+  onSetAgentModelMode(mode: AgentModelMode): void;
+  onSaveApiProvider(payload: SaveApiProviderPayload): void;
+  onDeleteApiProvider(providerId: string): void;
+  onSetActiveApiProvider(providerId: string): void;
   onSetDefaultModel(modelId: string): void;
   onSetModelAssignment(role: ModelAssignmentRole, modelId: string): void;
   onSetModelStorageDirectory(): void;
@@ -29,6 +38,9 @@ export function PreferencesDialog({
   onAddSpeechToTextModel,
   onImportModel,
   onScanModelDirectory,
+  onSetAgentModelMode,
+  onDeleteApiProvider,
+  onSetActiveApiProvider,
   onSetDefaultModel,
   onSetModelAssignment,
   onSetModelStorageDirectory,
@@ -76,6 +88,48 @@ export function PreferencesDialog({
               <span>安全</span>
             </aside>
             <div className="preferencesContent">
+              <section className="preferencesSection">
+                <div className="preferencesSectionHeader">
+                  <h3>Agent 模型配置</h3>
+                  <div
+                    aria-label="Agent 模型来源"
+                    className="agentModelSourceControls"
+                  >
+                    <button
+                      className={
+                        view.preferences.agentModelMode === "local"
+                          ? "primaryButton"
+                          : "secondaryButton"
+                      }
+                      onClick={() => onSetAgentModelMode("local")}
+                      type="button"
+                    >
+                      本地模型
+                    </button>
+                    <button
+                      className={
+                        view.preferences.agentModelMode === "api"
+                          ? "primaryButton"
+                          : "secondaryButton"
+                      }
+                      onClick={() => onSetAgentModelMode("api")}
+                      type="button"
+                    >
+                      API 模型
+                    </button>
+                  </div>
+                </div>
+
+                {view.preferences.agentModelMode === "api" ? (
+                  <ApiProviderList
+                    activeApiProviderId={view.preferences.activeApiProviderId}
+                    providers={view.preferences.apiProviderConfigs}
+                    onDeleteApiProvider={onDeleteApiProvider}
+                    onSetActiveApiProvider={onSetActiveApiProvider}
+                  />
+                ) : null}
+              </section>
+
               <section className="preferencesSection">
                 <div className="preferencesSectionHeader">
                   <h3>模型库</h3>
@@ -170,6 +224,66 @@ export function PreferencesDialog({
         ) : null}
       </section>
     </div>
+  );
+}
+
+function ApiProviderList({
+  activeApiProviderId,
+  providers,
+  onDeleteApiProvider,
+  onSetActiveApiProvider,
+}: {
+  activeApiProviderId: string | null;
+  providers: ApiProviderConfig[];
+  onDeleteApiProvider(providerId: string): void;
+  onSetActiveApiProvider(providerId: string): void;
+}) {
+  if (providers.length === 0) {
+    return (
+      <p aria-label="API 供应商" className="preferencesState">
+        还没有配置 API 供应商。
+      </p>
+    );
+  }
+
+  return (
+    <ul aria-label="API 供应商" className="apiProviderList">
+      {providers.map((provider) => {
+        const isActive = provider.providerId === activeApiProviderId;
+
+        return (
+          <li className="apiProviderItem" key={provider.providerId}>
+            <div className="apiProviderHeader">
+              <strong>{provider.displayName}</strong>
+              {isActive ? (
+                <span className="modelDefaultBadge">当前 Agent API</span>
+              ) : null}
+            </div>
+            <span>{provider.model}</span>
+            <span>{provider.baseUrl}</span>
+            <span>{provider.hasApiKey ? "密钥已配置" : "未配置密钥"}</span>
+            <div className="apiProviderActions">
+              {!isActive ? (
+                <button
+                  className="secondaryButton compactButton"
+                  onClick={() => onSetActiveApiProvider(provider.providerId)}
+                  type="button"
+                >
+                  设为当前 API
+                </button>
+              ) : null}
+              <button
+                className="secondaryButton compactButton"
+                onClick={() => onDeleteApiProvider(provider.providerId)}
+                type="button"
+              >
+                删除
+              </button>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
