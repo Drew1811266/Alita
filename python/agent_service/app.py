@@ -17,10 +17,13 @@ from agent_service.asr import (
 )
 from agent_service.execution import run_graph_events
 from agent_service.graph import run_agent, stream_agent_events
+from agent_service.model_sessions import DEFAULT_MODEL_SESSION_REGISTRY
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY
 from agent_service.schemas import (
     AgentEvent,
     CancelRunRequest,
+    RegisterModelSessionRequest,
+    RegisterModelSessionResponse,
     RunGraphRequest,
     UserMessage,
 )
@@ -74,6 +77,15 @@ def asr_transcribe(
             status_code=409 if error.code == "asr_busy" else 400,
             detail={"errorCode": error.code, "error": error.message},
         ) from error
+
+
+@app.post("/agent/model/session", response_model=RegisterModelSessionResponse)
+def register_model_session(
+    request: RegisterModelSessionRequest,
+    _auth: None = Depends(require_sidecar_token),
+) -> RegisterModelSessionResponse:
+    session_id = DEFAULT_MODEL_SESSION_REGISTRY.register(request.model_config_value)
+    return RegisterModelSessionResponse(modelSessionId=session_id)
 
 
 @app.post("/agent/message", response_model=list[AgentEvent])

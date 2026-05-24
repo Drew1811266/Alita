@@ -125,3 +125,54 @@ def test_cancel_graph_run_returns_cancelled_flag() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"cancelled": False}
+
+
+def test_register_model_session_requires_sidecar_token(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+    from agent_service.app import app
+
+    monkeypatch.setenv("ALITA_SIDECAR_TOKEN", "expected-token")
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/model/session",
+        json={
+            "modelConfig": {
+                "mode": "api",
+                "providerId": "provider-1",
+                "providerType": "openai",
+                "displayName": "OpenAI",
+                "baseUrl": "https://api.openai.com/v1",
+                "model": "gpt-4.1",
+                "apiKey": "sk-test",
+            }
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_register_model_session_returns_session_id_with_valid_sidecar_token(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ALITA_SIDECAR_TOKEN", "expected-token")
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/model/session",
+        json={
+            "modelConfig": {
+                "mode": "api",
+                "providerId": "provider-1",
+                "providerType": "openai",
+                "displayName": "OpenAI",
+                "baseUrl": "https://api.openai.com/v1",
+                "model": "gpt-4.1",
+                "apiKey": "sk-test",
+            }
+        },
+        headers={"X-Alita-Sidecar-Token": "expected-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["modelSessionId"].startswith("model-session-")

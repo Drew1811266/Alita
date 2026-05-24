@@ -166,6 +166,38 @@ fn transcribe_asr_audio_sends_auth_header_and_json_body() {
     assert_eq!(body["modelPath"], "C:\\Models\\Qwen3-ASR-1.7B");
 }
 
+#[test]
+fn register_model_session_sends_auth_header_and_model_config() {
+    let (base_url, server) = spawn_test_server(r#"{"modelSessionId":"session-1"}"#);
+    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-session");
+    let request = agent_client::RegisterModelSessionRequest {
+        model_config: serde_json::json!({
+            "mode": "api",
+            "providerId": "provider-1",
+            "providerType": "openai",
+            "displayName": "OpenAI",
+            "baseUrl": "https://api.openai.com/v1",
+            "model": "gpt-4.1",
+            "apiKey": "sk-test"
+        }),
+    };
+
+    let response = tauri::async_runtime::block_on(client.register_model_session(&request))
+        .expect("model session request should succeed");
+    let captured = server.join().expect("server should capture request");
+    let body: serde_json::Value =
+        serde_json::from_str(&captured.body).expect("request body should be JSON");
+
+    assert_eq!(response.model_session_id, "session-1");
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.path, "/agent/model/session");
+    assert_eq!(
+        captured.header(agent_client::sidecar_token_header()),
+        Some("token-session")
+    );
+    assert_eq!(body["modelConfig"]["apiKey"], "sk-test");
+}
+
 #[derive(Debug)]
 struct CapturedRequest {
     method: String,

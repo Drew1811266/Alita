@@ -22,6 +22,18 @@ pub struct AgentEvent {
     pub payload: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterModelSessionRequest {
+    pub model_config: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterModelSessionResponse {
+    pub model_session_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AsrStatusResponse {
@@ -94,6 +106,31 @@ impl AgentClient {
             .json::<Vec<AgentEvent>>()
             .await
             .map_err(|error| format!("invalid agent response: {error}"))
+    }
+
+    pub async fn register_model_session(
+        &self,
+        request: &RegisterModelSessionRequest,
+    ) -> Result<RegisterModelSessionResponse, String> {
+        let url = format!("{}/agent/model/session", self.base_url.trim_end_matches('/'));
+        let mut request_builder = self.http.post(url).json(request);
+        if let Some(token) = &self.auth_token {
+            request_builder = request_builder.header(sidecar_token_header(), token);
+        }
+
+        let response = request_builder
+            .send()
+            .await
+            .map_err(|error| format!("model session request failed: {error}"))?;
+
+        if !response.status().is_success() {
+            return Err(sidecar_error_message(response, "model session request").await);
+        }
+
+        response
+            .json::<RegisterModelSessionResponse>()
+            .await
+            .map_err(|error| format!("invalid model session response: {error}"))
     }
 
     pub async fn get_asr_status(&self) -> Result<AsrStatusResponse, String> {

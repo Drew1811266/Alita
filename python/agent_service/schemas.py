@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent_service.risk_levels import RiskLevel
 
@@ -20,11 +20,32 @@ class UserMessage(BaseModel):
     task_id: str
     content: str
     attachments: list[Attachment] = Field(default_factory=list)
+    model_session_id: str | None = None
 
 
 class AgentEvent(BaseModel):
     type: str
     payload: dict
+
+
+class AgentModelConfig(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    mode: Literal["local", "api"]
+    base_url: str = Field(alias="baseUrl")
+    model: str
+    provider_id: str | None = Field(default=None, alias="providerId")
+    provider_type: str | None = Field(default=None, alias="providerType")
+    display_name: str | None = Field(default=None, alias="displayName")
+    api_key: str | None = Field(default=None, alias="apiKey")
+
+
+class RegisterModelSessionRequest(BaseModel):
+    model_config_value: AgentModelConfig = Field(alias="modelConfig")
+
+
+class RegisterModelSessionResponse(BaseModel):
+    model_session_id: str = Field(alias="modelSessionId")
 
 
 class RunAttachment(Attachment):
@@ -97,3 +118,4 @@ class RunGraphRequest(BaseModel):
     mode: RunMode = Field(default_factory=RunMode)
     disabled_tool_ids: list[str] = Field(default_factory=list)
     approved_permissions: list[str] = Field(default_factory=list)
+    model_session_id: str | None = None
