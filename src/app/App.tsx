@@ -1043,14 +1043,8 @@ export function App() {
     payload: SaveApiProviderPayload,
   ): Promise<ApiProviderConnectionResult> => {
     try {
-      setPreferencesError(null);
-      const result = await testApiProviderConnection(payload);
-      if (!result.ok) {
-        setPreferencesError(result.message);
-      }
-      return result;
+      return await testApiProviderConnection(payload);
     } catch (error) {
-      setPreferencesError(String(error));
       return { ok: false, message: String(error), models: [] };
     }
   };
@@ -1059,14 +1053,8 @@ export function App() {
     payload: SaveApiProviderPayload,
   ): Promise<ApiProviderConnectionResult> => {
     try {
-      setPreferencesError(null);
-      const result = await fetchApiProviderModels(payload);
-      if (!result.ok) {
-        setPreferencesError(result.message);
-      }
-      return result;
+      return await fetchApiProviderModels(payload);
     } catch (error) {
-      setPreferencesError(String(error));
       return { ok: false, message: String(error), models: [] };
     }
   };

@@ -754,7 +754,15 @@ where
     });
     let api_key = match api_key.as_deref() {
         Some(api_key) => Some(normalize_api_provider_api_key(api_key)?),
-        None if is_existing_provider => None,
+        None if is_existing_provider => {
+            validate_saved_api_provider_update_target(
+                preferences,
+                provider_id.as_deref(),
+                &provider_type,
+                &base_url,
+            )?;
+            None
+        }
         None => return Err("API provider API key is required".to_string()),
     };
     let provider = upsert_api_provider_config(
@@ -780,6 +788,29 @@ where
         }
     }
     Ok(())
+}
+
+fn validate_saved_api_provider_update_target(
+    preferences: &AppPreferences,
+    provider_id: Option<&str>,
+    provider_type: &str,
+    base_url: &str,
+) -> Result<(), String> {
+    let Some(provider_id) = provider_id else {
+        return Ok(());
+    };
+    let provider = preferences
+        .api_provider_configs
+        .iter()
+        .find(|candidate| candidate.provider_id == provider_id)
+        .ok_or_else(|| format!("unknown API provider id: {provider_id}"))?;
+    let provider_type = normalize_api_provider_type(provider_type)?;
+    let base_url = normalize_api_provider_base_url(base_url)?;
+    if provider.provider_type == provider_type && provider.base_url == base_url {
+        return Ok(());
+    }
+
+    Err("API key is required when provider connection settings are changed".to_string())
 }
 
 #[tauri::command]

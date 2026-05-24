@@ -395,6 +395,40 @@ fn save_api_provider_core_preserves_secret_when_existing_api_key_is_not_provided
 }
 
 #[test]
+fn save_api_provider_core_requires_new_key_when_existing_connection_target_changes() {
+    let mut preferences = AppPreferences::default();
+    let credential_store = RecordingCredentialStore::default();
+
+    save_api_provider_config_core(
+        &mut preferences,
+        valid_save_payload(Some("sk-secret")),
+        &credential_store,
+        |_| Ok(()),
+    )
+    .unwrap();
+    let provider_id = preferences.api_provider_configs[0].provider_id.clone();
+    let mut payload = valid_save_payload(None);
+    payload.provider_id = Some(provider_id.clone());
+    payload.base_url = "https://gateway.example.com/v1".to_string();
+    credential_store.operations.lock().unwrap().clear();
+
+    let error =
+        save_api_provider_config_core(&mut preferences, payload, &credential_store, |_| Ok(()))
+            .unwrap_err();
+
+    assert_eq!(
+        error,
+        "API key is required when provider connection settings are changed"
+    );
+    assert!(credential_store.operations().is_empty());
+    assert_eq!(preferences.api_provider_configs[0].provider_id, provider_id);
+    assert_eq!(
+        preferences.api_provider_configs[0].base_url,
+        "https://api.openai.com/v1"
+    );
+}
+
+#[test]
 fn save_api_provider_core_rolls_back_preferences_when_credential_set_fails() {
     let mut preferences = AppPreferences::default();
     let original_preferences = preferences.clone();
