@@ -3,11 +3,14 @@ from __future__ import annotations
 import pytest
 
 from agent_service.model_client import (
+    AgentModelClientConfig,
     ChatMessage,
     LlamaCppModelClient,
     ModelClientConfig,
     ModelRuntimeDisabled,
     ModelRuntimeRequestFailed,
+    OpenAICompatibleModelClient,
+    create_model_client,
 )
 
 
@@ -220,3 +223,95 @@ def test_llama_client_streams_openai_compatible_chat_chunks() -> None:
             3.0,
         )
     ]
+
+
+def test_openai_compatible_client_posts_chat_request_with_authorization() -> None:
+    calls: list[tuple[str, dict, float, dict[str, str]]] = []
+
+    def transport(url: str, payload: dict, timeout: float, headers: dict[str, str]) -> dict:
+        calls.append((url, payload, timeout, headers))
+        return {"choices": [{"message": {"content": "api reply"}}]}
+
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4.1",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+        ),
+        transport=transport,
+    )
+
+    result = client.chat([ChatMessage(role="user", content="hello")])
+
+    assert result == "api reply"
+    assert calls == [
+        (
+            "https://api.openai.com/v1/chat/completions",
+            {
+                "model": "gpt-4.1",
+                "messages": [{"role": "user", "content": "hello"}],
+                "temperature": 0.2,
+                "max_tokens": 1024,
+                "stream": False,
+            },
+            60.0,
+            {"Authorization": "Bearer sk-test", "Content-Type": "application/json"},
+        )
+    ]
+
+
+def test_openai_compatible_client_streams_chat_chunks() -> None:
+    def stream_transport(url: str, payload: dict, timeout: float, headers: dict[str, str]):
+        return [
+            b'data: {"choices":[{"delta":{"content":"A"}}]}\n\n',
+            b'data: {"choices":[{"delta":{"content":"B"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="https://api.deepseek.com",
+            model="deepseek-chat",
+            api_key="sk-test",
+            provider_display_name="DeepSeek",
+        ),
+        stream_transport=stream_transport,
+    )
+
+    assert list(client.stream_chat([ChatMessage(role="user", content="hello")])) == ["A", "B"]
+
+
+def test_openai_compatible_client_rejects_missing_api_key() -> None:
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4.1",
+            api_key=None,
+            provider_display_name="OpenAI",
+        )
+    )
+
+    with pytest.raises(ModelRuntimeDisabled, match="API key is not configured"):
+        client.chat([ChatMessage(role="user", content="hello")])
+
+
+def test_create_model_client_returns_api_client_for_api_config() -> None:
+    client = create_model_client(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4.1",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+        )
+    )
+
+    assert isinstance(client, OpenAICompatibleModelClient)
