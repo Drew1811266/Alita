@@ -968,7 +968,12 @@ async fn fetch_openai_models(
         .map_err(|error| format!("model list request failed: {error}"))?;
 
     if !response.status().is_success() {
-        return Err(api_provider_response_error(response, "model list request").await);
+        return Err(api_provider_response_error(
+            response,
+            "model list request",
+            Some(&prepared.api_key),
+        )
+        .await);
     }
 
     let value = response
@@ -1006,21 +1011,41 @@ async fn probe_openai_chat_completion(
         .map_err(|error| format!("chat completion probe failed: {error}"))?;
 
     if !response.status().is_success() {
-        return Err(api_provider_response_error(response, "chat completion probe").await);
+        return Err(api_provider_response_error(
+            response,
+            "chat completion probe",
+            Some(&prepared.api_key),
+        )
+        .await);
     }
 
     Ok(())
 }
 
-async fn api_provider_response_error(response: reqwest::Response, label: &str) -> String {
+async fn api_provider_response_error(
+    response: reqwest::Response,
+    label: &str,
+    api_key: Option<&str>,
+) -> String {
     let status = response.status();
     match response.text().await {
-        Ok(body) if !body.trim().is_empty() => {
-            let body = truncate_api_provider_error_body(body.trim());
-            format!("{label} returned {status}: {body}")
-        }
+        Ok(body) => api_provider_error_message(label, status, Some(&body), api_key),
         _ => format!("{label} returned {status}"),
     }
+}
+
+fn api_provider_error_message(
+    label: &str,
+    status: reqwest::StatusCode,
+    body: Option<&str>,
+    api_key: Option<&str>,
+) -> String {
+    let Some(body) = body.map(str::trim).filter(|body| !body.is_empty()) else {
+        return format!("{label} returned {status}");
+    };
+    let redacted_body = redact_api_provider_secret(body.to_string(), api_key);
+    let body = truncate_api_provider_error_body(&redacted_body);
+    format!("{label} returned {status}: {body}")
 }
 
 fn truncate_api_provider_error_body(body: &str) -> String {
@@ -1099,6 +1124,25 @@ mod tests {
             redacted,
             "request failed for bearer <redacted> in body {\"apiKey\":\"<redacted>\"}"
         );
+    }
+
+    #[test]
+    fn provider_error_body_redaction_happens_before_truncation() {
+        let api_key = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
+        let key_prefix = &api_key[..20];
+        let filler = "x".repeat(API_PROVIDER_ERROR_BODY_LIMIT - key_prefix.len());
+        let body = format!("{filler}{api_key} should not be displayed");
+
+        let message = api_provider_error_message(
+            "model list request",
+            reqwest::StatusCode::UNAUTHORIZED,
+            Some(&body),
+            Some(api_key),
+        );
+
+        assert!(!message.contains(api_key));
+        assert!(!message.contains(key_prefix));
+        assert!(message.contains("<redacted>"));
     }
 
     #[test]
