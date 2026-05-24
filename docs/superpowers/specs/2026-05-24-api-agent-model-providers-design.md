@@ -15,9 +15,9 @@ The first implementation covers generic text chat completions and streaming for:
 
 Provider-specific advanced features are intentionally out of scope for this version.
 
-## Current State
+## Pre-implementation State
 
-Alita already has a local-first model path:
+Before API provider support, Alita already had a local-first model path:
 
 - Preferences schema version 2 stores local model entries in `models`.
 - `modelAssignments.agentChatModelId` selects the Agent GGUF model.
