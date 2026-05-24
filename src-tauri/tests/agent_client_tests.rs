@@ -220,7 +220,7 @@ fn register_model_session_debug_redacts_api_key_fields() {
 }
 
 #[test]
-fn register_model_session_redacts_api_keys_from_error_body() {
+fn register_model_session_omits_json_error_body_with_api_key_fields() {
     let error_body = r#"{"detail":[{"loc":["body","modelConfig"],"input":{"apiKey":"sk-leaked","nested":{"api_key":"sk-leaked-underscore","model":"gpt-4.1"}}}]}"#;
     let (base_url, server) = spawn_test_server_with_status("422 Unprocessable Entity", error_body);
     let client = agent_client::AgentClient::new(base_url).with_auth_token("token-session");
@@ -242,8 +242,63 @@ fn register_model_session_redacts_api_keys_from_error_body() {
 
     assert!(!error.contains("sk-leaked"));
     assert!(!error.contains("sk-leaked-underscore"));
-    assert!(error.contains("<redacted>"));
-    assert!(error.contains("model session request returned 422"));
+    assert!(!error.contains("gpt-4.1"));
+    assert_eq!(
+        error,
+        "model session request failed with status 422 Unprocessable Entity"
+    );
+}
+
+#[test]
+fn register_model_session_omits_json_detail_string_with_api_key() {
+    let error_body = r#"{"detail":"invalid apiKey sk-sensitive"}"#;
+    let (base_url, server) = spawn_test_server_with_status("422 Unprocessable Entity", error_body);
+    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-session");
+    let request = agent_client::RegisterModelSessionRequest {
+        model_config: serde_json::json!({
+            "mode": "api",
+            "baseUrl": "https://api.openai.com/v1",
+            "model": "gpt-4.1",
+            "apiKey": "sk-test"
+        }),
+    };
+
+    let error = tauri::async_runtime::block_on(client.register_model_session(&request))
+        .expect_err("model session request should fail");
+    let _captured = server.join().expect("server should capture request");
+
+    assert!(!error.contains("sk-sensitive"));
+    assert!(!error.contains("invalid apiKey"));
+    assert_eq!(
+        error,
+        "model session request failed with status 422 Unprocessable Entity"
+    );
+}
+
+#[test]
+fn register_model_session_omits_json_string_body_with_api_key() {
+    let error_body = r#""apiKey=sk-sensitive""#;
+    let (base_url, server) = spawn_test_server_with_status("422 Unprocessable Entity", error_body);
+    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-session");
+    let request = agent_client::RegisterModelSessionRequest {
+        model_config: serde_json::json!({
+            "mode": "api",
+            "baseUrl": "https://api.openai.com/v1",
+            "model": "gpt-4.1",
+            "apiKey": "sk-test"
+        }),
+    };
+
+    let error = tauri::async_runtime::block_on(client.register_model_session(&request))
+        .expect_err("model session request should fail");
+    let _captured = server.join().expect("server should capture request");
+
+    assert!(!error.contains("sk-sensitive"));
+    assert!(!error.contains("apiKey="));
+    assert_eq!(
+        error,
+        "model session request failed with status 422 Unprocessable Entity"
+    );
 }
 
 #[test]
@@ -266,8 +321,10 @@ fn register_model_session_omits_non_json_error_body_with_api_key() {
 
     assert!(!error.contains("sk-plain-text"));
     assert!(!error.contains("apiKey=sk"));
-    assert!(error.contains("non-JSON body omitted"));
-    assert!(error.contains("model session request returned 502"));
+    assert_eq!(
+        error,
+        "model session request failed with status 502 Bad Gateway"
+    );
 }
 
 #[derive(Debug)]

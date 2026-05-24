@@ -140,7 +140,7 @@ impl AgentClient {
             .map_err(|error| format!("model session request failed: {error}"))?;
 
         if !response.status().is_success() {
-            return Err(model_session_error_message(response).await);
+            return Err(model_session_error_message(response.status()));
         }
 
         response
@@ -211,17 +211,8 @@ pub fn sidecar_token_header() -> &'static str {
     "X-Alita-Sidecar-Token"
 }
 
-async fn model_session_error_message(response: reqwest::Response) -> String {
-    let status = response.status();
-    match response.text().await {
-        Ok(body) if !body.trim().is_empty() => match redact_model_session_error_body(&body) {
-            Some(redacted_body) => {
-                format!("model session request returned {status}: {redacted_body}")
-            }
-            None => format!("model session request returned {status}: non-JSON body omitted"),
-        },
-        _ => format!("model session request returned {status}"),
-    }
+fn model_session_error_message(status: reqwest::StatusCode) -> String {
+    format!("model session request failed with status {status}")
 }
 
 async fn sidecar_error_message(response: reqwest::Response, label: &str) -> String {
@@ -229,13 +220,6 @@ async fn sidecar_error_message(response: reqwest::Response, label: &str) -> Stri
     match response.text().await {
         Ok(body) if !body.trim().is_empty() => format!("{label} returned {status}: {body}"),
         _ => format!("{label} returned {status}"),
-    }
-}
-
-fn redact_model_session_error_body(body: &str) -> Option<String> {
-    match serde_json::from_str::<serde_json::Value>(body) {
-        Ok(value) => Some(redact_model_session_secrets(&value).to_string()),
-        Err(_) => None,
     }
 }
 
