@@ -3,12 +3,14 @@ import type {
   ApiProviderConfig,
   ApiProviderType,
   ModelEntry,
+  ToolProviderConfig,
   ToolSummary,
 } from "../../shared/types";
 import type {
   ApiProviderConnectionResult,
   PreferencesView,
   SaveApiProviderPayload,
+  SaveMcpToolProviderPayload,
 } from "./preferencesApi";
 
 type ModelAssignmentRole = "agentChat" | "speechToText";
@@ -35,6 +37,11 @@ type PreferencesDialogProps = {
   ): ApiProviderConnectionResult | Promise<ApiProviderConnectionResult>;
   onDeleteApiProvider(providerId: string): void;
   onSetActiveApiProvider(providerId: string): void;
+  onSaveMcpToolProvider(
+    payload: SaveMcpToolProviderPayload,
+  ): void | PreferencesView | Promise<void | PreferencesView>;
+  onDeleteMcpToolProvider(providerId: string): void;
+  onRefreshMcpToolProvider(providerId: string): void;
   onSetDefaultModel(modelId: string): void;
   onSetModelAssignment(role: ModelAssignmentRole, modelId: string): void;
   onSetModelStorageDirectory(): void;
@@ -54,7 +61,10 @@ export function PreferencesDialog({
   onSetAgentModelMode,
   onDeleteApiProvider,
   onFetchApiProviderModels,
+  onDeleteMcpToolProvider,
+  onRefreshMcpToolProvider,
   onSaveApiProvider,
+  onSaveMcpToolProvider,
   onSetActiveApiProvider,
   onSetDefaultModel,
   onSetModelAssignment,
@@ -232,6 +242,16 @@ export function PreferencesDialog({
                 ) : (
                   <p>还没有添加本地模型。</p>
                 )}
+              </section>
+
+              <section className="preferencesSection">
+                <h3>工具 Provider</h3>
+                <McpToolProviderForm onSaveMcpToolProvider={onSaveMcpToolProvider} />
+                <ToolProviderList
+                  onDeleteMcpToolProvider={onDeleteMcpToolProvider}
+                  onRefreshMcpToolProvider={onRefreshMcpToolProvider}
+                  providers={view.preferences.toolProviderConfigs}
+                />
               </section>
 
               <section className="preferencesSection">
@@ -640,6 +660,114 @@ function fillApiProviderForm(
   setFormCheckbox(form, "enabled", provider.enabled);
   markApiProviderFormChanged(form);
   clearApiProviderHelperState(form);
+}
+
+function McpToolProviderForm({
+  onSaveMcpToolProvider,
+}: {
+  onSaveMcpToolProvider(
+    payload: SaveMcpToolProviderPayload,
+  ): void | PreferencesView | Promise<void | PreferencesView>;
+}) {
+  return (
+    <form
+      aria-label="MCP Provider 配置"
+      className="apiProviderForm"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const formData = new FormData(event.currentTarget);
+        const args = String(formData.get("args") ?? "")
+          .split(/\s+/)
+          .map((value) => value.trim())
+          .filter(Boolean);
+        onSaveMcpToolProvider({
+          displayName: String(formData.get("displayName") ?? ""),
+          transport: String(formData.get("transport") ?? "stdio") as
+            | "stdio"
+            | "http",
+          command: String(formData.get("command") ?? ""),
+          args,
+          url: String(formData.get("url") ?? ""),
+          enabled: formData.get("enabled") === "on",
+        });
+      }}
+    >
+      <label>
+        名称
+        <input name="displayName" placeholder="Docs MCP" required />
+      </label>
+      <label>
+        连接
+        <select defaultValue="stdio" name="transport">
+          <option value="stdio">stdio</option>
+          <option value="http">HTTP</option>
+        </select>
+      </label>
+      <label>
+        命令
+        <input name="command" placeholder="npx" />
+      </label>
+      <label>
+        参数
+        <input name="args" placeholder="@example/docs-mcp" />
+      </label>
+      <label>
+        URL
+        <input name="url" placeholder="https://example.com/mcp" />
+      </label>
+      <label className="toolToggle">
+        <input defaultChecked name="enabled" type="checkbox" />
+        启用
+      </label>
+      <button className="primaryButton" type="submit">
+        保存 MCP Provider
+      </button>
+    </form>
+  );
+}
+
+function ToolProviderList({
+  providers,
+  onDeleteMcpToolProvider,
+  onRefreshMcpToolProvider,
+}: {
+  providers: ToolProviderConfig[];
+  onDeleteMcpToolProvider(providerId: string): void;
+  onRefreshMcpToolProvider(providerId: string): void;
+}) {
+  return (
+    <ul className="toolList">
+      {providers.map((provider) => (
+        <li className="toolItem" key={provider.providerId}>
+          <div>
+            <strong>{provider.displayName}</strong>
+            <span>来源 {provider.source}</span>
+            {provider.transport ? <span>连接 {provider.transport}</span> : null}
+            {provider.command ? <span>命令 {provider.command}</span> : null}
+            {provider.url ? <span>URL {provider.url}</span> : null}
+          </div>
+          {provider.source === "mcp" ? (
+            <div className="toolActions">
+              <button
+                className="secondaryButton compactButton"
+                onClick={() => onRefreshMcpToolProvider(provider.providerId)}
+                type="button"
+              >
+                刷新工具
+              </button>
+              <button
+                className="secondaryButton compactButton"
+                onClick={() => onDeleteMcpToolProvider(provider.providerId)}
+                type="button"
+              >
+                删除
+              </button>
+            </div>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 async function runApiProviderHelper(

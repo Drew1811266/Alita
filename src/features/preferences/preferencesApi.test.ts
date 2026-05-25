@@ -3,9 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   deleteApiProviderConfig,
+  deleteMcpToolProviderConfig,
   fetchApiProviderModels,
   prepareAgentModelSession,
+  refreshMcpToolProviderTools,
   saveApiProviderConfig,
+  saveMcpToolProviderConfig,
   setActiveApiProvider,
   setAgentModelMode,
   testApiProviderConnection,
@@ -38,6 +41,17 @@ const preferencesView: PreferencesView = {
     agentModelMode: "local",
     activeApiProviderId: null,
     apiProviderConfigs: [],
+    toolProviderConfigs: [
+      {
+        providerId: "internal",
+        source: "internal",
+        displayName: "Internal Tools",
+        args: [],
+        enabled: true,
+        createdAt: "system",
+        updatedAt: "system",
+      },
+    ],
     toolEnablement: {},
   },
   tools: [],
@@ -155,6 +169,51 @@ describe("preferences API provider commands", () => {
         payload: { providerId: "provider-1" },
       },
     );
+  });
+
+  it("saves MCP tool provider configs", async () => {
+    const payload = {
+      displayName: "Docs MCP",
+      transport: "stdio" as const,
+      command: "npx",
+      args: ["@example/docs-mcp"],
+      enabled: true,
+    };
+    invokeMock.mockResolvedValue(preferencesView);
+
+    await expect(saveMcpToolProviderConfig(payload)).resolves.toBe(
+      preferencesView,
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith("save_mcp_tool_provider_config", {
+      payload,
+    });
+  });
+
+  it("deletes MCP tool provider configs", async () => {
+    invokeMock.mockResolvedValue(preferencesView);
+
+    await expect(deleteMcpToolProviderConfig("mcp-1")).resolves.toBe(
+      preferencesView,
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      "delete_mcp_tool_provider_config_command",
+      {
+        payload: { providerId: "mcp-1" },
+      },
+    );
+  });
+
+  it("refreshes MCP tool provider tools", async () => {
+    const tools = [{ toolId: "mcp:mcp-1:search", providerId: "mcp-1" }];
+    invokeMock.mockResolvedValue(tools);
+
+    await expect(refreshMcpToolProviderTools("mcp-1")).resolves.toBe(tools);
+
+    expect(invokeMock).toHaveBeenCalledWith("refresh_mcp_tool_provider_tools", {
+      payload: { providerId: "mcp-1" },
+    });
   });
 });
 

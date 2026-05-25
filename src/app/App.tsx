@@ -45,6 +45,7 @@ import {
   addModelFile,
   addSpeechToTextModelDirectory,
   deleteApiProviderConfig,
+  deleteMcpToolProviderConfig,
   fetchApiProviderModels,
   getPreferences,
   importModelFile,
@@ -52,7 +53,9 @@ import {
   pickModelFile,
   pickSpeechToTextModelDirectory,
   prepareAgentModelSession,
+  refreshMcpToolProviderTools,
   saveApiProviderConfig,
+  saveMcpToolProviderConfig,
   scanModelDirectory,
   setActiveApiProvider,
   setAgentModelMode,
@@ -65,6 +68,7 @@ import {
   type ModelAssignmentRole,
   type PreferencesView,
   type SaveApiProviderPayload,
+  type SaveMcpToolProviderPayload,
 } from "../features/preferences/preferencesApi";
 import { PreferencesDialog } from "../features/preferences/PreferencesDialog";
 import {
@@ -1207,6 +1211,38 @@ export function App() {
     }
   };
 
+  const handleSaveMcpToolProvider = async (
+    payload: SaveMcpToolProviderPayload,
+  ) => {
+    try {
+      setPreferencesError(null);
+      const view = await saveMcpToolProviderConfig(payload);
+      applyPreferencesView(view);
+      return view;
+    } catch (error) {
+      setPreferencesError(String(error));
+      throw error;
+    }
+  };
+
+  const handleDeleteMcpToolProvider = async (providerId: string) => {
+    try {
+      setPreferencesError(null);
+      applyPreferencesView(await deleteMcpToolProviderConfig(providerId));
+    } catch (error) {
+      setPreferencesError(String(error));
+    }
+  };
+
+  const handleRefreshMcpToolProvider = async (providerId: string) => {
+    try {
+      setPreferencesError(null);
+      await refreshMcpToolProviderTools(providerId);
+    } catch (error) {
+      setPreferencesError(String(error));
+    }
+  };
+
   const handleSetToolEnabled = async (toolId: string, enabled: boolean) => {
     try {
       setPreferencesView(await setToolEnabled(toolId, enabled));
@@ -1223,10 +1259,13 @@ export function App() {
       onAddSpeechToTextModel={handleAddSpeechToTextModel}
       onClose={() => setPreferencesOpen(false)}
       onDeleteApiProvider={handleDeleteApiProvider}
+      onDeleteMcpToolProvider={handleDeleteMcpToolProvider}
       onFetchApiProviderModels={handleFetchApiProviderModels}
       onImportModel={handleImportModel}
+      onRefreshMcpToolProvider={handleRefreshMcpToolProvider}
       onScanModelDirectory={handleScanModelDirectory}
       onSaveApiProvider={handleSaveApiProvider}
+      onSaveMcpToolProvider={handleSaveMcpToolProvider}
       onSetActiveApiProvider={handleSetActiveApiProvider}
       onSetAgentModelMode={handleSetAgentModelMode}
       onSetDefaultModel={handleSetDefaultModel}

@@ -12,15 +12,16 @@ use crate::{
     },
     preferences::{
         add_manual_model, add_speech_to_text_model, delete_api_provider_config,
-        import_model_to_storage, load_preferences_with_model_recovery,
-        model_recovery_candidate_dirs, normalize_api_provider_api_key,
-        normalize_api_provider_base_url, normalize_api_provider_display_name,
-        normalize_api_provider_model, normalize_api_provider_type,
-        previous_preferences_path_for_current_path, record_recent_project,
-        save_preferences_to_path, scan_model_directory, set_active_api_provider,
-        set_agent_model_mode, set_default_model, set_model_assignment, set_model_storage_dir,
-        speech_to_text_model_path, summarize_tool_manifests, upsert_api_provider_config,
-        ApiProviderInput, AppPreferences, ModelAssignmentRole, ToolSummary,
+        delete_mcp_tool_provider_config, import_model_to_storage,
+        load_preferences_with_model_recovery, model_recovery_candidate_dirs,
+        normalize_api_provider_api_key, normalize_api_provider_base_url,
+        normalize_api_provider_display_name, normalize_api_provider_model,
+        normalize_api_provider_type, previous_preferences_path_for_current_path,
+        record_recent_project, save_preferences_to_path, scan_model_directory,
+        set_active_api_provider, set_agent_model_mode, set_default_model, set_model_assignment,
+        set_model_storage_dir, speech_to_text_model_path, summarize_tool_manifests,
+        upsert_api_provider_config, upsert_mcp_tool_provider_config, ApiProviderInput,
+        AppPreferences, McpToolProviderInput, ModelAssignmentRole, ToolSummary,
     },
     project::{
         load_project_from_path, new_project, save_project_to_path, AlitaProject, ProjectOpenResult,
@@ -189,6 +190,36 @@ pub struct ApiProviderConnectionResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiProviderIdPayload {
+    pub provider_id: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveMcpToolProviderPayload {
+    pub provider_id: Option<String>,
+    pub display_name: String,
+    pub transport: String,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UnifiedToolSummary {
+    pub tool_id: String,
+    pub provider_id: String,
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolProviderIdPayload {
     pub provider_id: String,
 }
 
@@ -921,6 +952,76 @@ pub async fn set_active_api_provider_command(
         tools,
         &SystemApiCredentialStore,
     ))
+}
+
+#[tauri::command]
+pub async fn save_mcp_tool_provider_config(
+    app: AppHandle,
+    payload: SaveMcpToolProviderPayload,
+) -> Result<PreferencesView, String> {
+    let (path, mut preferences) = load_preferences_for_app(&app)?;
+    upsert_mcp_tool_provider_config(
+        &mut preferences,
+        McpToolProviderInput {
+            provider_id: payload.provider_id,
+            display_name: payload.display_name,
+            transport: payload.transport,
+            command: payload.command,
+            args: payload.args,
+            url: payload.url,
+            enabled: payload.enabled,
+        },
+    )?;
+    save_preferences_to_path(&path, &preferences)?;
+    let tools = summarize_tool_manifests(packages_root(), &preferences);
+    Ok(preferences_view_with_api_key_status(
+        preferences,
+        tools,
+        &SystemApiCredentialStore,
+    ))
+}
+
+#[tauri::command]
+pub async fn delete_mcp_tool_provider_config_command(
+    app: AppHandle,
+    payload: ToolProviderIdPayload,
+) -> Result<PreferencesView, String> {
+    let (path, mut preferences) = load_preferences_for_app(&app)?;
+    delete_mcp_tool_provider_config(&mut preferences, &payload.provider_id)?;
+    save_preferences_to_path(&path, &preferences)?;
+    let tools = summarize_tool_manifests(packages_root(), &preferences);
+    Ok(preferences_view_with_api_key_status(
+        preferences,
+        tools,
+        &SystemApiCredentialStore,
+    ))
+}
+
+#[tauri::command]
+pub async fn refresh_mcp_tool_provider_tools(
+    app: AppHandle,
+    payload: ToolProviderIdPayload,
+) -> Result<Vec<UnifiedToolSummary>, String> {
+    let (_, preferences) = load_preferences_for_app(&app)?;
+    refresh_mcp_tool_provider_tools_for_preferences(&preferences, &payload.provider_id)
+}
+
+pub fn refresh_mcp_tool_provider_tools_for_preferences(
+    preferences: &AppPreferences,
+    provider_id: &str,
+) -> Result<Vec<UnifiedToolSummary>, String> {
+    let provider = preferences
+        .tool_provider_configs
+        .iter()
+        .find(|provider| provider.provider_id == provider_id)
+        .ok_or_else(|| format!("unknown MCP tool provider id: {provider_id}"))?;
+    if provider.source != "mcp" {
+        return Err(format!("tool provider is not MCP: {provider_id}"));
+    }
+    if !provider.enabled {
+        return Err(format!("MCP tool provider is disabled: {provider_id}"));
+    }
+    Ok(Vec::new())
 }
 
 #[tauri::command]

@@ -63,6 +63,36 @@ pub struct ApiProviderInput {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolProviderConfig {
+    pub provider_id: String,
+    pub source: String,
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    pub enabled: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpToolProviderInput {
+    pub provider_id: Option<String>,
+    pub display_name: String,
+    pub transport: String,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub url: Option<String>,
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelAssignmentRole {
     AgentChat,
@@ -87,6 +117,8 @@ pub struct AppPreferences {
     pub active_api_provider_id: Option<String>,
     #[serde(default)]
     pub api_provider_configs: Vec<ApiProviderConfig>,
+    #[serde(default = "default_tool_provider_configs")]
+    pub tool_provider_configs: Vec<ToolProviderConfig>,
     pub tool_enablement: HashMap<String, bool>,
 }
 
@@ -103,6 +135,7 @@ impl Default for AppPreferences {
             agent_model_mode: default_agent_model_mode(),
             active_api_provider_id: None,
             api_provider_configs: Vec::new(),
+            tool_provider_configs: default_tool_provider_configs(),
             tool_enablement: HashMap::new(),
         }
     }
@@ -135,6 +168,25 @@ fn default_file_path_kind() -> String {
 
 pub fn default_agent_model_mode() -> String {
     "local".to_string()
+}
+
+pub fn default_tool_provider_configs() -> Vec<ToolProviderConfig> {
+    vec![internal_tool_provider_config()]
+}
+
+fn internal_tool_provider_config() -> ToolProviderConfig {
+    ToolProviderConfig {
+        provider_id: "internal".to_string(),
+        source: "internal".to_string(),
+        display_name: "Internal Tools".to_string(),
+        transport: None,
+        command: None,
+        args: Vec::new(),
+        url: None,
+        enabled: true,
+        created_at: "system".to_string(),
+        updated_at: "system".to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -219,6 +271,19 @@ fn normalize_preferences(preferences: &mut AppPreferences) {
     for provider in &mut preferences.api_provider_configs {
         provider.has_api_key = None;
         provider.api_key_status = None;
+    }
+    ensure_internal_tool_provider_config(preferences);
+}
+
+fn ensure_internal_tool_provider_config(preferences: &mut AppPreferences) {
+    if !preferences
+        .tool_provider_configs
+        .iter()
+        .any(|provider| provider.provider_id == "internal")
+    {
+        preferences
+            .tool_provider_configs
+            .insert(0, internal_tool_provider_config());
     }
 }
 
@@ -433,6 +498,116 @@ pub fn delete_api_provider_config(
         preferences.active_api_provider_id = None;
     }
     Ok(removed)
+}
+
+pub fn upsert_mcp_tool_provider_config(
+    preferences: &mut AppPreferences,
+    input: McpToolProviderInput,
+) -> Result<ToolProviderConfig, String> {
+    let display_name = normalize_mcp_provider_display_name(&input.display_name)?;
+    let transport = normalize_mcp_provider_transport(&input.transport)?;
+    let command = normalize_mcp_provider_command(&transport, input.command.as_deref())?;
+    let url = normalize_mcp_provider_url(&transport, input.url.as_deref())?;
+    let args = input
+        .args
+        .into_iter()
+        .map(|arg| arg.trim().to_string())
+        .filter(|arg| !arg.is_empty())
+        .collect::<Vec<_>>();
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+    if let Some(provider_id) = input.provider_id.as_deref() {
+        if provider_id == "internal" {
+            return Err("internal tool provider cannot be modified".to_string());
+        }
+        let existing = preferences
+            .tool_provider_configs
+            .iter_mut()
+            .find(|provider| provider.provider_id == provider_id)
+            .ok_or_else(|| format!("unknown MCP tool provider id: {provider_id}"))?;
+        existing.source = "mcp".to_string();
+        existing.display_name = display_name;
+        existing.transport = Some(transport);
+        existing.command = command;
+        existing.args = args;
+        existing.url = url;
+        existing.enabled = input.enabled;
+        existing.updated_at = now;
+        return Ok(existing.clone());
+    }
+
+    let provider_id = Uuid::new_v4().to_string();
+    let config = ToolProviderConfig {
+        provider_id: provider_id.clone(),
+        source: "mcp".to_string(),
+        display_name,
+        transport: Some(transport),
+        command,
+        args,
+        url,
+        enabled: input.enabled,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    preferences.tool_provider_configs.push(config.clone());
+    Ok(config)
+}
+
+pub fn delete_mcp_tool_provider_config(
+    preferences: &mut AppPreferences,
+    provider_id: &str,
+) -> Result<ToolProviderConfig, String> {
+    if provider_id == "internal" {
+        return Err("internal tool provider cannot be deleted".to_string());
+    }
+    let index = preferences
+        .tool_provider_configs
+        .iter()
+        .position(|provider| provider.provider_id == provider_id)
+        .ok_or_else(|| format!("unknown MCP tool provider id: {provider_id}"))?;
+    let removed = preferences.tool_provider_configs.remove(index);
+    Ok(removed)
+}
+
+fn normalize_mcp_provider_display_name(display_name: &str) -> Result<String, String> {
+    let display_name = display_name.trim().to_string();
+    if display_name.is_empty() {
+        return Err("MCP provider display name is required".to_string());
+    }
+    Ok(display_name)
+}
+
+fn normalize_mcp_provider_transport(transport: &str) -> Result<String, String> {
+    let transport = transport.trim().to_ascii_lowercase();
+    if !matches!(transport.as_str(), "stdio" | "http") {
+        return Err(format!("unknown MCP provider transport: {transport}"));
+    }
+    Ok(transport)
+}
+
+fn normalize_mcp_provider_command(
+    transport: &str,
+    command: Option<&str>,
+) -> Result<Option<String>, String> {
+    if transport != "stdio" {
+        return Ok(None);
+    }
+    let command = command.unwrap_or("").trim().to_string();
+    if command.is_empty() {
+        return Err("MCP stdio provider command is required".to_string());
+    }
+    Ok(Some(command))
+}
+
+fn normalize_mcp_provider_url(
+    transport: &str,
+    url: Option<&str>,
+) -> Result<Option<String>, String> {
+    if transport != "http" {
+        return Ok(None);
+    }
+    let url = normalize_api_provider_base_url(url.unwrap_or(""))?;
+    Ok(Some(url))
 }
 
 pub fn load_preferences_with_model_recovery(

@@ -35,6 +35,17 @@ function preferencesViewWithSpeechModel(
       agentModelMode: "local",
       activeApiProviderId: null,
       apiProviderConfigs: [],
+      toolProviderConfigs: [
+        {
+          providerId: "internal",
+          source: "internal",
+          displayName: "Internal Tools",
+          args: [],
+          enabled: true,
+          createdAt: "system",
+          updatedAt: "system",
+        },
+      ],
       toolEnablement: {},
     },
     tools: [],

@@ -55,6 +55,28 @@ const view: PreferencesView = {
         updatedAt: "2026-05-24T00:00:00.000Z",
       },
     ],
+    toolProviderConfigs: [
+      {
+        providerId: "internal",
+        source: "internal",
+        displayName: "Internal Tools",
+        args: [],
+        enabled: true,
+        createdAt: "system",
+        updatedAt: "system",
+      },
+      {
+        providerId: "mcp-1",
+        source: "mcp",
+        displayName: "Docs MCP",
+        transport: "stdio",
+        command: "npx",
+        args: ["@example/docs-mcp"],
+        enabled: true,
+        createdAt: "2026-05-25T00:00:00.000Z",
+        updatedAt: "2026-05-25T00:00:00.000Z",
+      },
+    ],
     models: [
       {
         modelId: "model-1",
@@ -182,10 +204,13 @@ function renderPreferenceElements(
       onImportModel={() => undefined}
       onScanModelDirectory={() => undefined}
       onDeleteApiProvider={() => undefined}
+      onDeleteMcpToolProvider={() => undefined}
       onFetchApiProviderModels={() =>
         Promise.resolve({ ok: true, message: "", models: [] })
       }
+      onRefreshMcpToolProvider={() => undefined}
       onSaveApiProvider={() => undefined}
+      onSaveMcpToolProvider={() => undefined}
       onSetActiveApiProvider={() => undefined}
       onSetDefaultModel={() => undefined}
       onSetAgentModelMode={() => undefined}
@@ -401,10 +426,13 @@ describe("PreferencesDialog", () => {
         onImportModel={() => undefined}
         onScanModelDirectory={() => undefined}
         onDeleteApiProvider={() => undefined}
+        onDeleteMcpToolProvider={() => undefined}
         onFetchApiProviderModels={() =>
           Promise.resolve({ ok: true, message: "", models: [] })
         }
+        onRefreshMcpToolProvider={() => undefined}
         onSaveApiProvider={() => undefined}
+        onSaveMcpToolProvider={() => undefined}
         onSetActiveApiProvider={() => undefined}
         onSetDefaultModel={() => undefined}
         onSetAgentModelMode={() => undefined}

@@ -265,6 +265,30 @@ export type ApiProviderConfig = {
   updatedAt: string;
 };
 
+export type ToolProviderSource = "internal" | "mcp";
+
+export type McpTransport = "stdio" | "http";
+
+export type ToolProviderConfig = {
+  providerId: string;
+  source: ToolProviderSource;
+  displayName: string;
+  transport?: McpTransport;
+  command?: string;
+  args: string[];
+  url?: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type UnifiedToolSummary = {
+  toolId: string;
+  providerId: string;
+  name: string;
+  description: string;
+};
+
 export type ModelAssignments = {
   agentChatModelId: string | null;
   speechToTextModelId: string | null;
@@ -312,6 +336,7 @@ export type AppPreferences = {
   agentModelMode: AgentModelMode;
   activeApiProviderId: string | null;
   apiProviderConfigs: ApiProviderConfig[];
+  toolProviderConfigs: ToolProviderConfig[];
   toolEnablement: Record<string, boolean>;
 };
 

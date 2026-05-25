@@ -6,8 +6,9 @@ use alita_lib::preferences::{
     record_recent_project, recover_model_preferences, save_preferences_to_path,
     scan_model_directory, set_active_api_provider, set_agent_model_mode, set_default_model,
     set_model_assignment, set_model_storage_dir, speech_to_text_model_path,
-    summarize_tool_manifests, tool_enabled, upsert_api_provider_config, ApiProviderInput,
-    AppPreferences, ModelAssignmentRole, ModelEntry,
+    summarize_tool_manifests, tool_enabled, upsert_api_provider_config,
+    upsert_mcp_tool_provider_config, ApiProviderInput, AppPreferences, McpToolProviderInput,
+    ModelAssignmentRole, ModelEntry,
 };
 use std::fs;
 
@@ -40,6 +41,35 @@ fn default_preferences_have_schema_version_three_and_local_agent_mode() {
         .model_assignments
         .speech_to_text_model_id
         .is_none());
+    assert!(preferences
+        .tool_provider_configs
+        .iter()
+        .any(|provider| provider.provider_id == "internal"));
+}
+
+#[test]
+fn mcp_provider_config_does_not_store_secrets() {
+    let mut preferences = AppPreferences::default();
+    let provider = upsert_mcp_tool_provider_config(
+        &mut preferences,
+        McpToolProviderInput {
+            provider_id: None,
+            display_name: "Docs MCP".to_string(),
+            transport: "stdio".to_string(),
+            command: Some("npx".to_string()),
+            args: vec!["@example/docs-mcp".to_string()],
+            url: None,
+            enabled: true,
+        },
+    )
+    .unwrap();
+
+    let serialized = serde_json::to_string(&preferences).unwrap();
+
+    assert!(serialized.contains("Docs MCP"));
+    assert!(serialized.contains(&provider.provider_id));
+    assert!(!serialized.contains("token"));
+    assert!(!serialized.contains("secret"));
 }
 
 #[test]
