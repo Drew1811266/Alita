@@ -650,7 +650,7 @@ def test_attachment_generates_node_graph_for_document_task() -> None:
     parse_node = graph["nodes"][1]
     assert parse_node["nodeId"] == "document-parse"
     assert parse_node["displayName"] == "文档转 Markdown"
-    assert parse_node["toolRef"] == "document.markitdown_convert"
+    assert parse_node["toolRef"] == "internal:document.markitdown_convert"
     assert parse_node["outputPorts"][0]["label"] == "Markdown"
     assert graph["nodes"][0]["dependencies"] == []
     assert {
@@ -668,7 +668,7 @@ def test_attachment_generates_node_graph_for_document_task() -> None:
     ]
     typst_node = graph["nodes"][4]
     assert typst_node["nodeType"] == "fixed_tool"
-    assert typst_node["toolRef"] == "document.typst_compile"
+    assert typst_node["toolRef"] == "internal:document.typst_compile"
     assert typst_node["dependencies"] == ["content-organize", "report-generate"]
     assert {
         "id": "typst-export-file-export",

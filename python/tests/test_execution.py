@@ -1011,6 +1011,34 @@ def test_rejects_disabled_tool_nodes(tmp_path: Path) -> None:
     assert "document.receive_attachment" in events[-1].payload["error"]
 
 
+def test_accepts_unified_internal_tool_refs_for_existing_tools(tmp_path: Path) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("content", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source)
+    for node in request.graph.nodes:
+        if node.toolRef:
+            node.toolRef = f"internal:{node.toolRef}"
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert events[-1].type == "task.completed"
+
+
+def test_disabled_old_tool_id_blocks_unified_internal_tool_ref(tmp_path: Path) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("content", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source)
+    for node in request.graph.nodes:
+        if node.toolRef:
+            node.toolRef = f"internal:{node.toolRef}"
+    request.disabled_tool_ids = ["document.receive_attachment"]
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "tool_disabled"
+
+
 def test_disabled_tool_failure_emits_replan_suggestion(tmp_path: Path) -> None:
     source = tmp_path / "input.md"
     source.write_text("content", encoding="utf-8")

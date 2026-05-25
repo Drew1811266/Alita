@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 
 from agent_service.tool_registry import ToolRegistry
+from agent_service.tool_protocol import ToolSafetyPolicy, UnifiedToolDefinition
 from agent_service.tool_resolver import (
     ToolResolutionError,
     resolve_tool_binding,
+    resolve_tools_for_task,
 )
 
 
@@ -107,3 +109,58 @@ def test_resolver_rejects_missing_capability(tmp_path: Path) -> None:
             required_capability="image_generation",
             operation="convert_local_file",
         )
+
+
+def unified_tool(tool_id: str, capabilities: list[str]) -> UnifiedToolDefinition:
+    return UnifiedToolDefinition(
+        id=tool_id,
+        source="mcp" if tool_id.startswith("mcp:") else "internal",
+        provider_id="mcp-docs" if tool_id.startswith("mcp:") else "internal",
+        provider_tool_name=tool_id.rsplit(":", 1)[-1],
+        display_name=tool_id,
+        description=f"{tool_id} test tool",
+        capabilities=capabilities,
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        permissions=["read_project_files"],
+        safety_policy=ToolSafetyPolicy(
+            filesystem="project_read",
+            network="none",
+            user_approval="never",
+            secrets="none",
+            sandbox="not_required",
+            max_runtime_ms=60000,
+        ),
+        timeout_ms=60000,
+        examples=[],
+    )
+
+
+def test_resolver_filters_document_task_to_document_tools() -> None:
+    tools = [
+        unified_tool("internal:document.markitdown_convert", ["document_conversion"]),
+        unified_tool("mcp:docs:search_docs", ["external_mcp", "documentation_search"]),
+        unified_tool("internal:web.search", ["web_search"]),
+    ]
+
+    selected = resolve_tools_for_task(
+        tools,
+        task_text="Convert this uploaded docx into a markdown summary.",
+        disabled_tool_ids=[],
+        approved_permissions=[],
+    )
+
+    assert [tool.id for tool in selected] == ["internal:document.markitdown_convert"]
+
+
+def test_resolver_excludes_disabled_unified_tools() -> None:
+    tools = [unified_tool("internal:document.markitdown_convert", ["document_conversion"])]
+
+    selected = resolve_tools_for_task(
+        tools,
+        task_text="Convert a document.",
+        disabled_tool_ids=["internal:document.markitdown_convert"],
+        approved_permissions=[],
+    )
+
+    assert selected == []

@@ -43,6 +43,7 @@ from agent_service.tool_execution import (
     default_tool_packages_root,
 )
 from agent_service.tool_providers.web_search import default_search_provider
+from agent_service.tool_protocol import equivalent_tool_ids, provider_tool_id
 from agent_service.tool_registry import ToolRegistry
 from agent_service.web_research import (
     REPORT_SECTION_ORDER,
@@ -814,7 +815,7 @@ def run_graph_events(
     outputs.update(_source_outputs_for_mode(request))
 
     started_at = _now_iso()
-    disabled_tool_ids = set(request.disabled_tool_ids)
+    disabled_tool_ids = _expanded_tool_ids(request.disabled_tool_ids)
     gate = permission_gate or PermissionGate(
         approved_permissions=request.approved_permissions
     )
@@ -901,7 +902,7 @@ def run_graph_events(
                 node for node in selected_nodes if is_executable_node(node)
             ]
         for node in selected_nodes:
-            if node.toolRef and node.toolRef in disabled_tool_ids:
+            if node.toolRef and equivalent_tool_ids(node.toolRef) & disabled_tool_ids:
                 completed_at = _now_iso()
                 error = HarnessError("tool_disabled", f"tool disabled: {node.toolRef}")
                 payload = harness_error_payload(error)
@@ -1449,8 +1450,9 @@ def _validate_graph_tools(request: RunGraphRequest, registry: ToolRegistry) -> N
             "web.fetch.sources",
         }:
             continue
+        registry_tool_id = provider_tool_id(node.toolRef)
         try:
-            registry.get(node.toolRef)
+            registry.get(registry_tool_id)
         except KeyError as error:
             raise HarnessError(
                 "unsupported_tool",
@@ -1475,10 +1477,19 @@ def _unsupported_tool_node(
         (
             node
             for node in request.graph.nodes
-            if node.nodeType == "fixed_tool" and node.toolRef == tool_ref
+            if node.nodeType == "fixed_tool"
+            and node.toolRef
+            and equivalent_tool_ids(node.toolRef) & equivalent_tool_ids(tool_ref)
         ),
         None,
     )
+
+
+def _expanded_tool_ids(tool_ids: list[str]) -> set[str]:
+    expanded: set[str] = set()
+    for tool_id in tool_ids:
+        expanded.update(equivalent_tool_ids(tool_id))
+    return expanded
 
 
 def _is_research_graph(request: RunGraphRequest) -> bool:

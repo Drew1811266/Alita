@@ -110,9 +110,9 @@ def test_compile_document_task_graph_to_existing_node_graph_shape() -> None:
         assert node["artifactRefs"] == []
         assert node["retryCount"] == 0
 
-    assert nodes_by_id["document-input"]["toolRef"] == "document.receive_attachment"
-    assert nodes_by_id["document-parse"]["toolRef"] == "document.markitdown_convert"
-    assert nodes_by_id["typst-export"]["toolRef"] == "document.typst_compile"
+    assert nodes_by_id["document-input"]["toolRef"] == "internal:document.receive_attachment"
+    assert nodes_by_id["document-parse"]["toolRef"] == "internal:document.markitdown_convert"
+    assert nodes_by_id["typst-export"]["toolRef"] == "internal:document.typst_compile"
     assert (
         nodes_by_id["content-organize"]["modelRef"] == "local-content-organizer"
     )

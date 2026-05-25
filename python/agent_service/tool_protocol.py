@@ -112,3 +112,22 @@ class ToolProvider(Protocol):
 
     def call_tool(self, invocation: UnifiedToolInvocation) -> UnifiedToolResult:
         raise NotImplementedError
+
+
+def normalize_tool_id(tool_id: str) -> str:
+    if tool_id.startswith("internal:") or tool_id.startswith("mcp:"):
+        return tool_id
+    return f"internal:{tool_id}"
+
+
+def provider_tool_id(tool_id: str) -> str:
+    if tool_id.startswith("internal:"):
+        return tool_id.removeprefix("internal:")
+    return tool_id
+
+
+def equivalent_tool_ids(tool_id: str) -> set[str]:
+    normalized = normalize_tool_id(tool_id)
+    if normalized.startswith("internal:"):
+        return {normalized, normalized.removeprefix("internal:")}
+    return {normalized}
