@@ -289,6 +289,12 @@ export type UnifiedToolSummary = {
   description: string;
 };
 
+export type AlitaMcpServerConfig = {
+  enabled: boolean;
+  allowedToolIds: string[];
+  requireLocalAuth: boolean;
+};
+
 export type ModelAssignments = {
   agentChatModelId: string | null;
   speechToTextModelId: string | null;
@@ -337,6 +343,7 @@ export type AppPreferences = {
   activeApiProviderId: string | null;
   apiProviderConfigs: ApiProviderConfig[];
   toolProviderConfigs: ToolProviderConfig[];
+  alitaMcpServer: AlitaMcpServerConfig;
   toolEnablement: Record<string, boolean>;
 };
 

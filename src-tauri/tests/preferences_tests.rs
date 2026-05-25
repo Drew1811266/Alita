@@ -45,6 +45,9 @@ fn default_preferences_have_schema_version_three_and_local_agent_mode() {
         .tool_provider_configs
         .iter()
         .any(|provider| provider.provider_id == "internal"));
+    assert!(!preferences.alita_mcp_server.enabled);
+    assert!(preferences.alita_mcp_server.allowed_tool_ids.is_empty());
+    assert!(preferences.alita_mcp_server.require_local_auth);
 }
 
 #[test]

@@ -190,6 +190,16 @@ Will it rain in Boston?
 
 执行器会校验工具启用状态、路径边界、权限、运行结果和产物。
 
+当前工具协议已升级为 Unified Tool Gateway：
+
+- 内部工具和外部 MCP 工具会进入统一工具目录。
+- 内部工具仍由 Alita 自己的安全网关执行，不直接改造成 MCP server。
+- 外部 MCP server 作为 tool provider 接入，发现到的工具会映射为 Alita 节点工具。
+- 模型供应商的 tool/function calling 通过 adapter 从统一工具定义转换，不让业务层绑定某一家 API 格式。
+- 可选的 Alita MCP Server 默认关闭，只能暴露白名单工具，并且外部调用仍然经过 Unified Tool Gateway。
+
+工具和 MCP provider 的非敏感配置保存在首选项中。API Key、MCP token 等敏感信息必须保存在系统凭据库，不写入 `.alita` 工程文件、`preferences.json`、运行历史或日志。
+
 ### 8. 语音输入和本地 ASR
 
 前端支持录音输入。录音结束后：

@@ -34,6 +34,18 @@ class RunJournal:
             if path.name != "run.json"
         ]
 
+    def write_audit_event(self, payload: dict[str, Any]) -> None:
+        events = self.read_audit_events()
+        events.append(payload)
+        self._write_json(self.base_dir / "audit.json", {"events": events})
+
+    def read_audit_events(self) -> list[dict[str, Any]]:
+        path = self.base_dir / "audit.json"
+        if not path.exists():
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return list(payload.get("events", []))
+
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),

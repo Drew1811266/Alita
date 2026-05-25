@@ -52,6 +52,11 @@ const preferencesView: PreferencesView = {
         updatedAt: "system",
       },
     ],
+    alitaMcpServer: {
+      enabled: false,
+      allowedToolIds: [],
+      requireLocalAuth: true,
+    },
     toolEnablement: {},
   },
   tools: [],

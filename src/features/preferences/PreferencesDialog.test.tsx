@@ -77,6 +77,11 @@ const view: PreferencesView = {
         updatedAt: "2026-05-25T00:00:00.000Z",
       },
     ],
+    alitaMcpServer: {
+      enabled: false,
+      allowedToolIds: [],
+      requireLocalAuth: true,
+    },
     models: [
       {
         modelId: "model-1",

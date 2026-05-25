@@ -93,6 +93,24 @@ pub struct McpToolProviderInput {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AlitaMcpServerConfig {
+    pub enabled: bool,
+    pub allowed_tool_ids: Vec<String>,
+    pub require_local_auth: bool,
+}
+
+impl Default for AlitaMcpServerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allowed_tool_ids: Vec::new(),
+            require_local_auth: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelAssignmentRole {
     AgentChat,
@@ -119,6 +137,8 @@ pub struct AppPreferences {
     pub api_provider_configs: Vec<ApiProviderConfig>,
     #[serde(default = "default_tool_provider_configs")]
     pub tool_provider_configs: Vec<ToolProviderConfig>,
+    #[serde(default)]
+    pub alita_mcp_server: AlitaMcpServerConfig,
     pub tool_enablement: HashMap<String, bool>,
 }
 
@@ -136,6 +156,7 @@ impl Default for AppPreferences {
             active_api_provider_id: None,
             api_provider_configs: Vec::new(),
             tool_provider_configs: default_tool_provider_configs(),
+            alita_mcp_server: AlitaMcpServerConfig::default(),
             tool_enablement: HashMap::new(),
         }
     }

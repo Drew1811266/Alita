@@ -46,6 +46,11 @@ function preferencesViewWithSpeechModel(
           updatedAt: "system",
         },
       ],
+      alitaMcpServer: {
+        enabled: false,
+        allowedToolIds: [],
+        requireLocalAuth: true,
+      },
       toolEnablement: {},
     },
     tools: [],
