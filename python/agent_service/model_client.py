@@ -48,6 +48,7 @@ class AgentModelClientConfig:
     api_key: str | None = None
     provider_display_name: str = "API provider"
     timeout_seconds: float = 60.0
+    supports_native_tool_calls: bool = False
 
     @classmethod
     def from_env(cls) -> "AgentModelClientConfig":
@@ -61,6 +62,7 @@ class AgentModelClientConfig:
                 model=os.getenv("ALITA_API_MODEL", "").strip(),
                 api_key=api_key,
                 provider_display_name=os.getenv("ALITA_API_PROVIDER_NAME", "API provider"),
+                supports_native_tool_calls=_env_flag("ALITA_API_NATIVE_TOOL_CALLS"),
             )
         llama = ModelClientConfig.from_env()
         return cls(
@@ -69,6 +71,7 @@ class AgentModelClientConfig:
             base_url=llama.base_url,
             model=llama.model,
             timeout_seconds=llama.timeout_seconds,
+            supports_native_tool_calls=False,
         )
 
 
@@ -80,6 +83,10 @@ class ModelRuntimeRequestFailed(RuntimeError):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 Transport = Callable[[str, dict, float], dict]

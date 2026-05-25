@@ -73,6 +73,19 @@ def test_agent_model_config_uses_api_env(monkeypatch) -> None:
     assert config.model == "gpt-4.1"
     assert config.api_key == "sk-test"
     assert config.provider_display_name == "OpenAI"
+    assert config.supports_native_tool_calls is False
+
+
+def test_agent_model_config_can_enable_native_tool_calls(monkeypatch) -> None:
+    monkeypatch.setenv("ALITA_AGENT_MODEL_MODE", "api")
+    monkeypatch.setenv("ALITA_API_KEY", "sk-test")
+    monkeypatch.setenv("ALITA_API_BASE_URL", "https://api.openai.com/v1/")
+    monkeypatch.setenv("ALITA_API_MODEL", "gpt-4.1")
+    monkeypatch.setenv("ALITA_API_NATIVE_TOOL_CALLS", "true")
+
+    config = AgentModelClientConfig.from_env()
+
+    assert config.supports_native_tool_calls is True
 
 
 def test_disabled_model_client_rejects_chat_calls() -> None:
