@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use alita_lib::agent_client;
 use alita_lib::agent_client::{
     AgentAttachment, AgentMessageRequest, AsrStatusResponse, AsrTranscriptionRequest, InquiryChoice,
 };
@@ -265,6 +266,167 @@ fn transcribe_asr_audio_sends_auth_header_and_json_body() {
     assert_eq!(body["modelPath"], "C:\\Models\\Qwen3-ASR-1.7B");
 }
 
+#[test]
+fn register_model_session_sends_auth_header_and_model_config() {
+    let (base_url, server) = spawn_test_server(r#"{"modelSessionId":"session-1"}"#);
+    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-session");
+    let request = agent_client::RegisterModelSessionRequest {
+        model_config: serde_json::json!({
+            "mode": "api",
+            "providerId": "provider-1",
+            "providerType": "openai",
+            "displayName": "OpenAI",
+            "baseUrl": "https://api.openai.com/v1",
+            "model": "gpt-4.1",
+            "apiKey": "sk-test"
+        }),
+    };
+
+    let response = tauri::async_runtime::block_on(client.register_model_session(&request))
+        .expect("model session request should succeed");
+    let captured = server.join().expect("server should capture request");
+    let body: serde_json::Value =
+        serde_json::from_str(&captured.body).expect("request body should be JSON");
+
+    assert_eq!(response.model_session_id, "session-1");
+    assert_eq!(captured.method, "POST");
+    assert_eq!(captured.path, "/agent/model/session");
+    assert_eq!(
+        captured.header(agent_client::sidecar_token_header()),
+        Some("token-session")
+    );
+    assert_eq!(body["modelConfig"]["apiKey"], "sk-test");
+}
+
+#[test]
+fn register_model_session_debug_redacts_api_key_fields() {
+    let request = agent_client::RegisterModelSessionRequest {
+        model_config: serde_json::json!({
+            "mode": "api",
+            "apiKey": "sk-sensitive",
+            "nested": {
+                "api_key": "sk-sensitive-underscore",
+                "model": "gpt-4.1"
+            }
+        }),
+    };
+
+    let debug = format!("{request:?}");
+
+    assert!(!debug.contains("sk-sensitive"));
+    assert!(!debug.contains("sk-sensitive-underscore"));
+    assert!(debug.contains("<redacted>"));
+    assert!(debug.contains("gpt-4.1"));
+}
+
+#[test]
+fn register_model_session_omits_json_error_body_with_api_key_fields() {
+    let error_body = r#"{"detail":[{"loc":["body","modelConfig"],"input":{"apiKey":"sk-leaked","nested":{"api_key":"sk-leaked-underscore","model":"gpt-4.1"}}}]}"#;
+    let (base_url, server) = spawn_test_server_with_status("422 Unprocessable Entity", error_body);
+    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-session");
+    let request = agent_client::RegisterModelSessionRequest {
+        model_config: serde_json::json!({
+            "mode": "api",
+            "providerId": "provider-1",
+            "providerType": "openai",
+            "displayName": "OpenAI",
+            "baseUrl": "https://api.openai.com/v1",
+            "model": "gpt-4.1",
+            "apiKey": "sk-test"
+        }),
+    };
+
+    let error = tauri::async_runtime::block_on(client.register_model_session(&request))
+        .expect_err("model session request should fail");
+    let _captured = server.join().expect("server should capture request");
+
+    assert!(!error.contains("sk-leaked"));
+    assert!(!error.contains("sk-leaked-underscore"));
+    assert!(!error.contains("gpt-4.1"));
+    assert_eq!(
+        error,
+        "model session request failed with status 422 Unprocessable Entity"
+    );
+}
+
+#[test]
+fn register_model_session_omits_json_detail_string_with_api_key() {
+    let error_body = r#"{"detail":"invalid apiKey sk-sensitive"}"#;
+    let (base_url, server) = spawn_test_server_with_status("422 Unprocessable Entity", error_body);
+    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-session");
+    let request = agent_client::RegisterModelSessionRequest {
+        model_config: serde_json::json!({
+            "mode": "api",
+            "baseUrl": "https://api.openai.com/v1",
+            "model": "gpt-4.1",
+            "apiKey": "sk-test"
+        }),
+    };
+
+    let error = tauri::async_runtime::block_on(client.register_model_session(&request))
+        .expect_err("model session request should fail");
+    let _captured = server.join().expect("server should capture request");
+
+    assert!(!error.contains("sk-sensitive"));
+    assert!(!error.contains("invalid apiKey"));
+    assert_eq!(
+        error,
+        "model session request failed with status 422 Unprocessable Entity"
+    );
+}
+
+#[test]
+fn register_model_session_omits_json_string_body_with_api_key() {
+    let error_body = r#""apiKey=sk-sensitive""#;
+    let (base_url, server) = spawn_test_server_with_status("422 Unprocessable Entity", error_body);
+    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-session");
+    let request = agent_client::RegisterModelSessionRequest {
+        model_config: serde_json::json!({
+            "mode": "api",
+            "baseUrl": "https://api.openai.com/v1",
+            "model": "gpt-4.1",
+            "apiKey": "sk-test"
+        }),
+    };
+
+    let error = tauri::async_runtime::block_on(client.register_model_session(&request))
+        .expect_err("model session request should fail");
+    let _captured = server.join().expect("server should capture request");
+
+    assert!(!error.contains("sk-sensitive"));
+    assert!(!error.contains("apiKey="));
+    assert_eq!(
+        error,
+        "model session request failed with status 422 Unprocessable Entity"
+    );
+}
+
+#[test]
+fn register_model_session_omits_non_json_error_body_with_api_key() {
+    let error_body = "validation failed for apiKey=sk-plain-text";
+    let (base_url, server) = spawn_test_server_with_status("502 Bad Gateway", error_body);
+    let client = agent_client::AgentClient::new(base_url).with_auth_token("token-session");
+    let request = agent_client::RegisterModelSessionRequest {
+        model_config: serde_json::json!({
+            "mode": "api",
+            "baseUrl": "https://api.openai.com/v1",
+            "model": "gpt-4.1",
+            "apiKey": "sk-test"
+        }),
+    };
+
+    let error = tauri::async_runtime::block_on(client.register_model_session(&request))
+        .expect_err("model session request should fail");
+    let _captured = server.join().expect("server should capture request");
+
+    assert!(!error.contains("sk-plain-text"));
+    assert!(!error.contains("apiKey=sk"));
+    assert_eq!(
+        error,
+        "model session request failed with status 502 Bad Gateway"
+    );
+}
+
 #[derive(Debug)]
 struct CapturedRequest {
     method: String,
@@ -284,6 +446,13 @@ impl CapturedRequest {
 }
 
 fn spawn_test_server(response_body: &'static str) -> (String, JoinHandle<CapturedRequest>) {
+    spawn_test_server_with_status("200 OK", response_body)
+}
+
+fn spawn_test_server_with_status(
+    status: &'static str,
+    response_body: &'static str,
+) -> (String, JoinHandle<CapturedRequest>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
     let address = listener
         .local_addr()
@@ -292,7 +461,7 @@ fn spawn_test_server(response_body: &'static str) -> (String, JoinHandle<Capture
         let (mut stream, _) = listener.accept().expect("server should accept request");
         let request = read_http_request(&mut stream);
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             response_body.len(),
             response_body
         );

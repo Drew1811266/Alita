@@ -15,6 +15,7 @@ export type SubmitMessagePayload = {
   hasRunHistory?: boolean;
   artifactRefs?: string[];
   pendingChoice?: Record<string, unknown>;
+  modelSessionId?: string | null;
 };
 
 export type ResearchChoiceSubmitActionPayload = Omit<
@@ -43,6 +44,7 @@ export type RunNodeGraphPayload = {
   mode: RunNodeGraphMode;
   disabledToolIds?: string[];
   approvedPermissions?: string[];
+  modelSessionId?: string | null;
   signal?: AbortSignal;
 };
 
@@ -54,7 +56,7 @@ export type RunNodeGraphMode =
 export async function submitUserMessage(
   payload: SubmitMessagePayload,
 ): Promise<BackendEvent[]> {
-  if (isTauriRuntime()) {
+  if (isTauriRuntime() && payload.modelSessionId == null) {
     return invoke<BackendEvent[]>("submit_user_message", { payload });
   }
 
@@ -158,6 +160,7 @@ export async function runNodeGraphStream(
       mode: toSidecarRunMode(payload.mode),
       disabled_tool_ids: payload.disabledToolIds ?? [],
       approved_permissions: payload.approvedPermissions ?? [],
+      model_session_id: payload.modelSessionId ?? null,
       attachments: payload.attachments.map(toSidecarAttachment),
     }),
   });
@@ -279,6 +282,7 @@ function toSidecarMessage(payload: SubmitMessagePayload) {
   return {
     task_id: payload.taskId,
     content: payload.content,
+    model_session_id: payload.modelSessionId ?? null,
     attachments: payload.attachments.map(toSidecarAttachment),
     ...(payload.inquiryChoice ? { inquiry_choice: payload.inquiryChoice } : {}),
     ...(payload.currentGraph ? { current_graph: payload.currentGraph } : {}),
@@ -289,6 +293,8 @@ function toSidecarMessage(payload: SubmitMessagePayload) {
     ...(payload.pendingChoice ? { pending_choice: payload.pendingChoice } : {}),
   };
 }
+
+export const toSidecarMessageForTest = toSidecarMessage;
 
 async function readSseResponse(
   response: Response,

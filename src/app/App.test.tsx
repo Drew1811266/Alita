@@ -22,7 +22,7 @@ function preferencesViewWithSpeechModel(
 ): PreferencesView {
   return {
     preferences: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       recentProjects: [],
       modelDirectories: [],
       modelStorageDir: "D:\\Models",
@@ -32,6 +32,9 @@ function preferencesViewWithSpeechModel(
         agentChatModelId: null,
         speechToTextModelId,
       },
+      agentModelMode: "local",
+      activeApiProviderId: null,
+      apiProviderConfigs: [],
       toolEnablement: {},
     },
     tools: [],

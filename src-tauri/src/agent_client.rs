@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentAttachment {
@@ -37,6 +38,30 @@ pub enum InquiryChoice {
 pub struct AgentEvent {
     pub r#type: String,
     pub payload: serde_json::Value,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterModelSessionRequest {
+    pub model_config: serde_json::Value,
+}
+
+impl fmt::Debug for RegisterModelSessionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RegisterModelSessionRequest")
+            .field(
+                "model_config",
+                &redact_model_session_secrets(&self.model_config),
+            )
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterModelSessionResponse {
+    pub model_session_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,6 +138,34 @@ impl AgentClient {
             .map_err(|error| format!("invalid agent response: {error}"))
     }
 
+    pub async fn register_model_session(
+        &self,
+        request: &RegisterModelSessionRequest,
+    ) -> Result<RegisterModelSessionResponse, String> {
+        let url = format!(
+            "{}/agent/model/session",
+            self.base_url.trim_end_matches('/')
+        );
+        let mut request_builder = self.http.post(url).json(request);
+        if let Some(token) = &self.auth_token {
+            request_builder = request_builder.header(sidecar_token_header(), token);
+        }
+
+        let response = request_builder
+            .send()
+            .await
+            .map_err(|error| format!("model session request failed: {error}"))?;
+
+        if !response.status().is_success() {
+            return Err(model_session_error_message(response.status()));
+        }
+
+        response
+            .json::<RegisterModelSessionResponse>()
+            .await
+            .map_err(|error| format!("invalid model session response: {error}"))
+    }
+
     pub async fn get_asr_status(&self) -> Result<AsrStatusResponse, String> {
         self.get_asr_status_for_model(None).await
     }
@@ -175,10 +228,40 @@ pub fn sidecar_token_header() -> &'static str {
     "X-Alita-Sidecar-Token"
 }
 
+fn model_session_error_message(status: reqwest::StatusCode) -> String {
+    format!("model session request failed with status {status}")
+}
+
 async fn sidecar_error_message(response: reqwest::Response, label: &str) -> String {
     let status = response.status();
     match response.text().await {
         Ok(body) if !body.trim().is_empty() => format!("{label} returned {status}: {body}"),
         _ => format!("{label} returned {status}"),
     }
+}
+
+fn redact_model_session_secrets(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(redact_model_session_secrets).collect())
+        }
+        serde_json::Value::Object(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| {
+                    let redacted_value = if is_model_session_secret_key(key) {
+                        serde_json::Value::String("<redacted>".to_string())
+                    } else {
+                        redact_model_session_secrets(value)
+                    };
+                    (key.clone(), redacted_value)
+                })
+                .collect(),
+        ),
+        _ => value.clone(),
+    }
+}
+
+fn is_model_session_secret_key(key: &str) -> bool {
+    key == "apiKey" || key == "api_key"
 }

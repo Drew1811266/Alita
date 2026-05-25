@@ -17,12 +17,16 @@ from agent_service.asr import (
 )
 from agent_service.execution import run_graph_events
 from agent_service.graph import run_agent, stream_agent_events
+from agent_service.model_client import AgentModelClientConfig, create_model_client
+from agent_service.model_sessions import DEFAULT_MODEL_SESSION_REGISTRY
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY
 from agent_service.schemas import (
     AgentEvent,
     AgentMessageRequest,
     CancelRunRequest,
     GraphNode,
+    RegisterModelSessionRequest,
+    RegisterModelSessionResponse,
     ResearchChoiceRequest,
     RunGraphRequest,
     ScriptApprovalRequest,
@@ -81,11 +85,21 @@ def asr_transcribe(
         ) from error
 
 
+@app.post("/agent/model/session", response_model=RegisterModelSessionResponse)
+def register_model_session(
+    request: RegisterModelSessionRequest,
+    _auth: None = Depends(require_sidecar_token),
+) -> RegisterModelSessionResponse:
+    session_id = DEFAULT_MODEL_SESSION_REGISTRY.register(request.model_config_value)
+    return RegisterModelSessionResponse(modelSessionId=session_id)
+
+
 @app.post("/agent/message", response_model=list[AgentEvent])
 def agent_message(
     request: AgentMessageRequest,
     _auth: None = Depends(require_sidecar_token),
 ) -> list[AgentEvent]:
+    model_client = _model_client_for_session(request.model_session_id)
     return run_agent(
         request.to_user_message(),
         inquiry_choice=request.inquiry_choice,
@@ -93,6 +107,7 @@ def agent_message(
         has_run_history=bool(request.hasRunHistory),
         artifact_refs=request.artifactRefs,
         pending_choice=request.pendingChoice,
+        model_client=model_client,
     )
 
 
@@ -101,6 +116,7 @@ def research_choose(
     request: ResearchChoiceRequest,
     _auth: None = Depends(require_sidecar_token),
 ) -> list[AgentEvent]:
+    model_client = _model_client_for_session(request.model_session_id)
     return run_agent(
         request.to_user_message(),
         inquiry_choice=request.inquiry_choice,
@@ -108,6 +124,7 @@ def research_choose(
         has_run_history=bool(request.hasRunHistory),
         artifact_refs=request.artifactRefs,
         pending_choice=request.pendingChoice,
+        model_client=model_client,
     )
 
 
@@ -116,8 +133,9 @@ def agent_message_stream(
     request: AgentMessageRequest,
     _auth: None = Depends(require_sidecar_token),
 ) -> StreamingResponse:
+    model_client = _model_client_for_session(request.model_session_id)
     return StreamingResponse(
-        _serialize_sse_events(request),
+        _serialize_sse_events(request, model_client=model_client),
         media_type="text/event-stream",
     )
 
@@ -127,8 +145,9 @@ def graph_run_stream(
     request: RunGraphRequest,
     _auth: None = Depends(require_sidecar_token),
 ) -> StreamingResponse:
+    model_client = _model_client_for_session(request.model_session_id)
     return StreamingResponse(
-        _serialize_graph_sse_events(request),
+        _serialize_graph_sse_events(request, model_client=model_client),
         media_type="text/event-stream",
     )
 
@@ -182,7 +201,36 @@ def reject_temporary_script(
     return [_graph_snapshot_event(graph, "Temporary script rejected.")]
 
 
-def _serialize_sse_events(request: AgentMessageRequest):
+def _model_client_for_session(model_session_id: str | None):
+    if model_session_id is None:
+        return create_model_client()
+    session_id = model_session_id.strip()
+    if not session_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Agent model session expired or was not found",
+        )
+    config = DEFAULT_MODEL_SESSION_REGISTRY.consume(session_id)
+    if config is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Agent model session expired or was not found",
+        )
+    return create_model_client(
+        AgentModelClientConfig(
+            mode=config.mode,
+            enabled=True,
+            base_url=config.base_url,
+            model=config.model,
+            api_key=config.api_key,
+            provider_display_name=config.display_name
+            or config.provider_type
+            or "API provider",
+        )
+    )
+
+
+def _serialize_sse_events(request: AgentMessageRequest, *, model_client):
     for event in stream_agent_events(
         request.to_user_message(),
         inquiry_choice=request.inquiry_choice,
@@ -190,12 +238,17 @@ def _serialize_sse_events(request: AgentMessageRequest):
         has_run_history=bool(request.hasRunHistory),
         artifact_refs=request.artifactRefs,
         pending_choice=request.pendingChoice,
+        model_client=model_client,
     ):
         yield f"data: {event.model_dump_json()}\n\n"
 
 
-def _serialize_graph_sse_events(request: RunGraphRequest):
-    for event in run_graph_events(request, registry=DEFAULT_RUN_REGISTRY):
+def _serialize_graph_sse_events(request: RunGraphRequest, *, model_client):
+    for event in run_graph_events(
+        request,
+        model_client=model_client,
+        registry=DEFAULT_RUN_REGISTRY,
+    ):
         yield f"data: {event.model_dump_json()}\n\n"
 
 

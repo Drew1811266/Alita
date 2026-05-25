@@ -65,7 +65,7 @@ npm run llama:install
 .\scripts\install-llama-cpp.ps1 -Backend cpu
 ```
 
-常规本地模型配置入口是 Preferences 里的 `模型库`：Agent 模型选择 GGUF 文件，语音转文字模型选择 Qwen3-ASR-1.7B 模型目录。开发时仍可用环境变量覆盖本机路径。
+常规本地模型配置入口是 Preferences 里的 `模型库`：Agent 模型选择 GGUF 文件，语音转文字模型选择 Qwen3-ASR-1.7B 模型目录。Agent 也可以在 Preferences 的 `Agent 模型配置` 中切换到 API 模型模式，API provider 的密钥保存在系统凭据库，非敏感配置保存在本机首选项。开发时仍可用环境变量覆盖本机路径。
 
 配置 Agent 模型路径后，软件启动时会自动拉起 `llama-server.exe`：
 

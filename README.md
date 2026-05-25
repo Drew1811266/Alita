@@ -203,7 +203,7 @@ Will it rain in Boston?
 
 ### 9. 统一模型库和首选项
 
-首选项中维护统一模型库，目前支持两类模型：
+首选项中维护模型库和 Agent 模型来源，目前支持两类本地模型：
 
 - Agent LLM：GGUF 文件，runtime 为 `llama_cpp`。
 - Speech-to-text：Qwen ASR 模型目录，runtime 为 `qwen_asr`。
@@ -218,6 +218,12 @@ Will it rain in Boston?
 - 设置当前语音转文字模型。
 - 配置模型存储目录。
 - 启用或禁用工具节点。
+
+`首选项 -> Agent 模型配置` 可以在 `本地模型` 和 `API 模型` 间切换当前 Agent 模型来源。API 模型支持 OpenAI-compatible 接口，预设包含 OpenAI、DeepSeek、Kimi、GLM、MiniMax，也支持自定义兼容接口。
+
+API provider 的 Base URL、模型名、启用状态等非敏感配置保存在本机首选项中；API Key 保存在系统凭据库，不写入 `.alita` 工程文件或 `preferences.json`。保存后的 key 不会在界面中回显；如果更改 provider type 或 Base URL，需要重新输入 key，避免旧 key 被绑定到新的 endpoint。
+
+第一版 API Agent 模型只覆盖通用文本聊天与流式输出。工具调用、结构化输出、多模态输入输出以及供应商专有能力不在第一版范围内。
 
 首选项保存在用户应用配置目录，不写入 `.alita` 工程文件。
 
