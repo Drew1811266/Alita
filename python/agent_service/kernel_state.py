@@ -41,6 +41,8 @@ class AgentRunState(BaseModel):
 def build_agent_run_state(
     message: UserMessage,
     *,
+    goal_spec: GoalSpec | None = None,
+    route_decision: dict[str, Any] | None = None,
     run_id: str | None = None,
     current_graph: RunGraph | None = None,
     execution_mode: ExecutionMode = "message",
@@ -53,14 +55,18 @@ def build_agent_run_state(
     budget: AgentRunBudget | None = None,
     journal_ref: str | None = None,
 ) -> AgentRunState:
-    goal_spec = parse_goal_spec(message)
-    route_decision = classify_route(message).to_payload()
+    effective_goal_spec = goal_spec or parse_goal_spec(message)
+    effective_route_decision = dict(
+        route_decision
+        if route_decision is not None
+        else classify_route(message).to_payload()
+    )
     return AgentRunState(
         task_id=message.task_id,
         run_id=run_id,
         message=message,
-        goal_spec=goal_spec,
-        route_decision=route_decision,
+        goal_spec=effective_goal_spec,
+        route_decision=effective_route_decision,
         current_graph=current_graph,
         execution_mode=execution_mode,
         model_session_id=model_session_id or message.model_session_id,

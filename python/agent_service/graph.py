@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from collections.abc import Iterator
 import re
-from typing import Literal, Protocol, TypedDict
+from typing import Any, Literal, Protocol, TypedDict
 from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
@@ -102,16 +102,28 @@ class AgentState(TypedDict, total=False):
     kernel_state: object
 
 
-def classify_intent(state: AgentState) -> AgentState:
-    decision = classify_route(state["message"])
-    goal_spec = parse_goal_spec(state["message"])
+def _effective_route_context(
+    message: UserMessage,
+    *,
+    inquiry_choice: InquiryChoice | None = None,
+) -> tuple[RouteDecision, AgentIntent, GoalSpec]:
+    decision = classify_route(message)
+    goal_spec = parse_goal_spec(message)
     intent = _compatible_intent(
-        state["message"],
+        message,
         decision,
-        inquiry_choice=state.get("inquiry_choice"),
+        inquiry_choice=inquiry_choice,
         goal_spec=goal_spec,
     )
-    goal_spec = _goal_spec_for_intent(state["message"], goal_spec, intent)
+    goal_spec = _goal_spec_for_intent(message, goal_spec, intent)
+    return decision, intent, goal_spec
+
+
+def classify_intent(state: AgentState) -> AgentState:
+    decision, intent, goal_spec = _effective_route_context(
+        state["message"],
+        inquiry_choice=state.get("inquiry_choice"),
+    )
     return {
         **state,
         "intent": intent,
@@ -439,8 +451,9 @@ def run_agent(
             )
         ]
 
-    kernel_state = build_agent_run_state(
+    kernel_state = _build_effective_kernel_state(
         message,
+        inquiry_choice=inquiry_choice,
         current_graph=current_graph,
         execution_mode="message",
         model_session_id=message.model_session_id,
@@ -464,6 +477,42 @@ def run_agent(
         }
     )
     return result["events"]
+
+
+def _build_effective_kernel_state(
+    message: UserMessage,
+    *,
+    inquiry_choice: InquiryChoice | None = None,
+    run_id: str | None = None,
+    current_graph: RunGraph | None = None,
+    execution_mode: Literal["message", "stream", "graph_run"] = "message",
+    model_session_id: str | None = None,
+    disabled_tool_ids: list[str] | None = None,
+    approved_permissions: list[str] | None = None,
+    has_run_history: bool = False,
+    artifact_refs: list[str] | None = None,
+    pending_choice: dict[str, Any] | None = None,
+    journal_ref: str | None = None,
+) -> object:
+    decision, _intent, goal_spec = _effective_route_context(
+        message,
+        inquiry_choice=inquiry_choice,
+    )
+    return build_agent_run_state(
+        message,
+        goal_spec=goal_spec,
+        route_decision=decision.to_payload(),
+        run_id=run_id,
+        current_graph=current_graph,
+        execution_mode=execution_mode,
+        model_session_id=model_session_id,
+        disabled_tool_ids=disabled_tool_ids,
+        approved_permissions=approved_permissions,
+        has_run_history=has_run_history,
+        artifact_refs=artifact_refs,
+        pending_choice=pending_choice,
+        journal_ref=journal_ref,
+    )
 
 
 def stream_agent_events(
@@ -492,8 +541,9 @@ def stream_agent_events(
         )
         return
 
-    kernel_state = build_agent_run_state(
+    kernel_state = _build_effective_kernel_state(
         message,
+        inquiry_choice=inquiry_choice,
         current_graph=current_graph,
         execution_mode="stream",
         model_session_id=message.model_session_id,
@@ -503,15 +553,10 @@ def stream_agent_events(
     )
     _ = kernel_state
 
-    decision = classify_route(message)
-    goal_spec = parse_goal_spec(message)
-    intent = _compatible_intent(
+    _decision, intent, goal_spec = _effective_route_context(
         message,
-        decision,
         inquiry_choice=inquiry_choice,
-        goal_spec=goal_spec,
     )
-    goal_spec = _goal_spec_for_intent(message, goal_spec, intent)
     if intent == "task":
         graph_payload = _graph_payload_for_task(
             message,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agent_service.goal_spec import GoalSpec
 from agent_service.kernel_state import AgentRunBudget, build_agent_run_state
 from agent_service.schemas import Attachment, RunGraph, UserMessage
 
@@ -71,6 +72,36 @@ def test_build_agent_run_state_preserves_current_graph_and_run_context() -> None
     assert state.artifact_refs == ["artifact-1"]
     assert state.pending_choice == {"id": "confirm_overwrite"}
     assert state.execution_mode == "message"
+
+
+def test_build_agent_run_state_accepts_supplied_goal_spec_and_route_decision() -> None:
+    message = UserMessage(
+        task_id="task-supplied",
+        content="Can you create a Python script that counts rows in a CSV file?",
+    )
+    goal_spec = GoalSpec(
+        goal="Create a CSV row counting script",
+        task_type="unknown",
+        deliverable="task_output",
+        success_criteria=["生成可执行的任务计划"],
+        risk_level="read_only",
+        confidence=0.75,
+    )
+    route_decision = {
+        "intent": {"kind": "task"},
+        "reason": "generic task request",
+        "missing_inputs": [],
+    }
+
+    state = build_agent_run_state(
+        message,
+        goal_spec=goal_spec,
+        route_decision=route_decision,
+    )
+    route_decision["intent"] = {"kind": "mutated"}
+
+    assert state.goal_spec == goal_spec
+    assert state.route_decision["intent"]["kind"] == "task"
 
 
 def test_agent_run_budget_defaults_are_safe() -> None:

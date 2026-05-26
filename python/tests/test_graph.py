@@ -175,6 +175,82 @@ def test_stream_agent_events_normalizes_generic_task_goal_spec() -> None:
     assert events[-1].type == "node_graph.created"
 
 
+def test_run_agent_builds_effective_task_agent_run_state(monkeypatch) -> None:
+    captured = []
+
+    def recording_builder(message, **kwargs):
+        from agent_service.kernel_state import build_agent_run_state
+
+        state = build_agent_run_state(message, **kwargs)
+        captured.append(state)
+        return state
+
+    monkeypatch.setattr(graph_module, "build_agent_run_state", recording_builder)
+
+    events = run_agent(
+        UserMessage(
+            task_id="task-general-state",
+            content="Can you create a Python script that counts rows in a CSV file?",
+        )
+    )
+
+    assert captured
+    assert captured[0].goal_spec.task_type == "unknown"
+    assert [event.type for event in events] == ["node_graph.created"]
+
+
+def test_run_agent_builds_effective_research_agent_run_state(monkeypatch) -> None:
+    captured = []
+
+    def recording_builder(message, **kwargs):
+        from agent_service.kernel_state import build_agent_run_state
+
+        state = build_agent_run_state(message, **kwargs)
+        captured.append(state)
+        return state
+
+    monkeypatch.setattr(graph_module, "build_agent_run_state", recording_builder)
+
+    events = run_agent(
+        UserMessage(
+            task_id="complex-web-state",
+            content="Research and compare current Python packaging tools",
+        ),
+        inquiry_choice="research_flow",
+    )
+
+    assert captured
+    assert captured[0].goal_spec.task_type == "research"
+    assert [event.type for event in events] == ["node_graph.created"]
+
+
+def test_stream_agent_events_builds_effective_task_agent_run_state(monkeypatch) -> None:
+    captured = []
+
+    def recording_builder(message, **kwargs):
+        from agent_service.kernel_state import build_agent_run_state
+
+        state = build_agent_run_state(message, **kwargs)
+        captured.append(state)
+        return state
+
+    monkeypatch.setattr(graph_module, "build_agent_run_state", recording_builder)
+
+    events = list(
+        stream_agent_events(
+            UserMessage(
+                task_id="task-stream-state",
+                content="Can you create a Python script that counts rows in a CSV file?",
+            )
+        )
+    )
+
+    assert captured
+    assert captured[0].goal_spec.task_type == "unknown"
+    assert "planning.progress" in [event.type for event in events]
+    assert events[-1].type == "node_graph.created"
+
+
 def test_plain_chat_uses_fast_chat_policy() -> None:
     client = FakeModelClient("hello")
 
