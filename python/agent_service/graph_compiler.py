@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent_service.task_graph import TaskGraph, TaskNode
+from agent_service.tool_protocol import normalize_tool_id
 
 
 MODEL_REF_MAPPING = {
@@ -45,7 +46,7 @@ def _compile_node(node: TaskNode) -> dict[str, Any]:
     }
 
     if node.tool_binding is not None:
-        compiled_node["toolRef"] = node.tool_binding.tool_id
+        compiled_node["toolRef"] = normalize_tool_id(node.tool_binding.tool_id)
     if node.model_binding is not None:
         compiled_node["modelRef"] = MODEL_REF_MAPPING.get(
             node.model_binding.model_ref,

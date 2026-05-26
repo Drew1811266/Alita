@@ -22,7 +22,7 @@ function preferencesViewWithSpeechModel(
 ): PreferencesView {
   return {
     preferences: {
-      schemaVersion: 2,
+      schemaVersion: 3,
       recentProjects: [],
       modelDirectories: [],
       modelStorageDir: "D:\\Models",
@@ -31,6 +31,25 @@ function preferencesViewWithSpeechModel(
       modelAssignments: {
         agentChatModelId: null,
         speechToTextModelId,
+      },
+      agentModelMode: "local",
+      activeApiProviderId: null,
+      apiProviderConfigs: [],
+      toolProviderConfigs: [
+        {
+          providerId: "internal",
+          source: "internal",
+          displayName: "Internal Tools",
+          args: [],
+          enabled: true,
+          createdAt: "system",
+          updatedAt: "system",
+        },
+      ],
+      alitaMcpServer: {
+        enabled: false,
+        allowedToolIds: [],
+        requireLocalAuth: true,
       },
       toolEnablement: {},
     },

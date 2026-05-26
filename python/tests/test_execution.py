@@ -193,6 +193,30 @@ def test_document_flow_model_nodes_use_model_runtime(tmp_path: Path) -> None:
     ]
 
 
+def test_document_flow_executor_uses_injected_model_client_for_model_nodes() -> None:
+    from agent_service.execution import DocumentFlowExecutor
+    from agent_service.node_output import NodeOutput
+    from agent_service.schemas import RunGraphRequest, RunGraph
+
+    class FakeModelClient:
+        def chat(self, messages, *, temperature=0.2, max_tokens=1024, policy=None):
+            return "model output"
+
+    request = RunGraphRequest(
+        task_id="task-1",
+        project_path="D:\\Project\\demo.alita",
+        graph=RunGraph(graphId="graph-1", nodes=[], edges=[]),
+    )
+    executor = DocumentFlowExecutor(request, model_client=FakeModelClient())
+
+    output = executor.run(
+        "content-organize",
+        {"document-parse": NodeOutput(values={"text": "source text"})},
+    )
+
+    assert output.values["outline"] == "model output"
+
+
 def test_rejects_graph_with_missing_dependency(tmp_path: Path) -> None:
     request = RunGraphRequest(
         task_id="task-1",
@@ -985,6 +1009,34 @@ def test_rejects_disabled_tool_nodes(tmp_path: Path) -> None:
     assert "node.running" not in [event.type for event in events]
     assert events[-1].type == "task.failed"
     assert "document.receive_attachment" in events[-1].payload["error"]
+
+
+def test_accepts_unified_internal_tool_refs_for_existing_tools(tmp_path: Path) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("content", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source)
+    for node in request.graph.nodes:
+        if node.toolRef:
+            node.toolRef = f"internal:{node.toolRef}"
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert events[-1].type == "task.completed"
+
+
+def test_disabled_old_tool_id_blocks_unified_internal_tool_ref(tmp_path: Path) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("content", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source)
+    for node in request.graph.nodes:
+        if node.toolRef:
+            node.toolRef = f"internal:{node.toolRef}"
+    request.disabled_tool_ids = ["document.receive_attachment"]
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "tool_disabled"
 
 
 def test_disabled_tool_failure_emits_replan_suggestion(tmp_path: Path) -> None:

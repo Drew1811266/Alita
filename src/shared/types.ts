@@ -227,11 +227,73 @@ export type ProjectOpenResult = {
 
 export type ModelKind = "agent_llm" | "speech_to_text";
 
-export type ModelRuntime = "llama_cpp" | "qwen_asr";
+export type ModelRuntime = "llama_cpp" | "qwen_asr" | "api_provider";
 
 export type ModelPathKind = "file" | "directory";
 
 export type ModelSource = "manual" | "scan" | "imported" | "recovered";
+
+export type AgentModelMode = "local" | "api";
+
+export type ApiProviderType =
+  | "openai"
+  | "deepseek"
+  | "kimi"
+  | "glm"
+  | "minimax"
+  | "custom";
+
+export type ApiProviderCapability =
+  | "chat_completions"
+  | "streaming"
+  | "model_list";
+
+export type ApiProviderKeyStatus = "configured" | "missing" | "unknown";
+
+export type ApiProviderConfig = {
+  providerId: string;
+  providerType: ApiProviderType;
+  displayName: string;
+  baseUrl: string;
+  model: string;
+  credentialRef: string;
+  enabled: boolean;
+  capabilities: ApiProviderCapability[];
+  hasApiKey: boolean;
+  apiKeyStatus: ApiProviderKeyStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ToolProviderSource = "internal" | "mcp";
+
+export type McpTransport = "stdio" | "http";
+
+export type ToolProviderConfig = {
+  providerId: string;
+  source: ToolProviderSource;
+  displayName: string;
+  transport?: McpTransport;
+  command?: string;
+  args: string[];
+  url?: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type UnifiedToolSummary = {
+  toolId: string;
+  providerId: string;
+  name: string;
+  description: string;
+};
+
+export type AlitaMcpServerConfig = {
+  enabled: boolean;
+  allowedToolIds: string[];
+  requireLocalAuth: boolean;
+};
 
 export type ModelAssignments = {
   agentChatModelId: string | null;
@@ -270,13 +332,18 @@ export type ToolSummary = {
 };
 
 export type AppPreferences = {
-  schemaVersion: 2;
+  schemaVersion: 3;
   recentProjects: string[];
   modelDirectories: string[];
   modelStorageDir: string;
   models: ModelEntry[];
   defaultModelId: string | null;
   modelAssignments: ModelAssignments;
+  agentModelMode: AgentModelMode;
+  activeApiProviderId: string | null;
+  apiProviderConfigs: ApiProviderConfig[];
+  toolProviderConfigs: ToolProviderConfig[];
+  alitaMcpServer: AlitaMcpServerConfig;
   toolEnablement: Record<string, boolean>;
 };
 

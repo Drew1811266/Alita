@@ -1,4 +1,6 @@
 pub mod agent_client;
+pub mod agent_model_config;
+pub mod api_credentials;
 pub mod asr;
 pub mod commands;
 pub mod domain;
@@ -65,6 +67,9 @@ pub fn run() {
             commands::transcribe_voice_audio,
             commands::get_sidecar_auth_token,
             commands::get_attachment_metadata,
+            commands::prepare_agent_model_session,
+            commands::test_api_provider_connection,
+            commands::fetch_api_provider_models,
             commands::create_project,
             commands::open_project,
             commands::save_project,
@@ -72,6 +77,13 @@ pub fn run() {
             commands::reveal_artifact,
             commands::read_artifact_text,
             commands::get_preferences,
+            commands::set_agent_model_mode_command,
+            commands::save_api_provider_config,
+            commands::delete_api_provider_config_command,
+            commands::set_active_api_provider_command,
+            commands::save_mcp_tool_provider_config,
+            commands::delete_mcp_tool_provider_config_command,
+            commands::refresh_mcp_tool_provider_tools,
             commands::add_model_file,
             commands::add_speech_to_text_model_directory,
             commands::import_model_file,

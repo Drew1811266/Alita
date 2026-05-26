@@ -1,11 +1,43 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 
-import type { PreferencesView } from "../../shared/types";
+import type {
+  AgentModelMode,
+  ApiProviderType,
+  McpTransport,
+  PreferencesView,
+  UnifiedToolSummary,
+} from "../../shared/types";
 
 export type { PreferencesView } from "../../shared/types";
 
 export type ModelAssignmentRole = "agentChat" | "speechToText";
+
+export type SaveApiProviderPayload = {
+  providerId?: string;
+  providerType: ApiProviderType;
+  displayName: string;
+  baseUrl: string;
+  model: string;
+  enabled: boolean;
+  apiKey?: string;
+};
+
+export type ApiProviderConnectionResult = {
+  ok: boolean;
+  message: string;
+  models: string[];
+};
+
+export type SaveMcpToolProviderPayload = {
+  providerId?: string;
+  displayName: string;
+  transport: McpTransport;
+  command?: string;
+  args: string[];
+  url?: string;
+  enabled: boolean;
+};
 
 export async function getPreferences(): Promise<PreferencesView> {
   return invoke<PreferencesView>("get_preferences");
@@ -106,6 +138,85 @@ export async function setToolEnabled(
   });
 }
 
+export async function setAgentModelMode(
+  mode: AgentModelMode,
+): Promise<PreferencesView> {
+  return invoke<PreferencesView>("set_agent_model_mode_command", {
+    payload: { mode },
+  });
+}
+
+export async function saveApiProviderConfig(
+  payload: SaveApiProviderPayload,
+): Promise<PreferencesView> {
+  return invoke<PreferencesView>("save_api_provider_config", { payload });
+}
+
+export async function testApiProviderConnection(
+  payload: SaveApiProviderPayload,
+): Promise<ApiProviderConnectionResult> {
+  return invoke<ApiProviderConnectionResult>("test_api_provider_connection", {
+    payload,
+  });
+}
+
+export async function fetchApiProviderModels(
+  payload: SaveApiProviderPayload,
+): Promise<ApiProviderConnectionResult> {
+  return invoke<ApiProviderConnectionResult>("fetch_api_provider_models", {
+    payload,
+  });
+}
+
+export async function deleteApiProviderConfig(
+  providerId: string,
+): Promise<PreferencesView> {
+  return invoke<PreferencesView>("delete_api_provider_config_command", {
+    payload: { providerId },
+  });
+}
+
+export async function setActiveApiProvider(
+  providerId: string,
+): Promise<PreferencesView> {
+  return invoke<PreferencesView>("set_active_api_provider_command", {
+    payload: { providerId },
+  });
+}
+
+export async function saveMcpToolProviderConfig(
+  payload: SaveMcpToolProviderPayload,
+): Promise<PreferencesView> {
+  return invoke<PreferencesView>("save_mcp_tool_provider_config", { payload });
+}
+
+export async function deleteMcpToolProviderConfig(
+  providerId: string,
+): Promise<PreferencesView> {
+  return invoke<PreferencesView>("delete_mcp_tool_provider_config_command", {
+    payload: { providerId },
+  });
+}
+
+export async function refreshMcpToolProviderTools(
+  providerId: string,
+): Promise<UnifiedToolSummary[]> {
+  return invoke<UnifiedToolSummary[]>("refresh_mcp_tool_provider_tools", {
+    payload: { providerId },
+  });
+}
+
+export async function prepareAgentModelSession(): Promise<string | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+
+  const response = await invoke<{ modelSessionId: string | null }>(
+    "prepare_agent_model_session",
+  );
+  return response.modelSessionId;
+}
+
 function isTauriRuntime(): boolean {
-  return "__TAURI_INTERNALS__" in window;
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }

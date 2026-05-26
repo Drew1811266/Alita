@@ -44,18 +44,31 @@ import {
 import {
   addModelFile,
   addSpeechToTextModelDirectory,
+  deleteApiProviderConfig,
+  deleteMcpToolProviderConfig,
+  fetchApiProviderModels,
   getPreferences,
   importModelFile,
   pickModelDirectory,
   pickModelFile,
   pickSpeechToTextModelDirectory,
+  prepareAgentModelSession,
+  refreshMcpToolProviderTools,
+  saveApiProviderConfig,
+  saveMcpToolProviderConfig,
   scanModelDirectory,
+  setActiveApiProvider,
+  setAgentModelMode,
   setDefaultModel,
   setModelAssignment,
   setModelStorageDirectory,
   setToolEnabled,
+  testApiProviderConnection,
+  type ApiProviderConnectionResult,
   type ModelAssignmentRole,
   type PreferencesView,
+  type SaveApiProviderPayload,
+  type SaveMcpToolProviderPayload,
 } from "../features/preferences/preferencesApi";
 import { PreferencesDialog } from "../features/preferences/PreferencesDialog";
 import {
@@ -136,6 +149,61 @@ function createMessage(
     createdAt: new Date().toISOString(),
   };
 }
+
+export const createAgentSession = async (): Promise<string | null> => {
+  try {
+    return await prepareAgentModelSession();
+  } catch (error) {
+    throw new Error(`Agent 模型配置不可用：${formatUnknownError(error)}`);
+  }
+};
+
+type SubmitUserMessageWithStreamFallbackArgs = {
+  payload: SubmitMessagePayload;
+  createSession: () => Promise<string | null>;
+  submitStream: (
+    payload: SubmitMessagePayload,
+    onEvent: (event: BackendEvent) => void,
+  ) => Promise<void>;
+  submitFallback: (payload: SubmitMessagePayload) => Promise<BackendEvent[]>;
+  onEvent: (event: BackendEvent) => void;
+};
+
+async function submitUserMessageWithStreamFallback({
+  payload,
+  createSession,
+  submitStream,
+  submitFallback,
+  onEvent,
+}: SubmitUserMessageWithStreamFallbackArgs): Promise<void> {
+  const streamModelSessionId = await createSession();
+  let receivedStreamEvent = false;
+  try {
+    await submitStream(
+      { ...payload, modelSessionId: streamModelSessionId },
+      (event) => {
+        receivedStreamEvent = true;
+        onEvent(event);
+      },
+    );
+  } catch (streamError) {
+    if (receivedStreamEvent) {
+      throw streamError;
+    }
+
+    const fallbackModelSessionId = await createSession();
+    const events = await submitFallback({
+      ...payload,
+      modelSessionId: fallbackModelSessionId,
+    });
+    for (const event of events) {
+      onEvent(event);
+    }
+  }
+}
+
+export const submitUserMessageWithStreamFallbackForTest =
+  submitUserMessageWithStreamFallback;
 
 export function App() {
   const [activeProject, setActiveProject] = useState<AlitaProject | null>(
@@ -486,6 +554,7 @@ export function App() {
     try {
       setProjectError(null);
       const disabledToolIds = await resolveDisabledToolIds();
+      const modelSessionId = await createAgentSession();
       setGraphRunning(true);
       setGraphCancelling(false);
       setActiveRunId(runId);
@@ -499,6 +568,7 @@ export function App() {
           attachments: contextAttachments,
           mode,
           disabledToolIds,
+          modelSessionId,
         },
         applyBackendEvent,
       );
@@ -793,22 +863,13 @@ export function App() {
   };
 
   const submitAgentMessagePayload = async (payload: SubmitMessagePayload) => {
-    let receivedStreamEvent = false;
-    try {
-      await submitUserMessageStream(payload, (event) => {
-        receivedStreamEvent = true;
-        applyBackendEvent(event, payload);
-      });
-    } catch (streamError) {
-      if (receivedStreamEvent) {
-        throw streamError;
-      }
-
-      const events = await submitUserMessage(payload);
-      for (const event of events) {
-        applyBackendEvent(event, payload);
-      }
-    }
+    await submitUserMessageWithStreamFallback({
+      payload,
+      createSession: createAgentSession,
+      submitStream: submitUserMessageStream,
+      submitFallback: submitUserMessage,
+      onEvent: (event) => applyBackendEvent(event, payload),
+    });
   };
 
   const handleSend = async () => {
@@ -1089,6 +1150,99 @@ export function App() {
     }
   };
 
+  const handleSetAgentModelMode = async (
+    mode: "local" | "api",
+  ): Promise<void> => {
+    try {
+      setPreferencesError(null);
+      applyPreferencesView(await setAgentModelMode(mode));
+    } catch (error) {
+      setPreferencesError(String(error));
+    }
+  };
+
+  const handleSaveApiProvider = async (payload: SaveApiProviderPayload) => {
+    try {
+      setPreferencesError(null);
+      const view = await saveApiProviderConfig(payload);
+      applyPreferencesView(view);
+      return view;
+    } catch (error) {
+      setPreferencesError(String(error));
+      throw error;
+    }
+  };
+
+  const handleTestApiProviderConnection = async (
+    payload: SaveApiProviderPayload,
+  ): Promise<ApiProviderConnectionResult> => {
+    try {
+      return await testApiProviderConnection(payload);
+    } catch (error) {
+      return { ok: false, message: String(error), models: [] };
+    }
+  };
+
+  const handleFetchApiProviderModels = async (
+    payload: SaveApiProviderPayload,
+  ): Promise<ApiProviderConnectionResult> => {
+    try {
+      return await fetchApiProviderModels(payload);
+    } catch (error) {
+      return { ok: false, message: String(error), models: [] };
+    }
+  };
+
+  const handleDeleteApiProvider = async (providerId: string) => {
+    try {
+      setPreferencesError(null);
+      applyPreferencesView(await deleteApiProviderConfig(providerId));
+    } catch (error) {
+      setPreferencesError(String(error));
+    }
+  };
+
+  const handleSetActiveApiProvider = async (providerId: string) => {
+    try {
+      setPreferencesError(null);
+      applyPreferencesView(await setActiveApiProvider(providerId));
+    } catch (error) {
+      setPreferencesError(String(error));
+    }
+  };
+
+  const handleSaveMcpToolProvider = async (
+    payload: SaveMcpToolProviderPayload,
+  ) => {
+    try {
+      setPreferencesError(null);
+      const view = await saveMcpToolProviderConfig(payload);
+      applyPreferencesView(view);
+      return view;
+    } catch (error) {
+      setPreferencesError(String(error));
+      throw error;
+    }
+  };
+
+  const handleDeleteMcpToolProvider = async (providerId: string) => {
+    try {
+      setPreferencesError(null);
+      applyPreferencesView(await deleteMcpToolProviderConfig(providerId));
+    } catch (error) {
+      setPreferencesError(String(error));
+    }
+  };
+
+  const handleRefreshMcpToolProvider = async (providerId: string) => {
+    try {
+      setPreferencesError(null);
+      await refreshMcpToolProviderTools(providerId);
+    } catch (error) {
+      setPreferencesError(String(error));
+    }
+  };
+
   const handleSetToolEnabled = async (toolId: string, enabled: boolean) => {
     try {
       setPreferencesView(await setToolEnabled(toolId, enabled));
@@ -1104,12 +1258,21 @@ export function App() {
       onAddModel={handleAddModel}
       onAddSpeechToTextModel={handleAddSpeechToTextModel}
       onClose={() => setPreferencesOpen(false)}
+      onDeleteApiProvider={handleDeleteApiProvider}
+      onDeleteMcpToolProvider={handleDeleteMcpToolProvider}
+      onFetchApiProviderModels={handleFetchApiProviderModels}
       onImportModel={handleImportModel}
+      onRefreshMcpToolProvider={handleRefreshMcpToolProvider}
       onScanModelDirectory={handleScanModelDirectory}
+      onSaveApiProvider={handleSaveApiProvider}
+      onSaveMcpToolProvider={handleSaveMcpToolProvider}
+      onSetActiveApiProvider={handleSetActiveApiProvider}
+      onSetAgentModelMode={handleSetAgentModelMode}
       onSetDefaultModel={handleSetDefaultModel}
       onSetModelAssignment={handleSetModelAssignment}
       onSetModelStorageDirectory={handleSetModelStorageDirectory}
       onSetToolEnabled={handleSetToolEnabled}
+      onTestApiProviderConnection={handleTestApiProviderConnection}
       open={preferencesOpen}
       view={preferencesView}
     />

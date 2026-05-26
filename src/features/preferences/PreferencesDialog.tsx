@@ -1,5 +1,17 @@
-import type { ModelEntry, ToolSummary } from "../../shared/types";
-import type { PreferencesView } from "./preferencesApi";
+import type {
+  AgentModelMode,
+  ApiProviderConfig,
+  ApiProviderType,
+  ModelEntry,
+  ToolProviderConfig,
+  ToolSummary,
+} from "../../shared/types";
+import type {
+  ApiProviderConnectionResult,
+  PreferencesView,
+  SaveApiProviderPayload,
+  SaveMcpToolProviderPayload,
+} from "./preferencesApi";
 
 type ModelAssignmentRole = "agentChat" | "speechToText";
 
@@ -13,6 +25,23 @@ type PreferencesDialogProps = {
   onAddSpeechToTextModel(): void;
   onImportModel(): void;
   onScanModelDirectory(): void;
+  onSetAgentModelMode(mode: AgentModelMode): void;
+  onSaveApiProvider(
+    payload: SaveApiProviderPayload,
+  ): void | PreferencesView | Promise<void | PreferencesView>;
+  onTestApiProviderConnection(
+    payload: SaveApiProviderPayload,
+  ): ApiProviderConnectionResult | Promise<ApiProviderConnectionResult>;
+  onFetchApiProviderModels(
+    payload: SaveApiProviderPayload,
+  ): ApiProviderConnectionResult | Promise<ApiProviderConnectionResult>;
+  onDeleteApiProvider(providerId: string): void;
+  onSetActiveApiProvider(providerId: string): void;
+  onSaveMcpToolProvider(
+    payload: SaveMcpToolProviderPayload,
+  ): void | PreferencesView | Promise<void | PreferencesView>;
+  onDeleteMcpToolProvider(providerId: string): void;
+  onRefreshMcpToolProvider(providerId: string): void;
   onSetDefaultModel(modelId: string): void;
   onSetModelAssignment(role: ModelAssignmentRole, modelId: string): void;
   onSetModelStorageDirectory(): void;
@@ -29,10 +58,19 @@ export function PreferencesDialog({
   onAddSpeechToTextModel,
   onImportModel,
   onScanModelDirectory,
+  onSetAgentModelMode,
+  onDeleteApiProvider,
+  onFetchApiProviderModels,
+  onDeleteMcpToolProvider,
+  onRefreshMcpToolProvider,
+  onSaveApiProvider,
+  onSaveMcpToolProvider,
+  onSetActiveApiProvider,
   onSetDefaultModel,
   onSetModelAssignment,
   onSetModelStorageDirectory,
   onSetToolEnabled,
+  onTestApiProviderConnection,
 }: PreferencesDialogProps) {
   if (!open) {
     return null;
@@ -76,6 +114,59 @@ export function PreferencesDialog({
               <span>安全</span>
             </aside>
             <div className="preferencesContent">
+              <section className="preferencesSection">
+                <div className="preferencesSectionHeader">
+                  <h3>Agent 模型配置</h3>
+                  <div
+                    aria-label="Agent 模型来源"
+                    className="agentModelSourceControls"
+                    role="group"
+                  >
+                    <button
+                      aria-pressed={view.preferences.agentModelMode === "local"}
+                      className={
+                        view.preferences.agentModelMode === "local"
+                          ? "primaryButton"
+                          : "secondaryButton"
+                      }
+                      onClick={() => onSetAgentModelMode("local")}
+                      type="button"
+                    >
+                      本地模型
+                    </button>
+                    <button
+                      aria-pressed={view.preferences.agentModelMode === "api"}
+                      className={
+                        view.preferences.agentModelMode === "api"
+                          ? "primaryButton"
+                          : "secondaryButton"
+                      }
+                      onClick={() => onSetAgentModelMode("api")}
+                      type="button"
+                    >
+                      API 模型
+                    </button>
+                  </div>
+                </div>
+
+                {view.preferences.agentModelMode === "api" ? (
+                  <>
+                    <ApiProviderForm
+                      providers={view.preferences.apiProviderConfigs}
+                      onFetchApiProviderModels={onFetchApiProviderModels}
+                      onSaveApiProvider={onSaveApiProvider}
+                      onTestApiProviderConnection={onTestApiProviderConnection}
+                    />
+                    <ApiProviderList
+                      activeApiProviderId={view.preferences.activeApiProviderId}
+                      providers={view.preferences.apiProviderConfigs}
+                      onDeleteApiProvider={onDeleteApiProvider}
+                      onSetActiveApiProvider={onSetActiveApiProvider}
+                    />
+                  </>
+                ) : null}
+              </section>
+
               <section className="preferencesSection">
                 <div className="preferencesSectionHeader">
                   <h3>模型库</h3>
@@ -154,6 +245,16 @@ export function PreferencesDialog({
               </section>
 
               <section className="preferencesSection">
+                <h3>工具 Provider</h3>
+                <McpToolProviderForm onSaveMcpToolProvider={onSaveMcpToolProvider} />
+                <ToolProviderList
+                  onDeleteMcpToolProvider={onDeleteMcpToolProvider}
+                  onRefreshMcpToolProvider={onRefreshMcpToolProvider}
+                  providers={view.preferences.toolProviderConfigs}
+                />
+              </section>
+
+              <section className="preferencesSection">
                 <h3>工具节点</h3>
                 <ul className="toolList">
                   {view.tools.map((tool) => (
@@ -171,6 +272,731 @@ export function PreferencesDialog({
       </section>
     </div>
   );
+}
+
+const API_PROVIDER_PRESETS: Array<{
+  providerType: ApiProviderType;
+  displayName: string;
+  baseUrl: string;
+}> = [
+  {
+    providerType: "openai",
+    displayName: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+  },
+  {
+    providerType: "deepseek",
+    displayName: "DeepSeek",
+    baseUrl: "https://api.deepseek.com",
+  },
+  {
+    providerType: "kimi",
+    displayName: "Kimi",
+    baseUrl: "https://api.moonshot.ai/v1",
+  },
+  {
+    providerType: "glm",
+    displayName: "GLM",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+  },
+  {
+    providerType: "minimax",
+    displayName: "MiniMax",
+    baseUrl: "https://api.minimax.io/v1",
+  },
+  {
+    providerType: "custom",
+    displayName: "Custom API",
+    baseUrl: "",
+  },
+];
+
+const FETCHED_MODEL_PLACEHOLDER = "尚未拉取模型";
+
+type ProviderFormField = {
+  checked?: boolean;
+  textContent?: string | null;
+  value?: string;
+  innerHTML?: string;
+  appendChild?(child: unknown): void;
+};
+
+type ProviderFormLike = {
+  elements: {
+    namedItem(name: string): ProviderFormField | null;
+  };
+  querySelector?(selector: string): ProviderFormField | null;
+};
+
+const apiProviderFormVersions = new WeakMap<ProviderFormLike, number>();
+const apiProviderHelperRequestIds = new WeakMap<ProviderFormLike, number>();
+
+function ApiProviderForm({
+  providers,
+  onFetchApiProviderModels,
+  onSaveApiProvider,
+  onTestApiProviderConnection,
+}: {
+  providers: ApiProviderConfig[];
+  onSaveApiProvider(
+    payload: SaveApiProviderPayload,
+  ): void | PreferencesView | Promise<void | PreferencesView>;
+  onTestApiProviderConnection(
+    payload: SaveApiProviderPayload,
+  ): ApiProviderConnectionResult | Promise<ApiProviderConnectionResult>;
+  onFetchApiProviderModels(
+    payload: SaveApiProviderPayload,
+  ): ApiProviderConnectionResult | Promise<ApiProviderConnectionResult>;
+}) {
+  return (
+    <form
+      aria-label="API 供应商表单"
+      className="apiProviderForm"
+      id="api-provider-form"
+      name="api-provider-form"
+      onChange={(event) => {
+        markApiProviderFormChanged(event.currentTarget);
+      }}
+      onInput={(event) => {
+        markApiProviderFormChanged(event.currentTarget);
+      }}
+      onReset={(event) => {
+        markApiProviderFormChanged(event.currentTarget);
+        clearApiProviderHelperState(event.currentTarget);
+      }}
+      onSubmit={async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const payload = readApiProviderPayload(form);
+        let updatedView: PreferencesView | void;
+        try {
+          updatedView = await onSaveApiProvider(payload);
+        } catch {
+          return;
+        }
+        const savedProvider = findSavedApiProviderAfterSave(payload, updatedView);
+        if (savedProvider) {
+          fillApiProviderForm(form, savedProvider);
+        }
+        setFormFieldValue(form, "apiKey", "");
+        markApiProviderFormChanged(form);
+      }}
+    >
+      <div className="apiProviderFormHeader">
+        <h4>添加 API 供应商</h4>
+        <button className="secondaryButton compactButton" type="reset">
+          添加 API 供应商
+        </button>
+      </div>
+      <input name="providerId" type="hidden" />
+
+      <div className="apiProviderFields">
+        <label>
+          <span>已保存供应商</span>
+          <select
+            defaultValue=""
+            name="savedProvider"
+            onChange={(event) =>
+              applySavedProviderToForm(event.currentTarget.form, providers)
+            }
+          >
+            <option value="">新建供应商</option>
+            {providers.map((provider) => (
+              <option key={provider.providerId} value={provider.providerId}>
+                {provider.displayName}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>供应商类型</span>
+          <select
+            defaultValue="openai"
+            name="providerType"
+            onChange={(event) =>
+              applyProviderPresetToForm(event.currentTarget.form)
+            }
+          >
+            {API_PROVIDER_PRESETS.map((preset) => (
+              <option key={preset.providerType} value={preset.providerType}>
+                {preset.providerType}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>显示名称</span>
+          <input
+            defaultValue="OpenAI"
+            name="displayName"
+            type="text"
+            autoComplete="off"
+          />
+        </label>
+        <label>
+          <span>Base URL</span>
+          <input
+            defaultValue="https://api.openai.com/v1"
+            name="baseUrl"
+            type="url"
+            autoComplete="off"
+          />
+        </label>
+        <label>
+          <span>模型名称</span>
+          <input name="model" type="text" autoComplete="off" />
+        </label>
+        <label>
+          <span>API 密钥</span>
+          <input
+            name="apiKey"
+            type="password"
+            autoComplete="new-password"
+            placeholder="仅用于本次保存或测试"
+          />
+        </label>
+        <label className="apiProviderEnabledToggle">
+          <input defaultChecked name="enabled" type="checkbox" />
+          <span>启用供应商</span>
+        </label>
+      </div>
+
+      <div className="apiProviderHelperRow">
+        <button className="primaryButton compactButton" type="submit">
+          保存
+        </button>
+        <button
+          className="secondaryButton compactButton"
+          onClick={(event) =>
+            runApiProviderHelper(
+              event.currentTarget.form,
+              onTestApiProviderConnection,
+              false,
+            )
+          }
+          type="button"
+        >
+          测试连接
+        </button>
+        <button
+          className="secondaryButton compactButton"
+          onClick={(event) =>
+            runApiProviderHelper(
+              event.currentTarget.form,
+              onFetchApiProviderModels,
+              true,
+            )
+          }
+          type="button"
+        >
+          拉取模型列表
+        </button>
+        <select
+          aria-label="已拉取模型列表"
+          className="apiProviderModelSelect"
+          name="fetchedModel"
+          onChange={(event) => {
+            setFormFieldValue(
+              event.currentTarget.form,
+              "model",
+              event.currentTarget.value,
+            );
+            markApiProviderFormChanged(event.currentTarget.form);
+          }}
+        >
+          <option value="">{FETCHED_MODEL_PLACEHOLDER}</option>
+        </select>
+      </div>
+      <output
+        className="apiProviderHelperMessage"
+        name="providerHelperMessage"
+        role="status"
+      />
+    </form>
+  );
+}
+
+function readApiProviderPayload(form: ProviderFormLike): SaveApiProviderPayload {
+  const payload: SaveApiProviderPayload = {
+    providerType: fieldValue(form, "providerType") as ApiProviderType,
+    displayName: fieldValue(form, "displayName"),
+    baseUrl: fieldValue(form, "baseUrl"),
+    model: fieldValue(form, "model"),
+    enabled: Boolean(form.elements.namedItem("enabled")?.checked),
+  };
+  const providerId = fieldValue(form, "providerId");
+  const apiKey = fieldValue(form, "apiKey");
+  if (providerId) {
+    payload.providerId = providerId;
+  }
+  if (apiKey) {
+    payload.apiKey = apiKey;
+  }
+  return payload;
+}
+
+function findSavedApiProviderAfterSave(
+  payload: SaveApiProviderPayload,
+  view: PreferencesView | void,
+): ApiProviderConfig | null {
+  const providers = view?.preferences.apiProviderConfigs ?? [];
+  if (providers.length === 0) {
+    return null;
+  }
+  if (payload.providerId) {
+    return (
+      providers.find((provider) => provider.providerId === payload.providerId) ??
+      null
+    );
+  }
+
+  const payloadBaseUrl = normalizeComparableBaseUrl(payload.baseUrl);
+  const matches = providers.filter(
+    (provider) =>
+      provider.providerType === payload.providerType &&
+      provider.displayName === payload.displayName &&
+      provider.baseUrl === payloadBaseUrl &&
+      provider.model === payload.model &&
+      provider.enabled === payload.enabled,
+  );
+  return latestApiProviderConfig(matches);
+}
+
+function normalizeComparableBaseUrl(baseUrl: string): string {
+  try {
+    return new URL(baseUrl.trim().replace(/\/+$/, "")).toString().replace(/\/+$/, "");
+  } catch {
+    return baseUrl.trim().replace(/\/+$/, "");
+  }
+}
+
+function latestApiProviderConfig(
+  providers: ApiProviderConfig[],
+): ApiProviderConfig | null {
+  return (
+    [...providers].sort((left, right) => {
+      return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+    })[0] ?? null
+  );
+}
+
+function fieldValue(form: ProviderFormLike | null, name: string): string {
+  return form?.elements.namedItem(name)?.value?.trim() ?? "";
+}
+
+function setFormFieldValue(
+  form: ProviderFormLike | null,
+  name: string,
+  value: string,
+): void {
+  const field = form?.elements.namedItem(name);
+  if (field) {
+    field.value = value;
+  }
+}
+
+function setFormCheckbox(
+  form: ProviderFormLike | null,
+  name: string,
+  checked: boolean,
+): void {
+  const field = form?.elements.namedItem(name);
+  if (field) {
+    field.checked = checked;
+  }
+}
+
+function applyProviderPresetToForm(form: ProviderFormLike | null): void {
+  const providerType = fieldValue(form, "providerType");
+  const preset = API_PROVIDER_PRESETS.find(
+    (candidate) => candidate.providerType === providerType,
+  );
+  if (!preset) {
+    return;
+  }
+  setFormFieldValue(form, "displayName", preset.displayName);
+  setFormFieldValue(form, "baseUrl", preset.baseUrl);
+  markApiProviderFormChanged(form);
+  clearApiProviderHelperState(form);
+}
+
+function applySavedProviderToForm(
+  form: ProviderFormLike | null,
+  providers: ApiProviderConfig[],
+): void {
+  const providerId = fieldValue(form, "savedProvider");
+  if (!providerId) {
+    setFormFieldValue(form, "providerId", "");
+    applyProviderPresetToForm(form);
+    return;
+  }
+  const provider = providers.find(
+    (candidate) => candidate.providerId === providerId,
+  );
+  if (!provider) {
+    return;
+  }
+  fillApiProviderForm(form, provider);
+}
+
+function fillApiProviderFormFromConfig(provider: ApiProviderConfig): void {
+  const form = document.getElementById("api-provider-form") as
+    | ProviderFormLike
+    | null;
+  fillApiProviderForm(form, provider);
+}
+
+function fillApiProviderForm(
+  form: ProviderFormLike | null,
+  provider: ApiProviderConfig,
+): void {
+  setFormFieldValue(form, "providerId", provider.providerId);
+  setFormFieldValue(form, "savedProvider", provider.providerId);
+  setFormFieldValue(form, "providerType", provider.providerType);
+  setFormFieldValue(form, "displayName", provider.displayName);
+  setFormFieldValue(form, "baseUrl", provider.baseUrl);
+  setFormFieldValue(form, "model", provider.model);
+  setFormFieldValue(form, "apiKey", "");
+  setFormCheckbox(form, "enabled", provider.enabled);
+  markApiProviderFormChanged(form);
+  clearApiProviderHelperState(form);
+}
+
+function McpToolProviderForm({
+  onSaveMcpToolProvider,
+}: {
+  onSaveMcpToolProvider(
+    payload: SaveMcpToolProviderPayload,
+  ): void | PreferencesView | Promise<void | PreferencesView>;
+}) {
+  return (
+    <form
+      aria-label="MCP Provider 配置"
+      className="apiProviderForm"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const formData = new FormData(event.currentTarget);
+        const args = String(formData.get("args") ?? "")
+          .split(/\s+/)
+          .map((value) => value.trim())
+          .filter(Boolean);
+        onSaveMcpToolProvider({
+          displayName: String(formData.get("displayName") ?? ""),
+          transport: String(formData.get("transport") ?? "stdio") as
+            | "stdio"
+            | "http",
+          command: String(formData.get("command") ?? ""),
+          args,
+          url: String(formData.get("url") ?? ""),
+          enabled: formData.get("enabled") === "on",
+        });
+      }}
+    >
+      <label>
+        名称
+        <input name="displayName" placeholder="Docs MCP" required />
+      </label>
+      <label>
+        连接
+        <select defaultValue="stdio" name="transport">
+          <option value="stdio">stdio</option>
+          <option value="http">HTTP</option>
+        </select>
+      </label>
+      <label>
+        命令
+        <input name="command" placeholder="npx" />
+      </label>
+      <label>
+        参数
+        <input name="args" placeholder="@example/docs-mcp" />
+      </label>
+      <label>
+        URL
+        <input name="url" placeholder="https://example.com/mcp" />
+      </label>
+      <label className="toolToggle">
+        <input defaultChecked name="enabled" type="checkbox" />
+        启用
+      </label>
+      <button className="primaryButton" type="submit">
+        保存 MCP Provider
+      </button>
+    </form>
+  );
+}
+
+function ToolProviderList({
+  providers,
+  onDeleteMcpToolProvider,
+  onRefreshMcpToolProvider,
+}: {
+  providers: ToolProviderConfig[];
+  onDeleteMcpToolProvider(providerId: string): void;
+  onRefreshMcpToolProvider(providerId: string): void;
+}) {
+  return (
+    <ul className="toolList">
+      {providers.map((provider) => (
+        <li className="toolItem" key={provider.providerId}>
+          <div>
+            <strong>{provider.displayName}</strong>
+            <span>来源 {provider.source}</span>
+            {provider.transport ? <span>连接 {provider.transport}</span> : null}
+            {provider.command ? <span>命令 {provider.command}</span> : null}
+            {provider.url ? <span>URL {provider.url}</span> : null}
+          </div>
+          {provider.source === "mcp" ? (
+            <div className="toolActions">
+              <button
+                className="secondaryButton compactButton"
+                onClick={() => onRefreshMcpToolProvider(provider.providerId)}
+                type="button"
+              >
+                刷新工具
+              </button>
+              <button
+                className="secondaryButton compactButton"
+                onClick={() => onDeleteMcpToolProvider(provider.providerId)}
+                type="button"
+              >
+                删除
+              </button>
+            </div>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+async function runApiProviderHelper(
+  form: ProviderFormLike | null,
+  handler: (
+    payload: SaveApiProviderPayload,
+  ) => ApiProviderConnectionResult | Promise<ApiProviderConnectionResult>,
+  fillFirstModel: boolean,
+): Promise<void> {
+  if (!form) {
+    return;
+  }
+  const requestPayload = readApiProviderPayload(form);
+  const requestSnapshot = apiProviderRequestSnapshot(form, requestPayload);
+  let result: ApiProviderConnectionResult;
+  try {
+    result = await handler(requestPayload);
+  } catch (error) {
+    if (!isCurrentApiProviderRequest(form, requestSnapshot)) {
+      return;
+    }
+    clearFetchedModelSelect(form);
+    setHelperMessage(form, errorToMessage(error));
+    return;
+  }
+
+  if (!isCurrentApiProviderRequest(form, requestSnapshot)) {
+    return;
+  }
+  setHelperMessage(form, result.message);
+  if (result.ok && result.models.length > 0) {
+    populateFetchedModelSelect(form, result.models);
+    if (fillFirstModel && !fieldValue(form, "model")) {
+      setFormFieldValue(form, "model", result.models[0]);
+    }
+    return;
+  }
+
+  clearFetchedModelSelect(form);
+}
+
+type ApiProviderRequestSnapshot = {
+  fingerprint: string;
+  requestId: number;
+  version: number;
+};
+
+function apiProviderRequestSnapshot(
+  form: ProviderFormLike,
+  payload: SaveApiProviderPayload,
+): ApiProviderRequestSnapshot {
+  const requestId = (apiProviderHelperRequestIds.get(form) ?? 0) + 1;
+  apiProviderHelperRequestIds.set(form, requestId);
+  return {
+    fingerprint: apiProviderPayloadFingerprint(payload),
+    requestId,
+    version: apiProviderFormVersion(form),
+  };
+}
+
+function apiProviderPayloadFingerprint(payload: SaveApiProviderPayload): string {
+  return JSON.stringify({
+    providerId: payload.providerId ?? "",
+    providerType: payload.providerType,
+    displayName: payload.displayName,
+    baseUrl: payload.baseUrl,
+    model: payload.model,
+    enabled: payload.enabled,
+    apiKey: payload.apiKey ?? "",
+  });
+}
+
+function isCurrentApiProviderRequest(
+  form: ProviderFormLike,
+  requestSnapshot: ApiProviderRequestSnapshot,
+): boolean {
+  return (
+    apiProviderHelperRequestIds.get(form) === requestSnapshot.requestId &&
+    apiProviderFormVersion(form) === requestSnapshot.version &&
+    apiProviderPayloadFingerprint(readApiProviderPayload(form)) ===
+      requestSnapshot.fingerprint
+  );
+}
+
+function apiProviderFormVersion(form: ProviderFormLike): number {
+  return apiProviderFormVersions.get(form) ?? 0;
+}
+
+function markApiProviderFormChanged(form: ProviderFormLike | null): void {
+  if (!form) {
+    return;
+  }
+  apiProviderFormVersions.set(form, apiProviderFormVersion(form) + 1);
+}
+
+function errorToMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function clearApiProviderHelperState(form: ProviderFormLike | null): void {
+  clearFetchedModelSelect(form);
+  setHelperMessage(form, "");
+}
+
+function setHelperMessage(
+  form: ProviderFormLike | null,
+  message: string,
+): void {
+  const output =
+    form?.elements.namedItem("providerHelperMessage") ??
+    form?.querySelector?.("[name='providerHelperMessage']");
+  if (output) {
+    output.textContent = message;
+  }
+}
+
+function clearFetchedModelSelect(form: ProviderFormLike | null): void {
+  const select = form?.elements.namedItem("fetchedModel");
+  if (!select) {
+    return;
+  }
+  select.value = "";
+  select.innerHTML = "";
+  select.appendChild?.(createOption("", FETCHED_MODEL_PLACEHOLDER));
+}
+
+function populateFetchedModelSelect(
+  form: ProviderFormLike,
+  models: string[],
+): void {
+  const select = form.elements.namedItem("fetchedModel");
+  if (!select) {
+    return;
+  }
+  select.value = "";
+  select.innerHTML = "";
+  for (const model of models) {
+    select.appendChild?.(createOption(model, model));
+  }
+}
+
+function createOption(value: string, textContent: string): unknown {
+  if (typeof document !== "undefined") {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = textContent;
+    return option;
+  }
+  return { textContent, value };
+}
+
+function ApiProviderList({
+  activeApiProviderId,
+  providers,
+  onDeleteApiProvider,
+  onSetActiveApiProvider,
+}: {
+  activeApiProviderId: string | null;
+  providers: ApiProviderConfig[];
+  onDeleteApiProvider(providerId: string): void;
+  onSetActiveApiProvider(providerId: string): void;
+}) {
+  if (providers.length === 0) {
+    return (
+      <p aria-label="API 供应商" className="preferencesState">
+        还没有配置 API 供应商。
+      </p>
+    );
+  }
+
+  return (
+    <ul aria-label="API 供应商" className="apiProviderList">
+      {providers.map((provider) => {
+        const isActive = provider.providerId === activeApiProviderId;
+
+        return (
+          <li className="apiProviderItem" key={provider.providerId}>
+            <div className="apiProviderHeader">
+              <strong>{provider.displayName}</strong>
+              {isActive ? (
+                <span className="modelDefaultBadge">当前 Agent API</span>
+              ) : null}
+            </div>
+            <span>{provider.model}</span>
+            <span>{provider.baseUrl}</span>
+            <span>{apiProviderKeyStatusText(provider)}</span>
+            <div className="apiProviderActions">
+              {!isActive ? (
+                <button
+                  aria-label={`设为当前 API：${provider.displayName}`}
+                  className="secondaryButton compactButton"
+                  onClick={() => onSetActiveApiProvider(provider.providerId)}
+                  type="button"
+                >
+                  设为当前 API
+                </button>
+              ) : null}
+              <button
+                aria-label={`编辑 API 供应商：${provider.displayName}`}
+                className="secondaryButton compactButton"
+                onClick={() => fillApiProviderFormFromConfig(provider)}
+                type="button"
+              >
+                编辑
+              </button>
+              <button
+                aria-label={`删除 API 供应商：${provider.displayName}`}
+                className="secondaryButton compactButton"
+                onClick={() => onDeleteApiProvider(provider.providerId)}
+                type="button"
+              >
+                删除
+              </button>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function apiProviderKeyStatusText(provider: ApiProviderConfig): string {
+  if (provider.apiKeyStatus === "unknown") {
+    return "密钥状态不可用";
+  }
+  if (provider.apiKeyStatus === "configured" || provider.hasApiKey) {
+    return "密钥已配置";
+  }
+  return "未配置密钥";
 }
 
 function ModelItem({

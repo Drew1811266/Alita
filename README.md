@@ -2,7 +2,7 @@
 
 Alita 是一个本地优先的 AI Agent 桌面工作台。它不是单纯的聊天窗口，而是把本地大模型、工程文件、节点化任务流程、文档工具、联网查询工具、语音输入、运行历史和 artifact 预览整合到一个 Windows 桌面应用中。
 
-当前仓库版本为 `0.27.0`。这个阶段的重点是：桌面工程闭环已经成型，Agent 具备 LangGraph 路由、模型调用策略、文档处理流程、复杂研究流程、天气工具节点和搜索 provider chain。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
+当前仓库版本为 `0.28.0`。这个阶段的重点是：桌面工程闭环已经成型，Agent 具备 LangGraph 路由、模型调用策略、文档处理流程、复杂研究流程、天气工具节点、搜索 provider chain、多模型 API Provider 配置，以及统一工具协议和 MCP 扩展架构。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
 
 ## 当前阶段
 
@@ -78,7 +78,7 @@ Alita 在模型客户端和 LangGraph 路由结果之间加入了模型调用策
 
 ### 4. 联网工具节点
 
-0.27 版本加入了第一阶段联网工具节点。
+0.28 版本保留 0.27 的联网工具节点，并加入了模型 API Provider 配置与统一工具协议/MCP 架构。0.27 版本加入了第一阶段联网工具节点。
 
 天气问题会先经过 `route_tool_for_message()` 检测。如果识别为天气意图，会调用天气 provider，而不是泛搜索：
 
@@ -190,6 +190,16 @@ Will it rain in Boston?
 
 执行器会校验工具启用状态、路径边界、权限、运行结果和产物。
 
+当前工具协议已升级为 Unified Tool Gateway：
+
+- 内部工具和外部 MCP 工具会进入统一工具目录。
+- 内部工具仍由 Alita 自己的安全网关执行，不直接改造成 MCP server。
+- 外部 MCP server 作为 tool provider 接入，发现到的工具会映射为 Alita 节点工具。
+- 模型供应商的 tool/function calling 通过 adapter 从统一工具定义转换，不让业务层绑定某一家 API 格式。
+- 可选的 Alita MCP Server 默认关闭，只能暴露白名单工具，并且外部调用仍然经过 Unified Tool Gateway。
+
+工具和 MCP provider 的非敏感配置保存在首选项中。API Key、MCP token 等敏感信息必须保存在系统凭据库，不写入 `.alita` 工程文件、`preferences.json`、运行历史或日志。
+
 ### 8. 语音输入和本地 ASR
 
 前端支持录音输入。录音结束后：
@@ -203,7 +213,7 @@ Will it rain in Boston?
 
 ### 9. 统一模型库和首选项
 
-首选项中维护统一模型库，目前支持两类模型：
+首选项中维护模型库和 Agent 模型来源，目前支持两类本地模型：
 
 - Agent LLM：GGUF 文件，runtime 为 `llama_cpp`。
 - Speech-to-text：Qwen ASR 模型目录，runtime 为 `qwen_asr`。
@@ -218,6 +228,12 @@ Will it rain in Boston?
 - 设置当前语音转文字模型。
 - 配置模型存储目录。
 - 启用或禁用工具节点。
+
+`首选项 -> Agent 模型配置` 可以在 `本地模型` 和 `API 模型` 间切换当前 Agent 模型来源。API 模型支持 OpenAI-compatible 接口，预设包含 OpenAI、DeepSeek、Kimi、GLM、MiniMax，也支持自定义兼容接口。
+
+API provider 的 Base URL、模型名、启用状态等非敏感配置保存在本机首选项中；API Key 保存在系统凭据库，不写入 `.alita` 工程文件或 `preferences.json`。保存后的 key 不会在界面中回显；如果更改 provider type 或 Base URL，需要重新输入 key，避免旧 key 被绑定到新的 endpoint。
+
+第一版 API Agent 模型只覆盖通用文本聊天与流式输出。工具调用、结构化输出、多模态输入输出以及供应商专有能力不在第一版范围内。
 
 首选项保存在用户应用配置目录，不写入 `.alita` 工程文件。
 
@@ -564,13 +580,19 @@ MVP 验证脚本：
 .\scripts\verify-mvp.ps1
 ```
 
-0.27 发布前的主要验证结果：
+0.28 发布前的主要验证结果：
 
 ```text
-python -m pytest python/tests -q
-465 passed
+npm run frontend:lint
+passed
 
-npm run frontend:typecheck
+npm run frontend:test
+191 passed
+
+python -m pytest
+512 passed
+
+cargo test --manifest-path src-tauri/Cargo.toml
 passed
 ```
 

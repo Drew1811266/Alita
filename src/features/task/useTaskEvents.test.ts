@@ -77,6 +77,7 @@ describe("runNodeGraphStream", () => {
         body: JSON.stringify({
           task_id: "task-1",
           content: "Research and compare current Python packaging tools",
+          model_session_id: null,
           attachments: [],
           inquiry_choice: "research_flow",
         }),
@@ -105,6 +106,7 @@ describe("runNodeGraphStream", () => {
         body: JSON.stringify({
           task_id: "task-1",
           content: "Research and compare current Python packaging tools",
+          model_session_id: null,
           attachments: [],
           inquiry_choice: "research_flow",
         }),
@@ -252,6 +254,7 @@ describe("runNodeGraphStream", () => {
           mode: { type: "full" },
           disabled_tool_ids: [],
           approved_permissions: [],
+          model_session_id: null,
           attachments: [
             {
               attachment_id: "a1",
