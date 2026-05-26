@@ -511,6 +511,7 @@ def stream_agent_events(
         inquiry_choice=inquiry_choice,
         goal_spec=goal_spec,
     )
+    goal_spec = _goal_spec_for_intent(message, goal_spec, intent)
     if intent == "task":
         graph_payload = _graph_payload_for_task(
             message,

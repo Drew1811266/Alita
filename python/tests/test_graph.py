@@ -161,6 +161,20 @@ def test_stream_agent_events_builds_stream_agent_run_state(monkeypatch) -> None:
     assert captured[0].execution_mode == "stream"
 
 
+def test_stream_agent_events_normalizes_generic_task_goal_spec() -> None:
+    events = list(
+        stream_agent_events(
+            UserMessage(
+                task_id="task-stream",
+                content="Create a Python script that counts rows in a CSV file.",
+            )
+        )
+    )
+
+    assert "planning.progress" in [event.type for event in events]
+    assert events[-1].type == "node_graph.created"
+
+
 def test_plain_chat_uses_fast_chat_policy() -> None:
     client = FakeModelClient("hello")
 
