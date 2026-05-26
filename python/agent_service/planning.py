@@ -156,12 +156,7 @@ def default_planner_chain(tool_registry: ToolRegistry) -> PlannerChain:
 
 def _is_markdown_conversion_only(content: str) -> bool:
     normalized = content.lower()
-    has_markdown = any(keyword in normalized for keyword in ("markdown", "md"))
-    has_conversion = any(
-        keyword in normalized
-        for keyword in ("convert", "conversion", "export", "转换", "转", "转成", "导出")
-    )
-    has_report = any(
-        keyword in normalized for keyword in ("report", "pdf", "报告")
-    )
-    return has_markdown and has_conversion and not has_report
+    wants_markdown = "markdown" in normalized or "md" in normalized
+    wants_conversion = "convert" in normalized or "转换" in content or "转" in content
+    wants_report = "report" in normalized or "pdf" in normalized or "报告" in content
+    return wants_markdown and wants_conversion and not wants_report
