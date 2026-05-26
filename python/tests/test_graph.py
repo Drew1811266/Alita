@@ -196,6 +196,8 @@ def test_run_agent_builds_effective_task_agent_run_state(monkeypatch) -> None:
 
     assert captured
     assert captured[0].goal_spec.task_type == "unknown"
+    assert captured[0].route_decision["intent"]["kind"] == "task"
+    assert captured[0].route_decision["effective_intent"] == "task"
     assert [event.type for event in events] == ["node_graph.created"]
 
 
@@ -221,6 +223,53 @@ def test_run_agent_builds_effective_research_agent_run_state(monkeypatch) -> Non
 
     assert captured
     assert captured[0].goal_spec.task_type == "research"
+    assert captured[0].route_decision["intent"]["kind"] == "inquiry"
+    assert (
+        captured[0].route_decision["effective_intent"]
+        == "web_complex_research_flow"
+    )
+    assert [event.type for event in events] == ["node_graph.created"]
+
+
+def test_run_agent_builds_effective_document_task_route_decision(monkeypatch) -> None:
+    captured = []
+
+    def recording_builder(message, **kwargs):
+        from agent_service.kernel_state import build_agent_run_state
+
+        state = build_agent_run_state(message, **kwargs)
+        captured.append(state)
+        return state
+
+    monkeypatch.setattr(graph_module, "build_agent_run_state", recording_builder)
+
+    events = run_agent(
+        UserMessage(
+            task_id="task-latest-state",
+            content="最新",
+            attachments=[
+                Attachment(
+                    attachment_id="a-latest-state",
+                    name="latest.docx",
+                    path="workspace/inputs/latest.docx",
+                    size_bytes=100,
+                    mime_type=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document"
+                    ),
+                )
+            ],
+        )
+    )
+
+    assert captured
+    assert captured[0].goal_spec.task_type == "document_processing"
+    assert captured[0].route_decision["intent"]["kind"] == "task"
+    assert captured[0].route_decision["effective_intent"] == "task"
+    assert (
+        captured[0].route_decision["raw_route_decision"]["intent"]["kind"]
+        == "inquiry"
+    )
     assert [event.type for event in events] == ["node_graph.created"]
 
 

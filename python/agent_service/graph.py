@@ -501,7 +501,7 @@ def _build_effective_kernel_state(
     return build_agent_run_state(
         message,
         goal_spec=goal_spec,
-        route_decision=decision.to_payload(),
+        route_decision=_effective_route_payload(decision, _intent),
         run_id=run_id,
         current_graph=current_graph,
         execution_mode=execution_mode,
@@ -513,6 +513,36 @@ def _build_effective_kernel_state(
         pending_choice=pending_choice,
         journal_ref=journal_ref,
     )
+
+
+def _effective_route_payload(decision: RouteDecision, intent: AgentIntent) -> dict:
+    raw_payload = decision.to_payload()
+    effective_kind = _route_decision_kind_for_agent_intent(intent)
+    payload = {
+        **raw_payload,
+        "intent": {"kind": effective_kind},
+        "effective_intent": intent,
+    }
+    if raw_payload.get("intent", {}).get("kind") != effective_kind:
+        payload["raw_route_decision"] = raw_payload
+        if effective_kind != "inquiry":
+            payload["inquiry"] = None
+    return payload
+
+
+def _route_decision_kind_for_agent_intent(intent: AgentIntent) -> str:
+    if intent == "task":
+        return "task"
+    if intent == "missing_input":
+        return "need_input"
+    if intent in {
+        "local_inquiry",
+        "web_simple_inquiry",
+        "web_complex_choice",
+        "web_complex_research_flow",
+    }:
+        return "inquiry"
+    return "chat"
 
 
 def stream_agent_events(
