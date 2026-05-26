@@ -734,7 +734,10 @@ def _goal_spec_for_intent(
     goal_spec: GoalSpec,
     intent: AgentIntent,
 ) -> GoalSpec:
-    if intent == "task" and goal_spec.task_type == "chat":
+    if intent == "task" and goal_spec.task_type not in {
+        "document_processing",
+        "unknown",
+    }:
         return goal_spec.model_copy(
             update={
                 "goal": message.content.strip() or goal_spec.goal,

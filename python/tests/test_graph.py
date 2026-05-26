@@ -190,7 +190,7 @@ def test_run_agent_builds_effective_task_agent_run_state(monkeypatch) -> None:
     events = run_agent(
         UserMessage(
             task_id="task-general-state",
-            content="Can you create a Python script that counts rows in a CSV file?",
+            content="Can you create a Python script that searches GitHub repositories?",
         )
     )
 
@@ -1069,6 +1069,28 @@ def test_general_task_classification_creates_planner_graph_instead_of_answer() -
         "plan-review",
         "execution-order-planning",
     ]
+
+
+def test_task_with_research_keywords_still_uses_generic_task_graph() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="task-github-script",
+            content="Can you create a Python script that searches GitHub repositories?",
+        )
+    )
+
+    assert [event.type for event in events] == ["node_graph.created"]
+    graph = events[0].payload["graph"]
+    assert graph["metadata"]["planningMode"] == "deep"
+    assert [node["nodeId"] for node in graph["nodes"][:4]] == [
+        "task-analysis",
+        "context-gathering",
+        "evidence-summary",
+        "plan-draft",
+    ]
+    assert all(
+        not node["nodeId"].startswith("research-") for node in graph["nodes"]
+    )
 
 
 def test_task_graph_records_deep_reasoning_policy_metadata() -> None:
