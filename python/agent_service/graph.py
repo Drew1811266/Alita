@@ -34,6 +34,7 @@ from agent_service.plan_feedback import (
     apply_graph_feedback,
     classify_graph_feedback,
 )
+from agent_service.planning import PlanningRequest, default_planner_chain
 from agent_service.planner_v2 import PlannerV2
 from agent_service.schemas import AgentEvent, RunGraph, UserMessage
 from agent_service.task_planner import (
@@ -45,7 +46,7 @@ from agent_service.task_planner import (
 from agent_service.tool_execution import default_tool_packages_root
 from agent_service.tool_providers.weather import WeatherProvider
 from agent_service.tool_registry import ToolRegistry
-from agent_service.web_research import answer_simple_web_inquiry, build_research_graph
+from agent_service.web_research import answer_simple_web_inquiry
 from agent_service.web_search import SearchProvider
 
 
@@ -104,14 +105,16 @@ class AgentState(TypedDict, total=False):
 def classify_intent(state: AgentState) -> AgentState:
     decision = classify_route(state["message"])
     goal_spec = parse_goal_spec(state["message"])
+    intent = _compatible_intent(
+        state["message"],
+        decision,
+        inquiry_choice=state.get("inquiry_choice"),
+        goal_spec=goal_spec,
+    )
+    goal_spec = _goal_spec_for_intent(state["message"], goal_spec, intent)
     return {
         **state,
-        "intent": _compatible_intent(
-            state["message"],
-            decision,
-            inquiry_choice=state.get("inquiry_choice"),
-            goal_spec=goal_spec,
-        ),
+        "intent": intent,
         "route_decision": decision.to_payload(),
         "goal_spec": goal_spec,
     }
@@ -161,16 +164,40 @@ def _graph_payload_for_task(
     goal_spec: GoalSpec | None = None,
 ) -> dict:
     spec = goal_spec or parse_goal_spec(message)
-    if spec.task_type == "document_processing" and not _is_markdown_conversion_only(
-        message.content
-    ):
-        graph_payload = _create_document_graph(message.task_id, spec, message)
-    else:
-        graph_payload = _build_task_graph_payload(message)
-
+    request = _planning_request_for_message(
+        message,
+        goal_spec=spec,
+        route_decision={},
+    )
+    graph_payload = default_planner_chain(request.tool_registry).plan(
+        request
+    ).graph_payload
     return _with_model_policy_metadata(
         graph_payload,
         DEEP_REASONING_POLICY.profile.value,
+    )
+
+
+def _planning_request_for_message(
+    message: UserMessage,
+    *,
+    goal_spec: GoalSpec,
+    route_decision: dict,
+) -> PlanningRequest:
+    tool_registry = ToolRegistry.from_packages_root(default_tool_packages_root())
+    context = build_context_bundle(
+        message=message,
+        goal_spec=goal_spec,
+        project_path="project.alita",
+        tool_registry=tool_registry,
+    )
+    return PlanningRequest(
+        task_id=message.task_id,
+        message=message,
+        goal_spec=goal_spec,
+        context=context,
+        route_decision=route_decision,
+        tool_registry=tool_registry,
     )
 
 
@@ -264,11 +291,19 @@ def plan_research_graph(state: AgentState) -> AgentState:
 
 
 def _research_graph_payload(state: AgentState) -> dict:
+    message = state["message"]
+    goal_spec = state.get("goal_spec") or parse_goal_spec(message)
+    goal_spec = _goal_spec_for_intent(message, goal_spec, "web_complex_research_flow")
+    request = _planning_request_for_message(
+        message,
+        goal_spec=goal_spec,
+        route_decision=state.get("route_decision", {}),
+    )
+    graph_payload = default_planner_chain(request.tool_registry).plan(
+        request
+    ).graph_payload
     return _with_model_policy_metadata(
-        build_research_graph(
-            state["message"],
-            state.get("route_decision", {}),
-        ),
+        graph_payload,
         DEEP_REASONING_POLICY.profile.value,
     )
 
@@ -646,6 +681,40 @@ def _compatible_intent(
             return "web_complex_choice"
 
     return "chat"
+
+
+def _goal_spec_for_intent(
+    message: UserMessage,
+    goal_spec: GoalSpec,
+    intent: AgentIntent,
+) -> GoalSpec:
+    if intent == "task" and goal_spec.task_type == "chat":
+        return goal_spec.model_copy(
+            update={
+                "goal": message.content.strip() or goal_spec.goal,
+                "task_type": "unknown",
+                "deliverable": "task_output",
+                "success_criteria": ["生成可执行的任务计划"],
+                "confidence": max(goal_spec.confidence, 0.7),
+            }
+        )
+
+    if intent != "web_complex_research_flow" or goal_spec.task_type == "research":
+        return goal_spec
+
+    return goal_spec.model_copy(
+        update={
+            "goal": message.content.strip() or goal_spec.goal,
+            "task_type": "research",
+            "deliverable": "research_answer",
+            "success_criteria": ["回答包含联网检索得到的信息"],
+            "risk_level": "network",
+            "permissions_required": ["network"],
+            "needs_web": True,
+            "needs_user_confirmation": True,
+            "confidence": max(goal_spec.confidence, 0.8),
+        }
+    )
 
 
 def _is_markdown_conversion_only(content: str) -> bool:

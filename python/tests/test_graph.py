@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 from pydantic import ValidationError
 
@@ -17,7 +15,6 @@ from agent_service.intent import IntentKind, classify_route
 from agent_service.model_client import ChatMessage
 from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
 from agent_service.schemas import Attachment, GraphNode, RunGraph, UserMessage
-from agent_service.task_graph import build_document_task_graph
 from agent_service.web_search import SearchResponse, SearchResult
 
 
@@ -760,37 +757,124 @@ def test_attachment_document_task_route_decision_matches_document_graph_route() 
     ]
 
 
-def test_attachment_document_task_graph_uses_planner_v2_shape(monkeypatch) -> None:
-    planner_calls: list[dict[str, object]] = []
+def test_task_graph_planning_uses_default_planner_chain(monkeypatch) -> None:
+    from agent_service.planning import PlanningResult
 
-    class RecordingPlanner:
-        def __init__(self, *, tool_registry) -> None:
-            self.tool_registry = tool_registry
+    captured = []
 
-        def plan(self, *, task_id, goal_spec, context):
-            planner_calls.append(
-                {
-                    "task_id": task_id,
-                    "goal_spec": goal_spec,
-                    "context": context,
-                    "tool_registry": self.tool_registry,
-                }
+    class RecordingPlannerChain:
+        def plan(self, request):
+            captured.append(request)
+            return PlanningResult(
+                planner="recording.planner",
+                graph_payload={
+                    "graphId": f"{request.task_id}-graph",
+                    "nodes": [
+                        {
+                            "nodeId": "task-output",
+                            "nodeType": "output",
+                            "displayName": "Task output",
+                            "status": "waiting",
+                            "inputPorts": [],
+                            "outputPorts": [],
+                            "dependencies": [],
+                            "summary": "Recorded output.",
+                            "createdBy": "agent",
+                            "artifactRefs": [],
+                            "retryCount": 0,
+                            "position": {"x": 0, "y": 0},
+                        }
+                    ],
+                    "edges": [],
+                    "metadata": {},
+                },
+                confidence=0.9,
             )
-            return SimpleNamespace(
-                task_graph=build_document_task_graph(task_id, goal_spec)
-            )
 
-    monkeypatch.setattr(graph_module, "PlannerV2", RecordingPlanner)
+    monkeypatch.setattr(
+        graph_module,
+        "default_planner_chain",
+        lambda tool_registry: RecordingPlannerChain(),
+    )
 
     events = run_agent(
         UserMessage(
-            task_id="task-planner-v2",
+            task_id="task-general",
+            content="Can you create a Python script that counts rows in a CSV file?",
+        )
+    )
+
+    assert captured
+    assert captured[0].task_id == "task-general"
+    assert captured[0].goal_spec.goal.startswith("Can you create")
+    assert events[0].type == "node_graph.created"
+    assert events[0].payload["graph"]["metadata"]["modelPolicy"] == "deep_reasoning"
+
+
+def test_research_graph_planning_uses_default_planner_chain(monkeypatch) -> None:
+    from agent_service.planning import PlanningResult
+
+    captured = []
+
+    class RecordingPlannerChain:
+        def plan(self, request):
+            captured.append(request)
+            return PlanningResult(
+                planner="recording.research",
+                graph_payload={
+                    "graphId": f"{request.task_id}-research-graph",
+                    "nodes": [
+                        {
+                            "nodeId": "research-markdown-output",
+                            "nodeType": "output",
+                            "displayName": "Markdown output",
+                            "status": "waiting",
+                            "inputPorts": [],
+                            "outputPorts": [],
+                            "dependencies": [],
+                            "summary": "Recorded research output.",
+                            "createdBy": "agent",
+                            "artifactRefs": [],
+                            "retryCount": 0,
+                            "position": {"x": 0, "y": 0},
+                        }
+                    ],
+                    "edges": [],
+                    "metadata": {"kind": "research"},
+                },
+                confidence=0.9,
+            )
+
+    monkeypatch.setattr(
+        graph_module,
+        "default_planner_chain",
+        lambda tool_registry: RecordingPlannerChain(),
+    )
+
+    events = run_agent(
+        UserMessage(
+            task_id="complex-web",
+            content="Research and compare current Python packaging tools",
+        ),
+        inquiry_choice="research_flow",
+    )
+
+    assert captured
+    assert captured[0].goal_spec.task_type == "research"
+    assert events[0].type == "node_graph.created"
+    assert events[0].payload["graph"]["metadata"]["modelPolicy"] == "deep_reasoning"
+
+
+def test_attachment_document_task_graph_uses_planner_chain_shape() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="task-planner-chain",
             content="summarize this document as a PDF report",
             attachments=[
                 Attachment(
-                    attachment_id="a-planner-v2",
-                    name="planner-v2.docx",
-                    path="workspace/inputs/planner-v2.docx",
+                    attachment_id="a-planner-chain",
+                    name="planner-chain.docx",
+                    path="workspace/inputs/planner-chain.docx",
                     size_bytes=100,
                     mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
@@ -798,11 +882,10 @@ def test_attachment_document_task_graph_uses_planner_v2_shape(monkeypatch) -> No
         )
     )
 
-    assert planner_calls
     assert len(events) == 1
     assert events[0].type == "node_graph.created"
     graph = events[0].payload["graph"]
-    assert graph["graphId"] == "task-planner-v2-graph"
+    assert graph["graphId"] == "task-planner-chain-graph"
     assert [edge["id"] for edge in graph["edges"]] == [
         "document-input-document-parse",
         "document-parse-content-organize",

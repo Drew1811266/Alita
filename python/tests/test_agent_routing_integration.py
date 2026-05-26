@@ -225,6 +225,44 @@ def test_task_message_creates_graph_with_planning_and_executable_nodes() -> None
     assert executable_nodes[1]["nodeType"] == "output"
 
 
+def test_planner_chain_preserves_document_and_research_graph_payloads() -> None:
+    document_events = run_agent(
+        UserMessage(
+            task_id="doc-chain",
+            content="整理成报告",
+            attachments=[
+                {
+                    "attachment_id": "a1",
+                    "name": "input.docx",
+                    "path": "workspace/input.docx",
+                    "size_bytes": 100,
+                    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                }
+            ],
+        )
+    )
+    document_graph = document_events[0].payload["graph"]
+    assert [node["nodeId"] for node in document_graph["nodes"][:6]] == [
+        "document-input",
+        "document-parse",
+        "content-organize",
+        "report-generate",
+        "typst-export",
+        "file-export",
+    ]
+
+    research_events = run_agent(
+        UserMessage(
+            task_id="research-chain",
+            content="Research and compare current Python packaging tools",
+        ),
+        inquiry_choice="research_flow",
+    )
+    research_graph = research_events[0].payload["graph"]
+    assert research_graph["metadata"]["kind"] == "research"
+    assert research_graph["nodes"][0]["nodeId"] == "research-intent-analysis"
+
+
 def test_high_risk_temporary_script_blocks_execution_until_approved(
     tmp_path: Path,
 ) -> None:
