@@ -79,6 +79,29 @@ def test_document_template_planner_returns_existing_document_graph_shape() -> No
     assert result.confidence >= 0.8
 
 
+def test_document_template_planner_skips_markdown_conversion_only_request() -> None:
+    request = _request(
+        UserMessage(
+            task_id="task-doc-markdown",
+            content="把这个文件转 markdown",
+            attachments=[
+                Attachment(
+                    attachment_id="a1",
+                    name="input.docx",
+                    path=str(PROJECT_ROOT / "input.docx"),
+                    size_bytes=128,
+                    mime_type=(
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document"
+                    ),
+                )
+            ],
+        )
+    )
+
+    assert DocumentTemplatePlanner().can_plan(request) is False
+
+
 def test_research_template_planner_returns_existing_research_graph_shape() -> None:
     request = _request(
         UserMessage(

@@ -159,7 +159,7 @@ def _is_markdown_conversion_only(content: str) -> bool:
     has_markdown = any(keyword in normalized for keyword in ("markdown", "md"))
     has_conversion = any(
         keyword in normalized
-        for keyword in ("convert", "conversion", "export", "转换", "转成", "导出")
+        for keyword in ("convert", "conversion", "export", "转换", "转", "转成", "导出")
     )
     has_report = any(
         keyword in normalized for keyword in ("report", "pdf", "报告")
