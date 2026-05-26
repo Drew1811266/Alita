@@ -231,6 +231,53 @@ def test_run_agent_builds_effective_research_agent_run_state(monkeypatch) -> Non
     assert [event.type for event in events] == ["node_graph.created"]
 
 
+def test_run_agent_builds_effective_quick_answer_route_decision(monkeypatch) -> None:
+    captured = []
+
+    def recording_builder(message, **kwargs):
+        from agent_service.kernel_state import build_agent_run_state
+
+        state = build_agent_run_state(message, **kwargs)
+        captured.append(state)
+        return state
+
+    monkeypatch.setattr(graph_module, "build_agent_run_state", recording_builder)
+
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Python packaging guide",
+                    url="https://packaging.python.org/",
+                    snippet="Python packaging tools overview.",
+                )
+            ]
+        )
+    )
+
+    events = run_agent(
+        UserMessage(
+            task_id="quick-web-state",
+            content="Research and compare current Python packaging tools",
+        ),
+        inquiry_choice="quick_answer",
+        search_provider=provider,
+    )
+
+    assert captured
+    assert captured[0].route_decision["intent"]["kind"] == "inquiry"
+    assert captured[0].route_decision["inquiry"] == {
+        "mode": "web_simple",
+        "requires_web": True,
+    }
+    assert captured[0].route_decision["effective_intent"] == "web_simple_inquiry"
+    assert (
+        captured[0].route_decision["raw_route_decision"]["inquiry"]["mode"]
+        == "web_complex"
+    )
+    assert [event.type for event in events] == ["message.created"]
+
+
 def test_run_agent_builds_effective_document_task_route_decision(monkeypatch) -> None:
     captured = []
 

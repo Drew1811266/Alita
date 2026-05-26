@@ -518,15 +518,18 @@ def _build_effective_kernel_state(
 def _effective_route_payload(decision: RouteDecision, intent: AgentIntent) -> dict:
     raw_payload = decision.to_payload()
     effective_kind = _route_decision_kind_for_agent_intent(intent)
+    effective_inquiry = _inquiry_payload_for_agent_intent(intent)
     payload = {
         **raw_payload,
         "intent": {"kind": effective_kind},
+        "inquiry": effective_inquiry,
         "effective_intent": intent,
     }
-    if raw_payload.get("intent", {}).get("kind") != effective_kind:
+    if (
+        raw_payload.get("intent", {}).get("kind") != effective_kind
+        or raw_payload.get("inquiry") != effective_inquiry
+    ):
         payload["raw_route_decision"] = raw_payload
-        if effective_kind != "inquiry":
-            payload["inquiry"] = None
     return payload
 
 
@@ -543,6 +546,16 @@ def _route_decision_kind_for_agent_intent(intent: AgentIntent) -> str:
     }:
         return "inquiry"
     return "chat"
+
+
+def _inquiry_payload_for_agent_intent(intent: AgentIntent) -> dict | None:
+    if intent == "local_inquiry":
+        return {"mode": "local", "requires_web": False}
+    if intent == "web_simple_inquiry":
+        return {"mode": "web_simple", "requires_web": True}
+    if intent in {"web_complex_choice", "web_complex_research_flow"}:
+        return {"mode": "web_complex", "requires_web": True}
+    return None
 
 
 def stream_agent_events(
