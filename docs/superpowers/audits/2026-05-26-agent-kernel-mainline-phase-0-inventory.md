@@ -90,7 +90,7 @@ Current tool paths:
 - Research search and source reading are executed inside `ResearchFlowExecutor`.
 - Weather answers are routed through `tool_router` and `tool_providers.weather`.
 - Simple web search uses `tool_providers.web_search` provider chain.
-- Internal and MCP tools are represented by `UnifiedToolGateway`, `InternalToolProvider`, and `MCPToolProvider`.
+- Internal and MCP tools are represented by `UnifiedToolGateway`, `InternalToolProvider`, and `McpToolProvider`.
 - Model-provider tool schema conversion exists in `model_tool_adapter.py`, but a full ReAct loop is not yet wired.
 
 ## Model Call Paths
@@ -120,6 +120,7 @@ Node records include:
 - `error`
 - `errorCode`
 - `runtimeNotice`
+- `scriptReview`
 
 ## Phase 1 Compatibility Requirement
 
