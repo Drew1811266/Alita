@@ -115,6 +115,55 @@ def test_plain_chat_returns_local_model_message() -> None:
     )
 
 
+def test_run_agent_builds_agent_run_state(monkeypatch) -> None:
+    captured = []
+
+    def recording_builder(message, **kwargs):
+        from agent_service.kernel_state import build_agent_run_state
+
+        state = build_agent_run_state(message, **kwargs)
+        captured.append(state)
+        return state
+
+    monkeypatch.setattr(graph_module, "build_agent_run_state", recording_builder)
+
+    events = run_agent(
+        UserMessage(task_id="task-chat", content="hello"),
+        model_client=FakeModelClient("hi"),
+    )
+
+    assert [event.type for event in events] == ["message.created"]
+    assert captured
+    assert captured[0].task_id == "task-chat"
+    assert captured[0].execution_mode == "message"
+    assert captured[0].goal_spec.task_type == "chat"
+
+
+def test_stream_agent_events_builds_stream_agent_run_state(monkeypatch) -> None:
+    captured = []
+
+    def recording_builder(message, **kwargs):
+        from agent_service.kernel_state import build_agent_run_state
+
+        state = build_agent_run_state(message, **kwargs)
+        captured.append(state)
+        return state
+
+    monkeypatch.setattr(graph_module, "build_agent_run_state", recording_builder)
+
+    events = list(
+        stream_agent_events(
+            UserMessage(task_id="task-chat", content="hello"),
+            model_client=FakeModelClient(),
+        )
+    )
+
+    assert events[0].type == "message.started"
+    assert captured
+    assert captured[0].task_id == "task-chat"
+    assert captured[0].execution_mode == "stream"
+
+
 def test_plain_chat_uses_fast_chat_policy() -> None:
     client = FakeModelClient("hello")
 

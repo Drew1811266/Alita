@@ -17,6 +17,7 @@ from agent_service.intent import (
     RouteDecision,
     classify_route,
 )
+from agent_service.kernel_state import build_agent_run_state
 from agent_service.model_client import (
     ChatMessage as ModelChatMessage,
     LlamaCppModelClient,
@@ -97,6 +98,7 @@ class AgentState(TypedDict, total=False):
     artifact_refs: list[str]
     pending_choice: dict
     goal_spec: GoalSpec
+    kernel_state: object
 
 
 def classify_intent(state: AgentState) -> AgentState:
@@ -402,6 +404,16 @@ def run_agent(
             )
         ]
 
+    kernel_state = build_agent_run_state(
+        message,
+        current_graph=current_graph,
+        execution_mode="message",
+        model_session_id=message.model_session_id,
+        has_run_history=has_run_history,
+        artifact_refs=artifact_refs,
+        pending_choice=pending_choice,
+    )
+
     app = build_graph(
         model_client=model_client,
         search_provider=search_provider,
@@ -409,7 +421,12 @@ def run_agent(
         inquiry_choice=inquiry_choice,
     )
     result = app.invoke(
-        {"message": message, "events": [], "inquiry_choice": inquiry_choice}
+        {
+            "message": message,
+            "events": [],
+            "inquiry_choice": inquiry_choice,
+            "kernel_state": kernel_state,
+        }
     )
     return result["events"]
 
@@ -439,6 +456,17 @@ def stream_agent_events(
             pending_choice=pending_choice,
         )
         return
+
+    kernel_state = build_agent_run_state(
+        message,
+        current_graph=current_graph,
+        execution_mode="stream",
+        model_session_id=message.model_session_id,
+        has_run_history=has_run_history,
+        artifact_refs=artifact_refs,
+        pending_choice=pending_choice,
+    )
+    _ = kernel_state
 
     decision = classify_route(message)
     goal_spec = parse_goal_spec(message)
