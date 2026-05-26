@@ -23,6 +23,8 @@ Current run events:
 
 - `run.started`
 - `run.cancelled`
+- `node.created`
+- `node.updated`
 - `node.running`
 - `node.completed`
 - `node.failed`
