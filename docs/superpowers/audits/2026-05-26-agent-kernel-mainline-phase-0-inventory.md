@@ -26,6 +26,7 @@ Current run events:
 - `node.running`
 - `node.completed`
 - `node.failed`
+- `node.skipped`
 - `node.needs_permission`
 - `permission.required`
 - `node.run_recorded`
