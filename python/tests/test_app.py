@@ -1,8 +1,15 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from agent_service.app import app
 from agent_service.schemas import ScriptReviewState
 from agent_service.script_review import script_review_fingerprint
+
+
+@pytest.fixture(autouse=True)
+def allow_unauthenticated_dev_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ALITA_SIDECAR_TOKEN", raising=False)
+    monkeypatch.setenv("ALITA_SIDECAR_ALLOW_UNAUTHENTICATED_DEV", "1")
 
 
 def test_agent_message_stream_returns_sse_events() -> None:
@@ -181,6 +188,74 @@ def test_agent_endpoints_reject_non_alita_sidecar_token_header(monkeypatch) -> N
     )
 
     assert response.status_code == 401
+
+
+def test_agent_message_without_token_or_bypass_returns_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ALITA_SIDECAR_TOKEN", raising=False)
+    monkeypatch.delenv("ALITA_SIDECAR_ALLOW_UNAUTHENTICATED_DEV", raising=False)
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/message",
+        json={
+            "task_id": "task-auth-missing-token",
+            "content": "hello",
+            "attachments": [],
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "sidecar token is not configured"}
+
+
+def test_agent_message_without_token_allows_explicit_dev_bypass() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/message",
+        json={
+            "task_id": "task-auth-dev-bypass",
+            "content": "hello",
+            "attachments": [],
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_agent_message_preflight_allows_known_local_origin() -> None:
+    client = TestClient(app)
+    origin = "http://127.0.0.1:1420"
+
+    response = client.options(
+        "/agent/message",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Content-Type,X-Alita-Sidecar-Token",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+
+
+def test_agent_message_preflight_rejects_unknown_origin() -> None:
+    client = TestClient(app)
+
+    response = client.options(
+        "/agent/message",
+        headers={
+            "Origin": "https://evil.example",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Content-Type,X-Alita-Sidecar-Token",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
 
 
 def test_graph_run_stream_returns_node_events(tmp_path) -> None:

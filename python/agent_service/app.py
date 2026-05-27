@@ -35,16 +35,29 @@ from agent_service.schemas import (
 from agent_service.script_review import script_review_fingerprint
 
 
+SIDECAR_TOKEN_ENV = "ALITA_SIDECAR_TOKEN"
+SIDECAR_DEV_BYPASS_ENV = "ALITA_SIDECAR_ALLOW_UNAUTHENTICATED_DEV"
+SIDECAR_TOKEN_HEADER = "X-Alita-Sidecar-Token"
+ALLOWED_CORS_ORIGINS = [
+    "http://127.0.0.1:1420",
+    "http://localhost:1420",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+    "http://tauri.localhost",
+    "tauri://localhost",
+]
+
 app = FastAPI(title="Alita Agent Sidecar")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_CORS_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", SIDECAR_TOKEN_HEADER],
 )
 
-SIDECAR_TOKEN_ENV = "ALITA_SIDECAR_TOKEN"
-SIDECAR_TOKEN_HEADER = "X-Alita-Sidecar-Token"
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def require_sidecar_token(
@@ -52,7 +65,9 @@ def require_sidecar_token(
 ) -> None:
     expected_token = os.getenv(SIDECAR_TOKEN_ENV)
     if not expected_token:
-        return
+        if _env_flag_enabled(SIDECAR_DEV_BYPASS_ENV):
+            return
+        raise HTTPException(status_code=401, detail="sidecar token is not configured")
     if sidecar_token != expected_token:
         raise HTTPException(status_code=401, detail="invalid sidecar token")
 
