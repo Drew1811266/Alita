@@ -269,6 +269,41 @@ def test_graph_state_updates_agent_run_state_with_routing_metadata() -> None:
     assert result["intent"] == "web_simple_inquiry"
 
 
+def test_graph_state_records_effective_route_decision_for_quick_answer_choice() -> None:
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Packaging tools",
+                    url="https://packaging.python.org/",
+                    snippet="Python packaging tools guide.",
+                )
+            ]
+        )
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-effective-route",
+            content="Research and compare current Python packaging tools",
+        ),
+        inquiry_choice="quick_answer",
+    )
+    app = build_graph(search_provider=provider)
+
+    result = app.invoke(
+        {
+            "run_state": run_state,
+            "message": run_state.message,
+            "events": [],
+        }
+    )
+
+    updated = result["run_state"]
+    assert updated.intent == "web_simple_inquiry"
+    assert updated.route_decision["inquiry"]["mode"] == "web_simple"
+    assert result["route_decision"]["inquiry"]["mode"] == "web_simple"
+
+
 def test_build_graph_still_accepts_legacy_state_without_run_state() -> None:
     provider = FakeSearchProvider(
         SearchResponse(
@@ -338,6 +373,43 @@ def test_stream_agent_events_from_state_matches_public_stream_behavior() -> None
     }
     assert events[3].payload == {"messageId": message["messageId"]}
     assert client.calls
+
+
+def test_stream_agent_events_from_state_routes_non_chat_without_reclassifying(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original_classify_route = graph_module.classify_route
+
+    def counting_classify_route(message: UserMessage):
+        nonlocal calls
+        calls += 1
+        return original_classify_route(message)
+
+    monkeypatch.setattr(graph_module, "classify_route", counting_classify_route)
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="stream-quick-answer-once",
+            content="Research and compare current Python packaging tools",
+        ),
+        inquiry_choice="quick_answer",
+    )
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Packaging tools",
+                    url="https://packaging.python.org/",
+                    snippet="Python packaging tools guide.",
+                )
+            ]
+        )
+    )
+
+    events = list(stream_agent_events_from_state(run_state, search_provider=provider))
+
+    assert calls == 1
+    assert [event.type for event in events] == ["message.created"]
 
 
 def test_web_simple_route_auto_searches_and_returns_sources_without_graph() -> None:

@@ -139,28 +139,65 @@ def _agent_state_from_run_state(run_state: AgentRunState) -> AgentState:
 
 def classify_intent(state: AgentState) -> AgentState:
     run_state = _run_state_from_agent_state(state)
-    message = run_state.message
-    decision = classify_route(message)
-    goal_spec = parse_goal_spec(message)
-    route_decision = decision.to_payload()
-    intent = _compatible_intent(
-        message,
-        decision,
+    routed_run_state = _route_run_state(
+        run_state,
         inquiry_choice=state.get("inquiry_choice") or run_state.inquiry_choice,
-        goal_spec=goal_spec,
     )
     return {
         **state,
-        "run_state": run_state.with_routing(
-            intent=intent,
-            route_decision=route_decision,
-            goal_spec=goal_spec,
-        ),
-        "message": message,
-        "intent": intent,
-        "route_decision": route_decision,
-        "goal_spec": goal_spec,
+        "run_state": routed_run_state,
+        "message": routed_run_state.message,
+        "intent": routed_run_state.intent,
+        "route_decision": routed_run_state.route_decision,
+        "goal_spec": routed_run_state.goal_spec,
     }
+
+
+def _route_run_state(
+    run_state: AgentRunState,
+    *,
+    inquiry_choice: InquiryChoice | None = None,
+) -> AgentRunState:
+    effective_inquiry_choice = inquiry_choice or run_state.inquiry_choice
+    message = run_state.message
+    decision = classify_route(message)
+    goal_spec = parse_goal_spec(message)
+    intent = _compatible_intent(
+        message,
+        decision,
+        inquiry_choice=effective_inquiry_choice,
+        goal_spec=goal_spec,
+    )
+    routed_run_state = run_state
+    if effective_inquiry_choice != run_state.inquiry_choice:
+        routed_run_state = routed_run_state.model_copy(
+            update={"inquiry_choice": effective_inquiry_choice}
+        )
+    return routed_run_state.with_routing(
+        intent=intent,
+        route_decision=_effective_route_payload(decision, intent),
+        goal_spec=goal_spec,
+    )
+
+
+def _effective_route_payload(
+    decision: RouteDecision,
+    intent: AgentIntent,
+) -> dict:
+    route_decision = decision.to_payload()
+    if (
+        intent == "web_simple_inquiry"
+        and route_decision.get("inquiry", {}).get("mode") == InquiryMode.WEB_COMPLEX.value
+    ):
+        route_decision = {
+            **route_decision,
+            "inquiry": {
+                **route_decision["inquiry"],
+                "mode": InquiryMode.WEB_SIMPLE.value,
+                "requires_web": True,
+            },
+        }
+    return route_decision
 
 
 def request_required_inputs(state: AgentState) -> AgentState:
@@ -423,6 +460,36 @@ def answer_with_web(
     }
 
 
+def _events_for_routed_run_state(
+    run_state: AgentRunState,
+    *,
+    model_client: ModelClient | None = None,
+    search_provider: SearchProvider | None = None,
+    weather_provider: WeatherProvider | None = None,
+) -> list[AgentEvent]:
+    state = _agent_state_from_run_state(run_state)
+    intent = run_state.intent
+    if intent == "chat" or intent == "local_inquiry":
+        result = answer_with_model(state, model_client=model_client)
+    elif intent == "web_simple_inquiry":
+        result = answer_with_web(
+            state,
+            search_provider=search_provider,
+            weather_provider=weather_provider,
+        )
+    elif intent == "web_complex_choice":
+        result = choose_research_mode(state)
+    elif intent == "web_complex_research_flow":
+        result = plan_research_graph(state)
+    elif intent == "missing_input":
+        result = request_required_inputs(state)
+    elif intent == "task":
+        result = plan_task_graph(state)
+    else:
+        raise ValueError("AgentRunState must be routed before dispatching events")
+    return result["events"]
+
+
 def run_agent(
     message: UserMessage,
     *,
@@ -473,6 +540,14 @@ def run_agent_from_state(
                 pending_choice=run_state.pending_choice,
             )
         ]
+
+    if run_state.intent is not None:
+        return _events_for_routed_run_state(
+            run_state,
+            model_client=model_client,
+            search_provider=search_provider,
+            weather_provider=weather_provider,
+        )
 
     app = build_graph(
         model_client=model_client,
@@ -534,23 +609,11 @@ def stream_agent_events_from_state(
         )
         return
 
-    decision = classify_route(message)
-    goal_spec = parse_goal_spec(message)
-    intent = _compatible_intent(
-        message,
-        decision,
-        inquiry_choice=run_state.inquiry_choice,
-        goal_spec=goal_spec,
-    )
-    run_state = run_state.with_routing(
-        intent=intent,
-        route_decision=decision.to_payload(),
-        goal_spec=goal_spec,
-    )
-    if intent == "task":
+    run_state = _route_run_state(run_state)
+    if run_state.intent == "task":
         graph_payload = _graph_payload_for_task(
             message,
-            goal_spec=goal_spec,
+            goal_spec=run_state.goal_spec,
         )
         yield from _task_planning_progress_events(message, graph_payload)
         yield AgentEvent(
@@ -559,8 +622,8 @@ def stream_agent_events_from_state(
         )
         return
 
-    if intent not in {"chat", "local_inquiry"}:
-        yield from run_agent_from_state(
+    if run_state.intent not in {"chat", "local_inquiry"}:
+        yield from _events_for_routed_run_state(
             run_state,
             model_client=model_client,
             search_provider=search_provider,
@@ -569,7 +632,7 @@ def stream_agent_events_from_state(
         return
 
     client = model_client or LlamaCppModelClient()
-    policy = policy_for_agent_intent(intent)
+    policy = policy_for_agent_intent(run_state.intent)
     assistant_message = _assistant_message("")
     message_id = assistant_message["messageId"]
     yield AgentEvent(
