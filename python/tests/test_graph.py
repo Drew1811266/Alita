@@ -6,12 +6,15 @@ import pytest
 from pydantic import ValidationError
 
 import agent_service.graph as graph_module
+from agent_service.agent_run_state import AgentRunState
 from agent_service.graph import (
     _classify_message,
     _node,
     build_graph,
     run_agent,
+    run_agent_from_state,
     stream_agent_events,
+    stream_agent_events_from_state,
 )
 from agent_service.intent import IntentKind, classify_route
 from agent_service.model_client import ChatMessage
@@ -221,6 +224,120 @@ def test_graph_state_preserves_structured_route_decision_for_inquiries() -> None
         "missing_inputs": [],
     }
     assert result["events"][0].type == "message.created"
+
+
+def test_graph_state_updates_agent_run_state_with_routing_metadata() -> None:
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Python release",
+                    url="https://www.python.org/downloads/",
+                    snippet="Latest Python release.",
+                )
+            ]
+        )
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-run-state-route",
+            content="What is the latest Python release?",
+        )
+    )
+    app = build_graph(search_provider=provider)
+
+    result = app.invoke(
+        {
+            "run_state": run_state,
+            "message": run_state.message,
+            "events": [],
+        }
+    )
+
+    updated = result["run_state"]
+    assert isinstance(updated, AgentRunState)
+    assert updated.task_id == "task-run-state-route"
+    assert updated.intent == "web_simple_inquiry"
+    assert updated.goal_spec is not None
+    assert updated.goal_spec.needs_web is True
+    assert updated.route_decision == {
+        "intent": {"kind": "inquiry"},
+        "inquiry": {"mode": "web_simple", "requires_web": True},
+        "reason": "question requests current or external factual data",
+        "missing_inputs": [],
+    }
+    assert result["intent"] == "web_simple_inquiry"
+
+
+def test_build_graph_still_accepts_legacy_state_without_run_state() -> None:
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Python release",
+                    url="https://www.python.org/downloads/",
+                    snippet="Latest Python release.",
+                )
+            ]
+        )
+    )
+    message = UserMessage(
+        task_id="task-legacy-route",
+        content="What is the latest Python release?",
+    )
+    app = build_graph(search_provider=provider)
+
+    result = app.invoke({"message": message, "events": []})
+
+    assert isinstance(result["run_state"], AgentRunState)
+    assert result["run_state"].task_id == "task-legacy-route"
+    assert result["run_state"].intent == "web_simple_inquiry"
+    assert result["intent"] == "web_simple_inquiry"
+
+
+def test_run_agent_from_state_matches_public_research_choice_behavior() -> None:
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="complex-web-from-state",
+            content="Research and compare current Python packaging tools",
+        )
+    )
+
+    events = run_agent_from_state(run_state)
+
+    assert [event.type for event in events] == ["research.choice_required"]
+    assert events[0].payload["taskId"] == "complex-web-from-state"
+    assert [choice["id"] for choice in events[0].payload["choices"]] == [
+        "quick_answer",
+        "research_flow",
+    ]
+
+
+def test_stream_agent_events_from_state_matches_public_stream_behavior() -> None:
+    client = FakeModelClient()
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-chat-from-state", content="hello")
+    )
+
+    events = list(stream_agent_events_from_state(run_state, model_client=client))
+
+    assert [event.type for event in events] == [
+        "message.started",
+        "message.delta",
+        "message.delta",
+        "message.completed",
+    ]
+    message = events[0].payload["message"]
+    assert events[1].payload == {
+        "messageId": message["messageId"],
+        "delta": "你好",
+    }
+    assert events[2].payload == {
+        "messageId": message["messageId"],
+        "delta": "，本地模型",
+    }
+    assert events[3].payload == {"messageId": message["messageId"]}
+    assert client.calls
 
 
 def test_web_simple_route_auto_searches_and_returns_sources_without_graph() -> None:

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
 
+from agent_service.agent_run_state import AgentRunState
 from agent_service.context_manager import build_context_bundle
 from agent_service.goal_spec import GoalSpec, parse_goal_spec
 from agent_service.graph_compiler import compile_task_graph_to_node_graph
@@ -87,6 +88,7 @@ class ModelClient(Protocol):
 
 
 class AgentState(TypedDict, total=False):
+    run_state: AgentRunState
     message: UserMessage
     events: list[AgentEvent]
     intent: AgentIntent
@@ -99,18 +101,64 @@ class AgentState(TypedDict, total=False):
     goal_spec: GoalSpec
 
 
+def _run_state_from_agent_state(state: AgentState) -> AgentRunState:
+    if "run_state" in state:
+        return state["run_state"]
+    return AgentRunState.from_user_message(
+        state["message"],
+        inquiry_choice=state.get("inquiry_choice"),
+        current_graph=state.get("current_graph"),
+        has_run_history=state.get("has_run_history", False),
+        artifact_refs=state.get("artifact_refs"),
+        pending_choice=state.get("pending_choice"),
+    )
+
+
+def _agent_state_from_run_state(run_state: AgentRunState) -> AgentState:
+    state: AgentState = {
+        "run_state": run_state,
+        "message": run_state.message,
+        "events": [],
+    }
+    if run_state.inquiry_choice is not None:
+        state["inquiry_choice"] = run_state.inquiry_choice
+    if run_state.current_graph is not None:
+        state["current_graph"] = run_state.current_graph
+    state["has_run_history"] = run_state.has_run_history
+    state["artifact_refs"] = list(run_state.artifact_refs)
+    if run_state.pending_choice is not None:
+        state["pending_choice"] = run_state.pending_choice
+    if run_state.intent is not None:
+        state["intent"] = run_state.intent
+    if run_state.route_decision is not None:
+        state["route_decision"] = run_state.route_decision
+    if run_state.goal_spec is not None:
+        state["goal_spec"] = run_state.goal_spec
+    return state
+
+
 def classify_intent(state: AgentState) -> AgentState:
-    decision = classify_route(state["message"])
-    goal_spec = parse_goal_spec(state["message"])
+    run_state = _run_state_from_agent_state(state)
+    message = run_state.message
+    decision = classify_route(message)
+    goal_spec = parse_goal_spec(message)
+    route_decision = decision.to_payload()
+    intent = _compatible_intent(
+        message,
+        decision,
+        inquiry_choice=state.get("inquiry_choice") or run_state.inquiry_choice,
+        goal_spec=goal_spec,
+    )
     return {
         **state,
-        "intent": _compatible_intent(
-            state["message"],
-            decision,
-            inquiry_choice=state.get("inquiry_choice"),
+        "run_state": run_state.with_routing(
+            intent=intent,
+            route_decision=route_decision,
             goal_spec=goal_spec,
         ),
-        "route_decision": decision.to_payload(),
+        "message": message,
+        "intent": intent,
+        "route_decision": route_decision,
         "goal_spec": goal_spec,
     }
 
@@ -387,18 +435,42 @@ def run_agent(
     artifact_refs: list[str] | None = None,
     pending_choice: dict | None = None,
 ) -> list[AgentEvent]:
+    run_state = AgentRunState.from_user_message(
+        message,
+        inquiry_choice=inquiry_choice,
+        current_graph=current_graph,
+        has_run_history=has_run_history,
+        artifact_refs=artifact_refs,
+        pending_choice=pending_choice,
+    )
+    return run_agent_from_state(
+        run_state,
+        model_client=model_client,
+        search_provider=search_provider,
+        weather_provider=weather_provider,
+    )
+
+
+def run_agent_from_state(
+    run_state: AgentRunState,
+    *,
+    model_client: ModelClient | None = None,
+    search_provider: SearchProvider | None = None,
+    weather_provider: WeatherProvider | None = None,
+) -> list[AgentEvent]:
+    message = run_state.message
     if _should_handle_graph_feedback(
         message,
-        current_graph,
-        pending_choice=pending_choice,
+        run_state.current_graph,
+        pending_choice=run_state.pending_choice,
     ):
         return [
             apply_graph_feedback(
                 message,
-                current_graph,
-                has_run_history=has_run_history,
-                artifact_refs=artifact_refs,
-                pending_choice=pending_choice,
+                run_state.current_graph,
+                has_run_history=run_state.has_run_history,
+                artifact_refs=run_state.artifact_refs,
+                pending_choice=run_state.pending_choice,
             )
         ]
 
@@ -406,11 +478,9 @@ def run_agent(
         model_client=model_client,
         search_provider=search_provider,
         weather_provider=weather_provider,
-        inquiry_choice=inquiry_choice,
+        inquiry_choice=run_state.inquiry_choice,
     )
-    result = app.invoke(
-        {"message": message, "events": [], "inquiry_choice": inquiry_choice}
-    )
+    result = app.invoke(_agent_state_from_run_state(run_state))
     return result["events"]
 
 
@@ -426,17 +496,41 @@ def stream_agent_events(
     artifact_refs: list[str] | None = None,
     pending_choice: dict | None = None,
 ) -> Iterator[AgentEvent]:
+    run_state = AgentRunState.from_user_message(
+        message,
+        inquiry_choice=inquiry_choice,
+        current_graph=current_graph,
+        has_run_history=has_run_history,
+        artifact_refs=artifact_refs,
+        pending_choice=pending_choice,
+    )
+    yield from stream_agent_events_from_state(
+        run_state,
+        model_client=model_client,
+        search_provider=search_provider,
+        weather_provider=weather_provider,
+    )
+
+
+def stream_agent_events_from_state(
+    run_state: AgentRunState,
+    *,
+    model_client: ModelClient | None = None,
+    search_provider: SearchProvider | None = None,
+    weather_provider: WeatherProvider | None = None,
+) -> Iterator[AgentEvent]:
+    message = run_state.message
     if _should_handle_graph_feedback(
         message,
-        current_graph,
-        pending_choice=pending_choice,
+        run_state.current_graph,
+        pending_choice=run_state.pending_choice,
     ):
         yield apply_graph_feedback(
             message,
-            current_graph,
-            has_run_history=has_run_history,
-            artifact_refs=artifact_refs,
-            pending_choice=pending_choice,
+            run_state.current_graph,
+            has_run_history=run_state.has_run_history,
+            artifact_refs=run_state.artifact_refs,
+            pending_choice=run_state.pending_choice,
         )
         return
 
@@ -445,7 +539,12 @@ def stream_agent_events(
     intent = _compatible_intent(
         message,
         decision,
-        inquiry_choice=inquiry_choice,
+        inquiry_choice=run_state.inquiry_choice,
+        goal_spec=goal_spec,
+    )
+    run_state = run_state.with_routing(
+        intent=intent,
+        route_decision=decision.to_payload(),
         goal_spec=goal_spec,
     )
     if intent == "task":
@@ -461,12 +560,11 @@ def stream_agent_events(
         return
 
     if intent not in {"chat", "local_inquiry"}:
-        yield from run_agent(
-            message,
+        yield from run_agent_from_state(
+            run_state,
             model_client=model_client,
             search_provider=search_provider,
             weather_provider=weather_provider,
-            inquiry_choice=inquiry_choice,
         )
         return
 
