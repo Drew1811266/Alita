@@ -1,9 +1,184 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from agent_service.agent_run_state import AgentRunState
 from agent_service.app import app
-from agent_service.schemas import ScriptReviewState
+from agent_service.schemas import AgentEvent, ScriptReviewState
 from agent_service.script_review import script_review_fingerprint
+
+
+def test_agent_message_endpoint_passes_agent_run_state_to_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[AgentRunState] = []
+
+    def fake_run_agent_from_state(
+        run_state: AgentRunState,
+        *,
+        model_client,
+    ) -> list[AgentEvent]:
+        del model_client
+        captured.append(run_state)
+        return [
+            AgentEvent(
+                type="message.created",
+                payload={"message": {"content": "ok"}},
+            )
+        ]
+
+    monkeypatch.setattr("agent_service.app.run_agent_from_state", fake_run_agent_from_state)
+    client = TestClient(app)
+    graph = _temporary_script_graph()
+
+    response = client.post(
+        "/agent/message",
+        json={
+            "task_id": "task-state-endpoint",
+            "content": "Restart, the direction is wrong.",
+            "attachments": [],
+            "current_graph": graph,
+            "has_run_history": True,
+            "artifact_refs": ["artifact-1"],
+            "pending_choice": {"id": "confirm_overwrite", "kind": "full_replan"},
+            "inquiry_choice": "quick_answer",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(captured) == 1
+    run_state = captured[0]
+    assert run_state.task_id == "task-state-endpoint"
+    assert run_state.message.content == "Restart, the direction is wrong."
+    assert run_state.inquiry_choice == "quick_answer"
+    assert run_state.current_graph is not None
+    assert run_state.has_run_history is True
+    assert run_state.artifact_refs == ["artifact-1"]
+    assert run_state.pending_choice == {
+        "id": "confirm_overwrite",
+        "kind": "full_replan",
+    }
+
+
+def test_research_choose_endpoint_passes_agent_run_state_to_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[AgentRunState] = []
+
+    def fake_run_agent_from_state(
+        run_state: AgentRunState,
+        *,
+        model_client,
+    ) -> list[AgentEvent]:
+        del model_client
+        captured.append(run_state)
+        return [
+            AgentEvent(
+                type="research.choice_required",
+                payload={"taskId": run_state.task_id},
+            )
+        ]
+
+    monkeypatch.setattr("agent_service.app.run_agent_from_state", fake_run_agent_from_state)
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/research/choose",
+        json={
+            "task_id": "research-state-endpoint",
+            "content": "Research and compare current Python packaging tools",
+            "attachments": [],
+            "inquiry_choice": "research_flow",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured[0].task_id == "research-state-endpoint"
+    assert captured[0].inquiry_choice == "research_flow"
+
+
+def test_agent_message_stream_endpoint_passes_agent_run_state_to_streamer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[AgentRunState] = []
+
+    def fake_stream_agent_events_from_state(
+        run_state: AgentRunState,
+        *,
+        model_client,
+    ):
+        del model_client
+        captured.append(run_state)
+        yield AgentEvent(
+            type="message.completed",
+            payload={"messageId": f"assistant-{run_state.task_id}"},
+        )
+
+    monkeypatch.setattr(
+        "agent_service.app.stream_agent_events_from_state",
+        fake_stream_agent_events_from_state,
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/message/stream",
+        json={
+            "task_id": "stream-state-endpoint",
+            "content": "hello",
+            "attachments": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "stream-state-endpoint" in response.text
+    assert captured[0].task_id == "stream-state-endpoint"
+
+
+def test_graph_run_stream_endpoint_passes_agent_run_state_to_executor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    captured: list[AgentRunState] = []
+
+    def fake_run_graph_events(
+        request,
+        *,
+        run_state: AgentRunState,
+        model_client,
+        registry,
+    ):
+        del request, model_client, registry
+        captured.append(run_state)
+        yield AgentEvent(
+            type="run.started",
+            payload={"taskId": run_state.task_id, "runId": run_state.run_id},
+        )
+
+    monkeypatch.setattr("agent_service.app.run_graph_events", fake_run_graph_events)
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/graph/run/stream",
+        json={
+            "task_id": "graph-state-endpoint",
+            "run_id": "graph-state-run",
+            "project_path": str(tmp_path / "demo.alita"),
+            "attachments": [],
+            "graph": {
+                "graphId": "graph-state",
+                "nodes": [],
+                "edges": [],
+                "metadata": {"question": "Summarize the graph"},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert "graph-state-run" in response.text
+    assert len(captured) == 1
+    assert captured[0].task_id == "graph-state-endpoint"
+    assert captured[0].run_id == "graph-state-run"
+    assert captured[0].message.content == "Summarize the graph"
+
 
 def test_agent_message_stream_returns_sse_events() -> None:
     client = TestClient(app)

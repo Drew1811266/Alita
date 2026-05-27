@@ -15,8 +15,9 @@ from agent_service.asr import (
     TranscriptionResponse,
     get_asr_status,
 )
+from agent_service.agent_run_state import AgentRunState
 from agent_service.execution import run_graph_events
-from agent_service.graph import run_agent, stream_agent_events
+from agent_service.graph import run_agent_from_state, stream_agent_events_from_state
 from agent_service.model_client import AgentModelClientConfig, create_model_client
 from agent_service.model_sessions import DEFAULT_MODEL_SESSION_REGISTRY
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY
@@ -115,13 +116,8 @@ def agent_message(
     _auth: None = Depends(require_sidecar_token),
 ) -> list[AgentEvent]:
     model_client = _model_client_for_session(request.model_session_id)
-    return run_agent(
-        request.to_user_message(),
-        inquiry_choice=request.inquiry_choice,
-        current_graph=request.currentGraph,
-        has_run_history=bool(request.hasRunHistory),
-        artifact_refs=request.artifactRefs,
-        pending_choice=request.pendingChoice,
+    return run_agent_from_state(
+        AgentRunState.from_message_request(request),
         model_client=model_client,
     )
 
@@ -132,13 +128,8 @@ def research_choose(
     _auth: None = Depends(require_sidecar_token),
 ) -> list[AgentEvent]:
     model_client = _model_client_for_session(request.model_session_id)
-    return run_agent(
-        request.to_user_message(),
-        inquiry_choice=request.inquiry_choice,
-        current_graph=request.currentGraph,
-        has_run_history=bool(request.hasRunHistory),
-        artifact_refs=request.artifactRefs,
-        pending_choice=request.pendingChoice,
+    return run_agent_from_state(
+        AgentRunState.from_message_request(request),
         model_client=model_client,
     )
 
@@ -246,21 +237,19 @@ def _model_client_for_session(model_session_id: str | None):
 
 
 def _serialize_sse_events(request: AgentMessageRequest, *, model_client):
-    for event in stream_agent_events(
-        request.to_user_message(),
-        inquiry_choice=request.inquiry_choice,
-        current_graph=request.currentGraph,
-        has_run_history=bool(request.hasRunHistory),
-        artifact_refs=request.artifactRefs,
-        pending_choice=request.pendingChoice,
+    run_state = AgentRunState.from_message_request(request)
+    for event in stream_agent_events_from_state(
+        run_state,
         model_client=model_client,
     ):
         yield f"data: {event.model_dump_json()}\n\n"
 
 
 def _serialize_graph_sse_events(request: RunGraphRequest, *, model_client):
+    run_state = AgentRunState.from_run_graph_request(request)
     for event in run_graph_events(
         request,
+        run_state=run_state,
         model_client=model_client,
         registry=DEFAULT_RUN_REGISTRY,
     ):

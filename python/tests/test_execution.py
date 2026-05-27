@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from time import sleep
 
+from agent_service.agent_run_state import AgentRunState
 from agent_service.intent import classify_route
 from agent_service.execution import (
     DocumentFlowExecutor,
@@ -268,6 +269,36 @@ def test_rejects_graph_with_unknown_tool_ref_before_running_nodes(tmp_path: Path
     assert events[-1].type == "task.failed"
     assert events[-1].payload["errorCode"] == "unsupported_tool"
     assert "missing.tool" in events[-1].payload["error"]
+
+
+def test_run_graph_events_accepts_matching_agent_run_state(tmp_path: Path) -> None:
+    request = _single_output_run_request(tmp_path)
+    run_state = AgentRunState.from_run_graph_request(request)
+
+    events = list(
+        run_graph_events(
+            request,
+            run_state=run_state,
+            executor=FakeNodeExecutor(),
+        )
+    )
+
+    assert events[0].type == "run.started"
+    assert events[-1].type == "task.completed"
+
+
+def test_run_graph_events_rejects_mismatched_agent_run_state(tmp_path: Path) -> None:
+    request = _single_output_run_request(tmp_path)
+    run_state = AgentRunState.from_run_graph_request(request).model_copy(
+        update={"task_id": "different-task"}
+    )
+
+    events = list(run_graph_events(request, run_state=run_state))
+
+    assert events[0].type == "task.failed"
+    assert events[0].payload["taskId"] == request.task_id
+    assert events[0].payload["runId"] == request.run_id
+    assert events[0].payload["error"]["code"] == "run_state_mismatch"
 
 
 def test_run_graph_events_executes_generic_planner_graph_from_run_agent(
@@ -2023,6 +2054,35 @@ def build_node(
     if estimate is not None:
         node["estimate"] = estimate
     return node
+
+
+def _single_output_run_request(tmp_path: Path) -> RunGraphRequest:
+    return RunGraphRequest(
+        task_id="execution-state-task",
+        run_id="execution-state-run",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[],
+        graph={
+            "graphId": "execution-state-graph",
+            "nodes": [
+                {
+                    "nodeId": "task-output",
+                    "nodeType": "output",
+                    "displayName": "Task output",
+                    "status": "waiting",
+                    "inputPorts": [],
+                    "outputPorts": [],
+                    "dependencies": [],
+                    "summary": "Return final output.",
+                    "createdBy": "agent",
+                    "artifactRefs": [],
+                    "retryCount": 0,
+                    "position": {"x": 0, "y": 0},
+                }
+            ],
+            "edges": [],
+        },
+    )
 
 
 def test_research_flow_executor_uses_default_search_provider_factory(monkeypatch) -> None:

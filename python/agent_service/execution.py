@@ -13,6 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from agent_service.agent_run_state import AgentRunState
 from agent_service.final_verifier import FinalVerifier
 from agent_service.goal_spec import GoalSpec
 from agent_service.harness_errors import HarnessError, harness_error_payload
@@ -741,6 +742,7 @@ class ResearchFlowExecutor:
 def run_graph_events(
     request: RunGraphRequest,
     *,
+    run_state: AgentRunState | None = None,
     executor: NodeExecutor | None = None,
     model_client: ModelClient | None = None,
     tool_executor: ToolExecutor | None = None,
@@ -753,6 +755,22 @@ def run_graph_events(
     final_verifier: FinalVerifier | None = None,
     failure_replanner: FailureReplanner | None = None,
 ) -> Iterator[AgentEvent]:
+    run_state = run_state or AgentRunState.from_run_graph_request(request)
+    mismatch = _run_state_mismatch(request, run_state)
+    if mismatch is not None:
+        yield AgentEvent(
+            type="task.failed",
+            payload={
+                "taskId": request.task_id,
+                "runId": request.run_id,
+                "error": {
+                    "code": "run_state_mismatch",
+                    "message": mismatch,
+                },
+            },
+        )
+        return
+
     replanner = failure_replanner or FailureReplanner()
     try:
         ordered_nodes = _topological_nodes(request)
@@ -1311,6 +1329,23 @@ def _topological_nodes(request: RunGraphRequest) -> list[GraphNode]:
             completed.add(node.nodeId)
 
     return ordered
+
+
+def _run_state_mismatch(
+    request: RunGraphRequest,
+    run_state: AgentRunState,
+) -> str | None:
+    if run_state.task_id != request.task_id:
+        return (
+            "AgentRunState task_id does not match RunGraphRequest task_id: "
+            f"{run_state.task_id} != {request.task_id}"
+        )
+    if run_state.run_id != request.run_id:
+        return (
+            "AgentRunState run_id does not match RunGraphRequest run_id: "
+            f"{run_state.run_id} != {request.run_id}"
+        )
+    return None
 
 
 def is_executable_node(node: GraphNode) -> bool:
