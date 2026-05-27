@@ -5,13 +5,6 @@ from agent_service.app import app
 from agent_service.schemas import ScriptReviewState
 from agent_service.script_review import script_review_fingerprint
 
-
-@pytest.fixture(autouse=True)
-def allow_unauthenticated_dev_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ALITA_SIDECAR_TOKEN", raising=False)
-    monkeypatch.setenv("ALITA_SIDECAR_ALLOW_UNAUTHENTICATED_DEV", "1")
-
-
 def test_agent_message_stream_returns_sse_events() -> None:
     client = TestClient(app)
 
