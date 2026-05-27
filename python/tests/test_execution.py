@@ -301,6 +301,23 @@ def test_run_graph_events_rejects_mismatched_agent_run_state(tmp_path: Path) -> 
     assert events[0].payload["error"]["code"] == "run_state_mismatch"
 
 
+def test_run_graph_events_rejects_run_id_mismatched_agent_run_state(
+    tmp_path: Path,
+) -> None:
+    request = _single_output_run_request(tmp_path)
+    run_state = AgentRunState.from_run_graph_request(request).model_copy(
+        update={"run_id": "different-run"}
+    )
+
+    events = list(run_graph_events(request, run_state=run_state))
+
+    assert events[0].type == "task.failed"
+    assert events[0].payload["taskId"] == request.task_id
+    assert events[0].payload["runId"] == request.run_id
+    assert events[0].payload["error"]["code"] == "run_state_mismatch"
+    assert "run_id" in events[0].payload["error"]["message"]
+
+
 def test_run_graph_events_executes_generic_planner_graph_from_run_agent(
     tmp_path: Path,
 ) -> None:
