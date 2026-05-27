@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent_service import intent
 from agent_service.intent import (
     InquiryMode,
     IntentKind,
@@ -217,6 +218,43 @@ def test_attachment_document_processing_request_is_structured_task_without_path_
     assert decision.missing_inputs == []
     assert attachment_path not in decision.reason
     assert attachment_path not in repr(decision.to_payload())
+
+
+def test_document_keyword_tables_do_not_contain_mojibake_tokens() -> None:
+    keyword_dump = "\n".join(
+        [*intent._DOCUMENT_ACTIONS, *intent._DOCUMENT_REFERENCES]
+    )
+
+    for marker in ["澶", "鏁", "鎬", "鎽", "鎻", "鍒", "鏀", "缈", "闄", "璧", "鍥", "闊", "瑙", "琛"]:
+        assert marker not in keyword_dump
+
+
+def test_chinese_document_request_without_attachment_requires_document_file() -> None:
+    decision = classify_route(UserMessage(task_id="cn-doc-missing", content="请总结这个文档"))
+
+    assert decision.intent.kind == IntentKind.NEED_INPUT
+    assert decision.missing_inputs == ["document_file"]
+
+
+def test_chinese_document_request_with_attachment_routes_to_task() -> None:
+    decision = classify_route(
+        UserMessage(
+            task_id="cn-doc-task",
+            content="请整理附件并导出报告",
+            attachments=[
+                Attachment(
+                    attachment_id="doc-1",
+                    name="notes.docx",
+                    path=r"C:\Users\Drew\Desktop\notes.docx",
+                    size_bytes=128,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            ],
+        )
+    )
+
+    assert decision.intent.kind == IntentKind.TASK
+    assert decision.missing_inputs == []
 
 
 @pytest.mark.parametrize("with_attachment", [False, True])
