@@ -30,6 +30,8 @@ npm run desktop:dev
 
 预期结果：打开一个标题为 `Alita` 的 Windows 应用窗口。这个命令会先确认 Python Agent sidecar 是否在 `127.0.0.1:8765` 运行；如果没有运行，会自动启动。
 
+安全说明：开发脚本会显式设置 `ALITA_SIDECAR_ALLOW_UNAUTHENTICATED_DEV=1`，用于浏览器/Vite 调试。生产 packaged 应用不会设置该开发绕过，而是使用 Tauri 提供的 `ALITA_SIDECAR_TOKEN`。
+
 ## 构建安装包
 
 ```powershell
