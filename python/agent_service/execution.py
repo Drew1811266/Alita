@@ -48,6 +48,7 @@ from agent_service.tool_gateway import (
 )
 from agent_service.tool_providers.web_search import default_search_provider
 from agent_service.tool_protocol import (
+    UnifiedToolDefinition,
     UnifiedToolInvocation,
     equivalent_tool_ids,
     normalize_tool_id,
@@ -947,7 +948,7 @@ def run_graph_events(
         effective_tool_gateway = tool_gateway or _default_tool_gateway(
             tool_executor=tool_executor
         )
-        _validate_graph_tools(request, effective_tool_registry)
+        _validate_graph_tools(request, effective_tool_gateway.list_tools())
     except (ValueError, HarnessError) as error:
         payload = harness_error_payload(error)
         failed_node = _unsupported_tool_node(request, error)
@@ -1699,7 +1700,14 @@ def _dedupe(values: list[str]) -> list[str]:
     return result
 
 
-def _validate_graph_tools(request: RunGraphRequest, registry: ToolRegistry) -> None:
+def _validate_graph_tools(
+    request: RunGraphRequest,
+    available_tools: list[UnifiedToolDefinition],
+) -> None:
+    available_tool_ids: set[str] = set()
+    for tool in available_tools:
+        available_tool_ids.update(equivalent_tool_ids(tool.id))
+
     for node in request.graph.nodes:
         if node.nodeType != "fixed_tool" or not node.toolRef:
             continue
@@ -1708,14 +1716,11 @@ def _validate_graph_tools(request: RunGraphRequest, registry: ToolRegistry) -> N
             "web.fetch.sources",
         }:
             continue
-        registry_tool_id = provider_tool_id(node.toolRef)
-        try:
-            registry.get(registry_tool_id)
-        except KeyError as error:
+        if not (equivalent_tool_ids(node.toolRef) & available_tool_ids):
             raise HarnessError(
                 "unsupported_tool",
                 f"unsupported tool: {node.toolRef}",
-            ) from error
+            )
 
 
 def _unsupported_tool_node(

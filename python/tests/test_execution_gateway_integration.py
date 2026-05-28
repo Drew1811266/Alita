@@ -150,6 +150,56 @@ def test_planned_fixed_tool_node_executes_through_unified_gateway(
     )
 
 
+def test_graph_tool_validation_uses_gateway_catalog_for_prefixed_internal_tools(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.docx"
+    source.write_bytes(b"fake docx")
+    request = RunGraphRequest(
+        task_id="task-prefixed-tool",
+        run_id="run-prefixed-tool",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[
+            {
+                "attachment_id": "a1",
+                "name": source.name,
+                "path": str(source),
+                "size_bytes": source.stat().st_size,
+                "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }
+        ],
+        graph={
+            "graphId": "prefixed-tool-graph",
+            "metadata": {"taskKind": "document_processing"},
+            "nodes": [
+                build_node(
+                    "tool-document-markitdown-convert",
+                    "fixed_tool",
+                    [],
+                    tool_ref="internal:document.markitdown_convert",
+                    permissions=["read_project_files", "write_project_outputs"],
+                ),
+                build_node(
+                    "task-output",
+                    "output",
+                    ["tool-document-markitdown-convert"],
+                ),
+            ],
+            "edges": [],
+        },
+    )
+
+    events = list(
+        run_graph_events(
+            request,
+            run_state=AgentRunState.from_run_graph_request(request),
+            tool_gateway=RecordingGateway(),
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+
+
 def test_planned_receive_attachment_node_executes_through_unified_gateway(
     tmp_path: Path,
 ) -> None:

@@ -64,6 +64,20 @@ def test_uses_tool_manifest_permissions_when_node_permissions_are_empty() -> Non
     assert "network" in exc_info.value.message
 
 
+def test_manifest_permissions_work_with_prefixed_internal_tool_ref() -> None:
+    node = _node(
+        "custom-tool",
+        tool_ref="internal:custom.network_tool",
+        permissions=[],
+    )
+
+    with pytest.raises(HarnessError) as exc_info:
+        PermissionGate().ensure_node_allowed(node, tool_registry=_registry())
+
+    assert exc_info.value.code == "permission_required"
+    assert "network" in exc_info.value.message
+
+
 def test_combines_node_and_manifest_permissions() -> None:
     node = _node(
         "custom-tool",
