@@ -28,6 +28,7 @@ from agent_service.script_review import script_review_fingerprint as canonical_s
 from agent_service.tool_execution import ToolResult
 from agent_service.web_research import build_research_graph
 from agent_service.web_search import SearchFailure, SearchResponse, SearchResult
+from tests.helpers.tool_gateway import RecordingGateway
 
 
 class FakeNodeExecutor:
@@ -1538,6 +1539,52 @@ def test_document_parse_uses_markitdown_tool_executor(tmp_path: Path) -> None:
         tmp_path / "artifacts" / "converted" / "01-input.md"
     )
     assert events[-1].type == "task.completed"
+
+
+def test_tool_executor_injection_is_wrapped_by_unified_gateway(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.pdf"
+    source.write_bytes(b"%PDF-1.4\n")
+    request = build_document_flow_request(tmp_path, source)
+    tool_executor = FakeToolExecutor()
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=FakeModelClient(),
+            tool_executor=tool_executor,
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+    assert tool_executor.calls
+    invocation = tool_executor.calls[0]
+    assert invocation.tool_id == "document.markitdown_convert"
+    assert invocation.operation == "convert_local_file"
+
+
+def test_explicit_tool_gateway_takes_precedence_over_tool_executor(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.pdf"
+    source.write_bytes(b"%PDF-1.4\n")
+    request = build_document_flow_request(tmp_path, source)
+    gateway = RecordingGateway()
+    tool_executor = FakeToolExecutor()
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=FakeModelClient(),
+            tool_gateway=gateway,
+            tool_executor=tool_executor,
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+    assert gateway.calls
+    assert tool_executor.calls == []
 
 
 def test_document_flow_runs_typst_export_and_file_export_passes_pdf_artifact(
