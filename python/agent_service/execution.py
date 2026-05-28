@@ -40,11 +40,20 @@ from agent_service.script_review import script_review_fingerprint
 from agent_service.task_graph import build_document_task_graph
 from agent_service.tool_execution import (
     ToolExecutor,
-    ToolInvocation,
     default_tool_packages_root,
 )
+from agent_service.tool_gateway import (
+    UnifiedToolGateway,
+    default_unified_tool_gateway,
+)
 from agent_service.tool_providers.web_search import default_search_provider
-from agent_service.tool_protocol import equivalent_tool_ids, provider_tool_id
+from agent_service.tool_protocol import (
+    UnifiedToolInvocation,
+    UnifiedToolResult,
+    equivalent_tool_ids,
+    normalize_tool_id,
+    provider_tool_id,
+)
 from agent_service.tool_registry import ToolRegistry
 from agent_service.web_research import (
     REPORT_SECTION_ORDER,
@@ -143,14 +152,22 @@ class DocumentFlowExecutor:
         self,
         request: RunGraphRequest,
         *,
+        run_state: AgentRunState | None = None,
         model_client: ModelClient | None = None,
         model_runtime: ModelRuntime | None = None,
+        tool_gateway: UnifiedToolGateway | None = None,
         tool_executor: ToolExecutor | None = None,
+        tool_registry: ToolRegistry | None = None,
     ) -> None:
         self.request = request
+        self.run_state = run_state or AgentRunState.from_run_graph_request(request)
         self.model_client = model_client or LlamaCppModelClient()
         self.model_runtime = model_runtime or ModelRuntime(model_client=self.model_client)
-        self.tool_executor = tool_executor or ToolExecutor()
+        self.tool_registry = tool_registry or _default_tool_registry()
+        self.tool_gateway = tool_gateway or _default_tool_gateway(
+            tool_executor=tool_executor
+        )
+        self.nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
         self.project_dir = Path(request.project_path).parent
         self.artifact_dir = self.project_dir / "artifacts"
         self.task_graph = build_document_task_graph(
@@ -185,22 +202,19 @@ class DocumentFlowExecutor:
             for index, attachment in enumerate(self.request.attachments):
                 input_path = Path(attachment.path)
                 output_path = self._converted_output_path(index, input_path)
-                result = self.tool_executor.run(
-                    ToolInvocation(
-                        tool_id="document.markitdown_convert",
-                        operation="convert_local_file",
-                        arguments={
-                            "input_path": attachment.path,
-                            "output_path": str(output_path),
-                        },
-                        project_path=self.request.project_path,
-                        allowed_roots=self._allowed_roots(),
-                    )
+                output = self._call_tool(
+                    "document-parse",
+                    tool_id="document.markitdown_convert",
+                    operation="convert_local_file",
+                    arguments={
+                        "input_path": attachment.path,
+                        "output_path": str(output_path),
+                    },
                 )
-                text = result.values.get("text", "")
+                text = str(output.values.get("text", ""))
                 if text:
                     texts.append(text)
-                artifacts.extend(result.artifacts)
+                artifacts.extend(output.artifacts)
             return NodeOutput(artifacts=artifacts, values={"text": "\n\n".join(texts)})
 
         if node_id == "content-organize":
@@ -219,26 +233,23 @@ class DocumentFlowExecutor:
             outline = _first_input_value(inputs, "outline")
             report = _first_input_value(inputs, "report")
             output_stem = f"report-{uuid4().hex[:8]}"
-            result = self.tool_executor.run(
-                ToolInvocation(
-                    tool_id="document.typst_compile",
-                    operation="compile_report_pdf",
-                    arguments={
-                        "title": Path(self.request.project_path).stem or "Alita Report",
-                        "outline": outline,
-                        "report": report,
-                        "source_output_path": str(
-                            self.artifact_dir / "typst" / f"{output_stem}.typ"
-                        ),
-                        "pdf_output_path": str(
-                            self.artifact_dir / "typst" / f"{output_stem}.pdf"
-                        ),
-                    },
-                    project_path=self.request.project_path,
-                    allowed_roots=self._allowed_roots(),
-                )
+            output = self._call_tool(
+                "typst-export",
+                tool_id="document.typst_compile",
+                operation="compile_report_pdf",
+                arguments={
+                    "title": Path(self.request.project_path).stem or "Alita Report",
+                    "outline": outline,
+                    "report": report,
+                    "source_output_path": str(
+                        self.artifact_dir / "typst" / f"{output_stem}.typ"
+                    ),
+                    "pdf_output_path": str(
+                        self.artifact_dir / "typst" / f"{output_stem}.pdf"
+                    ),
+                },
             )
-            return NodeOutput(artifacts=result.artifacts, values=result.values)
+            return output
 
         if node_id == "file-export":
             compiled_artifact = _first_input_value(inputs, "artifact")
@@ -270,6 +281,42 @@ class DocumentFlowExecutor:
 
         raise ValueError(f"未支持的节点: {node_id}")
 
+    def _call_tool(
+        self,
+        node_id: str,
+        *,
+        tool_id: str,
+        operation: str,
+        arguments: dict[str, object],
+    ) -> NodeOutput:
+        node = self.nodes_by_id.get(node_id)
+        permissions = (
+            _required_permissions_for_tool_node(
+                node,
+                tool_registry=self.tool_registry,
+            )
+            if node is not None
+            else []
+        )
+        result = self.tool_gateway.call_tool(
+            UnifiedToolInvocation(
+                invocation_id=(
+                    f"{self.run_state.run_id or self.request.run_id}-"
+                    f"{node_id}-{operation}"
+                ),
+                run_id=self.run_state.run_id or self.request.run_id,
+                task_id=self.run_state.task_id,
+                node_id=node_id,
+                tool_id=normalize_tool_id(tool_id),
+                arguments={"operation": operation, **arguments},
+                project_path=self.run_state.project_path or self.request.project_path,
+                allowed_roots=self._allowed_roots(),
+                requested_permissions=permissions,
+                model_session_id=self.run_state.message.model_session_id,
+            )
+        )
+        return _node_output_from_unified_result(result)
+
     def _allowed_roots(self) -> list[str]:
         roots = {str(self.project_dir)}
         roots.update(str(Path(attachment.path).parent) for attachment in self.request.attachments)
@@ -295,16 +342,20 @@ class PlannedTaskExecutor:
         self,
         request: RunGraphRequest,
         *,
+        run_state: AgentRunState | None = None,
         model_client: ModelClient | None = None,
         tool_executor: ToolExecutor | None = None,
+        tool_registry: ToolRegistry | None = None,
     ) -> None:
         self.request = request
         self.nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
         self.model_client = model_client or LlamaCppModelClient()
         self.document_executor = DocumentFlowExecutor(
             request,
+            run_state=run_state,
             model_client=model_client,
             tool_executor=tool_executor,
+            tool_registry=tool_registry,
         )
 
     def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
@@ -815,14 +866,18 @@ def run_graph_events(
     elif _is_planned_task_graph(request):
         node_executor = PlannedTaskExecutor(
             request,
+            run_state=run_state,
             model_client=model_client,
             tool_executor=tool_executor,
+            tool_registry=effective_tool_registry,
         )
     else:
         node_executor = DocumentFlowExecutor(
             request,
+            run_state=run_state,
             model_client=model_client,
             tool_executor=tool_executor,
+            tool_registry=effective_tool_registry,
         )
     verifier = result_verifier or ResultVerifier()
     graph_verifier = final_verifier or FinalVerifier()
@@ -1474,6 +1529,51 @@ def _script_review_event_payload(node: GraphNode) -> dict:
 
 def _default_tool_registry() -> ToolRegistry:
     return ToolRegistry.from_packages_root(default_tool_packages_root())
+
+
+def _default_tool_gateway(
+    *,
+    tool_executor: ToolExecutor | None = None,
+) -> UnifiedToolGateway:
+    return default_unified_tool_gateway(internal_executor=tool_executor)
+
+
+def _node_output_from_unified_result(result: UnifiedToolResult) -> NodeOutput:
+    if not result.ok:
+        error = result.error
+        raise HarnessError(
+            error.code if error is not None else "tool_failed",
+            error.message if error is not None else "tool failed",
+        )
+    return NodeOutput(
+        values=dict(result.structured_content or {}),
+        artifacts=list(result.artifacts),
+    )
+
+
+def _required_permissions_for_tool_node(
+    node: GraphNode,
+    *,
+    tool_registry: ToolRegistry,
+) -> list[str]:
+    permissions = list(node.permissionsRequired)
+    if node.toolRef:
+        try:
+            permissions.extend(tool_registry.get(provider_tool_id(node.toolRef)).permissions)
+        except KeyError:
+            pass
+    return _dedupe(permissions)
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def _validate_graph_tools(request: RunGraphRequest, registry: ToolRegistry) -> None:
