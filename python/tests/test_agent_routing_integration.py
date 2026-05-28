@@ -223,6 +223,9 @@ def test_task_message_creates_graph_with_planning_and_executable_nodes() -> None
     route_decision = graph["metadata"]["routeDecision"]
     assert route_decision["intent"] == "task"
     assert route_decision["source"] == "deterministic"
+    planner_chain = graph["metadata"]["plannerChain"]
+    assert planner_chain["version"] == "planner_chain.v1"
+    assert planner_chain["strategy"] == "legacy_task_planner"
     assert executable_nodes[0]["scriptReview"]["status"] == "not_reviewed"
     assert executable_nodes[0].get("estimate")
     assert executable_nodes[1]["nodeType"] == "output"

@@ -16,6 +16,7 @@ from agent_service.graph import (
     stream_agent_events,
     stream_agent_events_from_state,
 )
+from agent_service.graph_compiler import compile_task_graph_to_node_graph
 from agent_service.intent import IntentKind, classify_route
 from agent_service.model_client import ChatMessage
 from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
@@ -1001,37 +1002,52 @@ def test_attachment_document_task_route_decision_matches_document_graph_route() 
     ]
 
 
-def test_attachment_document_task_graph_uses_planner_v2_shape(monkeypatch) -> None:
+def test_attachment_document_task_graph_uses_planner_chain_shape(monkeypatch) -> None:
     planner_calls: list[dict[str, object]] = []
 
-    class RecordingPlanner:
+    class RecordingPlannerChain:
         def __init__(self, *, tool_registry) -> None:
             self.tool_registry = tool_registry
 
-        def plan(self, *, task_id, goal_spec, context):
+        def plan(self, request):
             planner_calls.append(
                 {
-                    "task_id": task_id,
-                    "goal_spec": goal_spec,
-                    "context": context,
+                    "task_id": request.task_id,
+                    "goal_spec": request.goal_spec,
+                    "context": request.context,
+                    "route": request.route,
                     "tool_registry": self.tool_registry,
                 }
             )
-            return SimpleNamespace(
-                task_graph=build_document_task_graph(task_id, goal_spec)
+            graph_payload = compile_task_graph_to_node_graph(
+                build_document_task_graph(request.task_id, request.goal_spec)
             )
+            graph_payload["metadata"] = {
+                "plannerChain": {
+                    "version": "planner_chain.v1",
+                    "planner": "template.document.v1",
+                    "strategy": "document_template",
+                    "routeIntent": request.route.intent,
+                    "taskType": request.route.task_type,
+                    "routeSource": request.route.source,
+                    "routeConfidence": request.route.confidence,
+                    "toolCandidates": list(request.route.tool_candidates),
+                    "requiredPermissions": list(request.route.required_permissions),
+                }
+            }
+            return SimpleNamespace(graph_payload=graph_payload)
 
-    monkeypatch.setattr(graph_module, "PlannerV2", RecordingPlanner)
+    monkeypatch.setattr(graph_module, "PlannerChain", RecordingPlannerChain)
 
     events = run_agent(
         UserMessage(
-            task_id="task-planner-v2",
+            task_id="task-planner-chain",
             content="summarize this document as a PDF report",
             attachments=[
                 Attachment(
-                    attachment_id="a-planner-v2",
-                    name="planner-v2.docx",
-                    path="workspace/inputs/planner-v2.docx",
+                    attachment_id="a-planner-chain",
+                    name="planner-chain.docx",
+                    path="workspace/inputs/planner-chain.docx",
                     size_bytes=100,
                     mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
@@ -1040,10 +1056,13 @@ def test_attachment_document_task_graph_uses_planner_v2_shape(monkeypatch) -> No
     )
 
     assert planner_calls
+    assert planner_calls[0]["route"].task_type == "document_processing"
     assert len(events) == 1
     assert events[0].type == "node_graph.created"
     graph = events[0].payload["graph"]
-    assert graph["graphId"] == "task-planner-v2-graph"
+    assert graph["graphId"] == "task-planner-chain-graph"
+    assert graph["metadata"]["plannerChain"]["strategy"] == "document_template"
+    assert graph["metadata"]["modelPolicy"] == ModelCallProfile.DEEP_REASONING.value
     assert [edge["id"] for edge in graph["edges"]] == [
         "document-input-document-parse",
         "document-parse-content-organize",
@@ -1169,6 +1188,57 @@ def test_task_graph_records_structured_route_decision_metadata() -> None:
     assert route_decision["source"] == "deterministic"
     assert route_decision["confidence"] >= 0.75
     assert route_decision["taskType"]
+
+
+def test_task_graph_records_planner_chain_metadata() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="planner-chain-code",
+            content="Create a Python script that counts rows in a CSV file.",
+        )
+    )
+
+    graph = events[0].payload["graph"]
+    planner_chain = graph["metadata"]["plannerChain"]
+    assert planner_chain["version"] == "planner_chain.v1"
+    assert planner_chain["planner"] == "legacy.task_planner.v1"
+    assert planner_chain["strategy"] == "legacy_task_planner"
+    assert planner_chain["routeIntent"] == "task"
+    assert planner_chain["taskType"] == "code_task"
+    assert graph["metadata"]["routeDecision"]["intent"] == "task"
+
+
+def test_document_task_graph_records_document_planner_chain_metadata() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="planner-chain-document",
+            content="summarize this document as a PDF report",
+            attachments=[
+                Attachment(
+                    attachment_id="a-planner-chain",
+                    name="planner-chain.docx",
+                    path="workspace/inputs/planner-chain.docx",
+                    size_bytes=100,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            ],
+        )
+    )
+
+    graph = events[0].payload["graph"]
+    planner_chain = graph["metadata"]["plannerChain"]
+    assert planner_chain["version"] == "planner_chain.v1"
+    assert planner_chain["planner"] == "template.document.v1"
+    assert planner_chain["strategy"] == "document_template"
+    assert planner_chain["taskType"] == "document_processing"
+    assert [node["nodeId"] for node in graph["nodes"]] == [
+        "document-input",
+        "document-parse",
+        "content-organize",
+        "report-generate",
+        "typst-export",
+        "file-export",
+    ]
 
 
 def test_temporary_placeholder_node_gets_default_script_review_state() -> None:

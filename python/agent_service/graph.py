@@ -11,7 +11,6 @@ from langgraph.graph import END, StateGraph
 from agent_service.agent_run_state import AgentRunState
 from agent_service.context_manager import build_context_bundle
 from agent_service.goal_spec import GoalSpec, parse_goal_spec
-from agent_service.graph_compiler import compile_task_graph_to_node_graph
 from agent_service.intent import (
     IntentKind,
     RouteDecision,
@@ -33,20 +32,19 @@ from agent_service.plan_feedback import (
     apply_graph_feedback,
     classify_graph_feedback,
 )
-from agent_service.planner_v2 import PlannerV2
+from agent_service.planner_chain import (
+    PlannerChain,
+    PlannerChainRequest,
+    route_context_from_payload,
+)
 from agent_service.router_v2 import (
     RouterV2Decision,
     compatible_intent as router_v2_compatible_intent,
+    deterministic_route,
     effective_legacy_route_payload,
     route_message,
 )
 from agent_service.schemas import AgentEvent, RunGraph, UserMessage
-from agent_service.task_planner import (
-    analyze_task,
-    build_task_graph,
-    resolve_tool_gaps,
-    select_tools,
-)
 from agent_service.tool_execution import default_tool_packages_root
 from agent_service.tool_providers.weather import WeatherProvider
 from agent_service.tool_registry import ToolRegistry
@@ -234,13 +232,15 @@ def request_required_inputs(state: AgentState) -> AgentState:
 
 def plan_task_graph(state: AgentState) -> AgentState:
     message = state["message"]
+    run_state = state.get("run_state")
     graph_payload = _graph_payload_for_task(
         message,
         goal_spec=state.get("goal_spec"),
+        run_state=run_state,
     )
     graph_payload = _with_route_decision_metadata(
         graph_payload,
-        state.get("run_state"),
+        run_state,
     )
     return {
         **state,
@@ -257,19 +257,39 @@ def _graph_payload_for_task(
     message: UserMessage,
     *,
     goal_spec: GoalSpec | None = None,
+    run_state: AgentRunState | None = None,
 ) -> dict:
     spec = goal_spec or parse_goal_spec(message)
-    if spec.task_type == "document_processing" and not _is_markdown_conversion_only(
-        message.content
-    ):
-        graph_payload = _create_document_graph(message.task_id, spec, message)
-    else:
-        graph_payload = _build_task_graph_payload(message)
-
+    tool_registry = ToolRegistry.from_packages_root(default_tool_packages_root())
+    route_payload = _structured_route_payload_for_planning(message, run_state)
+    context = build_context_bundle(
+        message=message,
+        goal_spec=spec,
+        project_path="project.alita",
+        tool_registry=tool_registry,
+    )
+    result = PlannerChain(tool_registry=tool_registry).plan(
+        PlannerChainRequest(
+            task_id=message.task_id,
+            message=message,
+            goal_spec=spec,
+            route=route_context_from_payload(route_payload),
+            context=context,
+        )
+    )
     return _with_model_policy_metadata(
-        graph_payload,
+        result.graph_payload,
         DEEP_REASONING_POLICY.profile.value,
     )
+
+
+def _structured_route_payload_for_planning(
+    message: UserMessage,
+    run_state: AgentRunState | None,
+) -> dict:
+    if run_state is not None and run_state.structured_route_decision is not None:
+        return dict(run_state.structured_route_decision)
+    return deterministic_route(message).to_payload()
 
 
 def _with_model_policy_metadata(graph_payload: dict, policy_name: str) -> dict:
@@ -287,21 +307,6 @@ def _with_route_decision_metadata(
     metadata = dict(graph_payload.get("metadata") or {})
     metadata["routeDecision"] = dict(run_state.structured_route_decision)
     return {**graph_payload, "metadata": metadata}
-
-
-def _build_task_graph_payload(message: UserMessage) -> dict:
-    task_plan = analyze_task(message.content, message.attachments)
-    task_plan.task_id = message.task_id
-    registry = ToolRegistry.from_packages_root(default_tool_packages_root())
-    task_plan.selected_tools = select_tools(
-        task_plan.requirements,
-        registry.enabled_tools(),
-    )
-    task_plan.tool_gaps = resolve_tool_gaps(
-        task_plan.requirements,
-        task_plan.selected_tools,
-    )
-    return build_task_graph(task_plan)
 
 
 def _task_planning_progress_events(
@@ -645,6 +650,7 @@ def stream_agent_events_from_state(
         graph_payload = _graph_payload_for_task(
             message,
             goal_spec=run_state.goal_spec,
+            run_state=run_state,
         )
         yield from _task_planning_progress_events(message, graph_payload)
         graph_payload = _with_route_decision_metadata(graph_payload, run_state)
@@ -791,14 +797,6 @@ def _compatible_intent(
     )
 
 
-def _is_markdown_conversion_only(content: str) -> bool:
-    normalized = content.lower()
-    wants_markdown = "markdown" in normalized or "md" in normalized
-    wants_conversion = "convert" in normalized or "转换" in content or "转" in content
-    wants_report = "report" in normalized or "pdf" in normalized or "报告" in content
-    return wants_markdown and wants_conversion and not wants_report
-
-
 def _looks_like_external_web_request(content: str) -> bool:
     normalized = content.lower()
     return any(
@@ -846,24 +844,6 @@ def _assistant_message(content: str) -> dict:
         "attachments": [],
         "createdAt": created_at,
     }
-
-
-def _create_document_graph(
-    task_id: str, goal_spec: GoalSpec, message: UserMessage
-) -> dict:
-    tool_registry = ToolRegistry.from_packages_root(default_tool_packages_root())
-    context = build_context_bundle(
-        message=message,
-        goal_spec=goal_spec,
-        project_path="project.alita",
-        tool_registry=tool_registry,
-    )
-    plan = PlannerV2(tool_registry=tool_registry).plan(
-        task_id=task_id,
-        goal_spec=goal_spec,
-        context=context,
-    )
-    return compile_task_graph_to_node_graph(plan.task_graph)
 
 
 def _node(
