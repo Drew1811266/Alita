@@ -18,6 +18,14 @@ from agent_service.tool_registry import ToolRegistry
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TOOL_PACKAGES_ROOT = PROJECT_ROOT / "tool-packages"
+DOCUMENT_NODE_IDS = [
+    "document-input",
+    "document-parse",
+    "content-organize",
+    "report-generate",
+    "typst-export",
+    "file-export",
+]
 
 
 def _tool_registry() -> ToolRegistry:
@@ -133,18 +141,43 @@ def test_planner_chain_uses_planner_v2_for_document_processing() -> None:
     assert result.planner == "template.document.v1"
     assert result.strategy == "document_template"
     RunGraph.model_validate(result.graph_payload)
-    assert [node["nodeId"] for node in result.graph_payload["nodes"]] == [
-        "document-input",
-        "document-parse",
-        "content-organize",
-        "report-generate",
-        "typst-export",
-        "file-export",
-    ]
+    assert [node["nodeId"] for node in result.graph_payload["nodes"]] == DOCUMENT_NODE_IDS
     metadata = result.graph_payload["metadata"]["plannerChain"]
     assert metadata["version"] == "planner_chain.v1"
+    assert metadata["planner"] == "template.document.v1"
     assert metadata["strategy"] == "document_template"
+    assert metadata["routeIntent"] == "task"
     assert metadata["taskType"] == "document_processing"
+    assert metadata["routeSource"] == "deterministic"
+    assert metadata["routeConfidence"] == 0.88
+    assert metadata["toolCandidates"] == ["internal:file.inspect"]
+    assert metadata["requiredPermissions"] == ["read_project_files"]
+
+
+def test_planner_chain_does_not_treat_amd_as_markdown_token() -> None:
+    message = UserMessage(
+        task_id="task-amd-document-chain",
+        content="Convert this AMD filing into an organized document summary.",
+        attachments=[
+            Attachment(
+                attachment_id="a1",
+                name="amd-filing.docx",
+                path=str(PROJECT_ROOT / "fixtures" / "amd-filing.docx"),
+                size_bytes=128,
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        ],
+    )
+    request = _request_for(
+        message,
+        _route_payload(taskType="document_processing"),
+    )
+
+    result = PlannerChain(tool_registry=_tool_registry()).plan(request)
+
+    assert result.planner == "template.document.v1"
+    assert result.strategy == "document_template"
+    assert [node["nodeId"] for node in result.graph_payload["nodes"]] == DOCUMENT_NODE_IDS
 
 
 def test_planner_chain_rejects_missing_inputs_before_planning() -> None:

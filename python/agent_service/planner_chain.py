@@ -193,7 +193,7 @@ def _validate_graph_payload(graph_payload: dict[str, Any]) -> None:
 
 def _is_markdown_conversion_only(content: str) -> bool:
     normalized = content.lower()
-    wants_markdown = "markdown" in normalized or "md" in normalized
+    wants_markdown = bool(re.search(r"\bmarkdown\b|\.md\b|\bmd\b", normalized))
     wants_conversion = "convert" in normalized or "转换" in content or "转" in content
     wants_report = "report" in normalized or "pdf" in normalized or "报告" in content
     return wants_markdown and wants_conversion and not wants_report
