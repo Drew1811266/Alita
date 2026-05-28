@@ -75,7 +75,7 @@ class RouterV2Decision(BaseModel):
             "intent": self.intent,
             "confidence": self.confidence,
             "taskType": self.task_type,
-            "missingInputs": list(self.missing_inputs),
+            "missingInputs": _scrub_payload(list(self.missing_inputs)),
             "requiredPermissions": _scrub_payload(list(self.required_permissions)),
             "toolCandidates": _scrub_payload(list(self.tool_candidates)),
             "reason": _safe_reason(self.reason),

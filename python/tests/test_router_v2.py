@@ -481,6 +481,41 @@ def test_model_route_payload_does_not_include_raw_local_paths(
         assert "agent_service" not in dump
 
 
+def test_model_route_missing_inputs_payload_does_not_include_raw_local_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    local_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
+    model_client = FakeRouterModelClient(
+        json.dumps(
+            {
+                "intent": "task",
+                "confidence": 0.9,
+                "task_type": "code_task",
+                "missing_inputs": [local_path],
+                "reason": "model selected task",
+            }
+        )
+    )
+
+    decision = route_message(
+        UserMessage(
+            task_id="model-missing-input-path-scrub",
+            content="What is the latest Python release?",
+        ),
+        model_client=model_client,
+    )
+
+    payload_dump = repr(decision.to_payload())
+    legacy_dump = repr(decision.legacy_route)
+
+    assert decision.source == "model"
+    for dump in (payload_dump, legacy_dump):
+        assert local_path not in dump
+        assert "Software Project" not in dump
+        assert "agent_service" not in dump
+
+
 def test_route_message_medium_confidence_model_route_asks_for_clarification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
