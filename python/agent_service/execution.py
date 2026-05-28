@@ -40,6 +40,8 @@ from agent_service.script_review import script_review_fingerprint
 from agent_service.task_graph import build_document_task_graph
 from agent_service.tool_execution import (
     ToolExecutor,
+    ToolInvocation,
+    ToolResult,
     default_tool_packages_root,
 )
 from agent_service.tool_gateway import (
@@ -345,7 +347,6 @@ class PlannedTaskExecutor:
         run_state: AgentRunState | None = None,
         model_client: ModelClient | None = None,
         tool_gateway: UnifiedToolGateway | None = None,
-        tool_gateway_explicit: bool | None = None,
         tool_executor: ToolExecutor | None = None,
         tool_registry: ToolRegistry | None = None,
     ) -> None:
@@ -354,11 +355,6 @@ class PlannedTaskExecutor:
         self.nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
         self.model_client = model_client or LlamaCppModelClient()
         self.tool_registry = tool_registry or _default_tool_registry()
-        self._explicit_tool_gateway = (
-            tool_gateway is not None
-            if tool_gateway_explicit is None
-            else tool_gateway_explicit
-        )
         self.tool_gateway = tool_gateway or _default_tool_gateway(
             tool_executor=tool_executor
         )
@@ -419,22 +415,11 @@ class PlannedTaskExecutor:
                     f"tool node {node.nodeId} requires at least one attachment",
                 )
             paths = "\n".join(attachment.path for attachment in self.request.attachments)
-            try:
-                return self._call_tool(
-                    node,
-                    operation="receive_attachment",
-                    arguments={"paths": paths},
-                )
-            except HarnessError as error:
-                if self._explicit_tool_gateway:
-                    raise
-                if error.code not in {
-                    "unsupported_tool",
-                    "unsupported_operation",
-                    "tool_failed",
-                }:
-                    raise
-                return NodeOutput(values={"paths": paths})
+            return self._call_tool(
+                node,
+                operation="receive_attachment",
+                arguments={"paths": paths},
+            )
 
         if tool_id == "document.markitdown_convert":
             if not self.request.attachments:
@@ -1008,7 +993,6 @@ def run_graph_events(
             run_state=run_state,
             model_client=model_client,
             tool_gateway=effective_tool_gateway,
-            tool_gateway_explicit=tool_gateway is not None,
             tool_executor=tool_executor,
             tool_registry=effective_tool_registry,
         )
@@ -1677,7 +1661,32 @@ def _default_tool_gateway(
     *,
     tool_executor: ToolExecutor | None = None,
 ) -> UnifiedToolGateway:
-    return default_unified_tool_gateway(internal_executor=tool_executor)
+    return default_unified_tool_gateway(
+        internal_executor=_tool_executor_with_virtual_tools(tool_executor)
+        if tool_executor is not None
+        else None
+    )
+
+
+class _ToolExecutorWithVirtualTools:
+    def __init__(self, delegate: ToolExecutor) -> None:
+        self.delegate = delegate
+
+    def run(self, invocation: ToolInvocation) -> ToolResult:
+        if (
+            invocation.tool_id == "document.receive_attachment"
+            and invocation.operation == "receive_attachment"
+        ):
+            return ToolResult(
+                values={"paths": str(invocation.arguments.get("paths", ""))}
+            )
+        return self.delegate.run(invocation)
+
+
+def _tool_executor_with_virtual_tools(
+    tool_executor: ToolExecutor,
+) -> _ToolExecutorWithVirtualTools:
+    return _ToolExecutorWithVirtualTools(tool_executor)
 
 
 def _node_output_from_unified_result(result: UnifiedToolResult) -> NodeOutput:

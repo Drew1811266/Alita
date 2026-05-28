@@ -129,6 +129,22 @@ def test_tool_executor_routes_typst_pdf_compilation(monkeypatch, tmp_path):
     ]
 
 
+def test_tool_executor_routes_virtual_receive_attachment(tmp_path):
+    result = ToolExecutor().run(
+        ToolInvocation(
+            tool_id="document.receive_attachment",
+            operation="receive_attachment",
+            arguments={"paths": "a\nb"},
+            project_path=str(tmp_path / "project.alita"),
+            allowed_roots=[str(tmp_path)],
+        )
+    )
+
+    assert result.values == {"paths": "a\nb"}
+    assert result.artifacts == []
+    assert result.metadata == {}
+
+
 def test_tool_executor_uses_registered_adapter_for_manifest_operation(tmp_path):
     calls = []
 

@@ -209,6 +209,108 @@ def test_planned_receive_attachment_node_executes_through_unified_gateway(
     assert "read_project_files" in invocation.requested_permissions
 
 
+def test_planned_receive_attachment_node_executes_through_default_gateway(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.docx"
+    source.write_bytes(b"fake docx")
+    request = RunGraphRequest(
+        task_id="task-planned-attachment-default",
+        run_id="run-planned-attachment-default",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[
+            {
+                "attachment_id": "a1",
+                "name": source.name,
+                "path": str(source),
+                "size_bytes": source.stat().st_size,
+                "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }
+        ],
+        graph={
+            "graphId": "planned-attachment-default-graph",
+            "metadata": {"taskKind": "document_processing"},
+            "nodes": [
+                build_node(
+                    "document-input",
+                    "fixed_tool",
+                    [],
+                    tool_ref="document.receive_attachment",
+                    permissions=["read_project_files"],
+                ),
+                build_node(
+                    "task-output",
+                    "output",
+                    ["document-input"],
+                ),
+            ],
+            "edges": [],
+        },
+    )
+
+    events = list(
+        run_graph_events(
+            request,
+            run_state=AgentRunState.from_run_graph_request(request),
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+
+
+def test_planned_receive_attachment_gateway_error_becomes_node_failure(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.docx"
+    source.write_bytes(b"fake docx")
+    request = RunGraphRequest(
+        task_id="task-planned-attachment-error",
+        run_id="run-planned-attachment-error",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[
+            {
+                "attachment_id": "a1",
+                "name": source.name,
+                "path": str(source),
+                "size_bytes": source.stat().st_size,
+                "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }
+        ],
+        graph={
+            "graphId": "planned-attachment-error-graph",
+            "metadata": {"taskKind": "document_processing"},
+            "nodes": [
+                build_node(
+                    "document-input",
+                    "fixed_tool",
+                    [],
+                    tool_ref="document.receive_attachment",
+                    permissions=["read_project_files"],
+                ),
+                build_node(
+                    "task-output",
+                    "output",
+                    ["document-input"],
+                ),
+            ],
+            "edges": [],
+        },
+    )
+
+    events = list(
+        run_graph_events(
+            request,
+            run_state=AgentRunState.from_run_graph_request(request),
+            tool_gateway=RecordingGateway(fail_code="attachment_failed"),
+        )
+    )
+
+    assert "node.failed" in [event.type for event in events]
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "attachment_failed"
+    assert "gateway failed: attachment_failed" in events[-1].payload["error"]
+
+
 def test_planned_fixed_tool_gateway_error_becomes_node_failure(
     tmp_path: Path,
 ) -> None:
