@@ -105,12 +105,16 @@ class PlannerChain:
     def _validate_request(self, request: PlannerChainRequest) -> None:
         if request.route.intent != "task":
             raise PlannerChainError(f"cannot plan non-task route: {request.route.intent}")
-        missing_inputs = [
-            *request.route.missing_inputs,
-            *request.goal_spec.missing_inputs,
-        ]
+        missing_inputs = _scrub_payload(
+            [
+                *request.route.missing_inputs,
+                *request.goal_spec.missing_inputs,
+            ]
+        )
         if missing_inputs:
-            raise PlannerChainError(f"missing inputs: {', '.join(missing_inputs)}")
+            raise PlannerChainError(
+                f"missing inputs: {', '.join(str(item) for item in missing_inputs)}"
+            )
 
     def _plan_document_template(self, request: PlannerChainRequest) -> PlannerChainResult:
         try:
@@ -123,7 +127,7 @@ class PlannerChain:
                 context=request.context,
             )
         except PlannerV2Error as exc:
-            raise PlannerChainError(str(exc)) from exc
+            raise PlannerChainError(_safe_text(str(exc))) from None
 
         graph_payload = compile_task_graph_to_node_graph(plan.task_graph)
         graph_payload = _with_planner_chain_metadata(
@@ -187,8 +191,8 @@ def _with_planner_chain_metadata(
 def _validate_graph_payload(graph_payload: dict[str, Any]) -> None:
     try:
         RunGraph.model_validate(graph_payload)
-    except Exception as exc:
-        raise PlannerChainError(f"invalid node graph payload: {exc}") from exc
+    except Exception:
+        raise PlannerChainError("invalid node graph payload") from None
 
 
 def _is_markdown_conversion_only(content: str) -> bool:

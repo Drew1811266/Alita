@@ -10,6 +10,7 @@ from agent_service.planner_chain import (
     PlannerChain,
     PlannerChainError,
     PlannerChainRequest,
+    _validate_graph_payload,
     route_context_from_payload,
 )
 from agent_service.schemas import Attachment, RunGraph, UserMessage
@@ -191,6 +192,26 @@ def test_planner_chain_rejects_missing_inputs_before_planning() -> None:
         PlannerChain(tool_registry=_tool_registry()).plan(request)
 
 
+def test_planner_chain_rejects_missing_inputs_without_leaking_paths() -> None:
+    local_path = r"D:\Software Project\Alita\secret.docx"
+    message = UserMessage(task_id="missing-doc-path", content="summarize this document")
+    request = _request_for(
+        message,
+        _route_payload(taskType="document_processing", missingInputs=[local_path]),
+    )
+
+    with pytest.raises(PlannerChainError) as exc_info:
+        PlannerChain(tool_registry=_tool_registry()).plan(request)
+
+    message = str(exc_info.value)
+
+    assert "missing inputs:" in message
+    assert local_path not in message
+    assert "Software Project" not in message
+    assert "secret.docx" not in message
+    assert exc_info.value.__cause__ is None
+
+
 def test_planner_chain_rejects_non_task_routes() -> None:
     message = UserMessage(task_id="not-task", content="hello")
     request = _request_for(
@@ -199,4 +220,69 @@ def test_planner_chain_rejects_non_task_routes() -> None:
     )
 
     with pytest.raises(PlannerChainError, match="cannot plan non-task route"):
+        PlannerChain(tool_registry=_tool_registry()).plan(request)
+
+
+def test_validate_graph_payload_does_not_leak_path_values() -> None:
+    local_path = r"D:\Software Project\Alita\secret.docx"
+    bad_graph_payload = {
+        "graphId": "bad-graph",
+        "nodes": [
+            {
+                "nodeId": "bad-node",
+                "nodeType": local_path,
+                "displayName": "Bad node",
+                "status": "ready",
+                "summary": "Bad graph",
+                "createdBy": "test",
+                "position": {"x": 0, "y": 0},
+            }
+        ],
+        "edges": [],
+        "metadata": {},
+    }
+
+    with pytest.raises(PlannerChainError) as exc_info:
+        _validate_graph_payload(bad_graph_payload)
+
+    message = str(exc_info.value)
+
+    assert message == "invalid node graph payload"
+    assert local_path not in message
+    assert "Software Project" not in message
+    assert "secret.docx" not in message
+    assert exc_info.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Convert this document to Markdown.",
+        "Convert this document to .md",
+        "Convert this document as md",
+    ],
+)
+def test_planner_chain_markdown_only_conversion_falls_through(content: str) -> None:
+    message = UserMessage(
+        task_id="task-markdown-document-chain",
+        content=content,
+        attachments=[
+            Attachment(
+                attachment_id="a1",
+                name="source.docx",
+                path=str(PROJECT_ROOT / "fixtures" / "source.docx"),
+                size_bytes=128,
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        ],
+    )
+    request = _request_for(
+        message,
+        _route_payload(taskType="document_processing"),
+    )
+
+    with pytest.raises(
+        PlannerChainError,
+        match="unsupported planner chain task type: document_processing",
+    ):
         PlannerChain(tool_registry=_tool_registry()).plan(request)
