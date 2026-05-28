@@ -40,8 +40,6 @@ from agent_service.script_review import script_review_fingerprint
 from agent_service.task_graph import build_document_task_graph
 from agent_service.tool_execution import (
     ToolExecutor,
-    ToolInvocation,
-    ToolResult,
     default_tool_packages_root,
 )
 from agent_service.tool_gateway import (
@@ -51,7 +49,6 @@ from agent_service.tool_gateway import (
 from agent_service.tool_providers.web_search import default_search_provider
 from agent_service.tool_protocol import (
     UnifiedToolInvocation,
-    UnifiedToolResult,
     equivalent_tool_ids,
     normalize_tool_id,
     provider_tool_id,
@@ -1661,35 +1658,10 @@ def _default_tool_gateway(
     *,
     tool_executor: ToolExecutor | None = None,
 ) -> UnifiedToolGateway:
-    return default_unified_tool_gateway(
-        internal_executor=_tool_executor_with_virtual_tools(tool_executor)
-        if tool_executor is not None
-        else None
-    )
+    return default_unified_tool_gateway(internal_executor=tool_executor)
 
 
-class _ToolExecutorWithVirtualTools:
-    def __init__(self, delegate: ToolExecutor) -> None:
-        self.delegate = delegate
-
-    def run(self, invocation: ToolInvocation) -> ToolResult:
-        if (
-            invocation.tool_id == "document.receive_attachment"
-            and invocation.operation == "receive_attachment"
-        ):
-            return ToolResult(
-                values={"paths": str(invocation.arguments.get("paths", ""))}
-            )
-        return self.delegate.run(invocation)
-
-
-def _tool_executor_with_virtual_tools(
-    tool_executor: ToolExecutor,
-) -> _ToolExecutorWithVirtualTools:
-    return _ToolExecutorWithVirtualTools(tool_executor)
-
-
-def _node_output_from_unified_result(result: UnifiedToolResult) -> NodeOutput:
+def _node_output_from_unified_result(result) -> NodeOutput:
     if not result.ok:
         error = result.error
         raise HarnessError(

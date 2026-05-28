@@ -5,6 +5,7 @@ from pathlib import Path
 from agent_service.agent_run_state import AgentRunState
 from agent_service.execution import DocumentFlowExecutor, NodeOutput, run_graph_events
 from agent_service.schemas import RunGraphRequest
+from agent_service.tool_execution import ToolResult
 from tests.helpers.tool_gateway import RecordingGateway
 from tests.test_execution import (
     FakeModelClient,
@@ -256,6 +257,73 @@ def test_planned_receive_attachment_node_executes_through_default_gateway(
     )
 
     assert events[-1].type == "task.completed"
+
+
+def test_planned_receive_attachment_tool_executor_injection_is_not_bypassed(
+    tmp_path: Path,
+) -> None:
+    class RecordingReceiveExecutor:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def run(self, invocation):
+            self.calls.append(invocation)
+            if (
+                invocation.tool_id == "document.receive_attachment"
+                and invocation.operation == "receive_attachment"
+            ):
+                return ToolResult(values={"paths": "from executor"})
+            raise AssertionError(f"unexpected tool invocation: {invocation}")
+
+    source = tmp_path / "input.docx"
+    source.write_bytes(b"fake docx")
+    request = RunGraphRequest(
+        task_id="task-planned-attachment-injected",
+        run_id="run-planned-attachment-injected",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[
+            {
+                "attachment_id": "a1",
+                "name": source.name,
+                "path": str(source),
+                "size_bytes": source.stat().st_size,
+                "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }
+        ],
+        graph={
+            "graphId": "planned-attachment-injected-graph",
+            "metadata": {"taskKind": "document_processing"},
+            "nodes": [
+                build_node(
+                    "document-input",
+                    "fixed_tool",
+                    [],
+                    tool_ref="document.receive_attachment",
+                    permissions=["read_project_files"],
+                ),
+                build_node(
+                    "task-output",
+                    "output",
+                    ["document-input"],
+                ),
+            ],
+            "edges": [],
+        },
+    )
+    executor = RecordingReceiveExecutor()
+
+    events = list(
+        run_graph_events(
+            request,
+            run_state=AgentRunState.from_run_graph_request(request),
+            tool_executor=executor,
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+    assert len(executor.calls) == 1
+    assert executor.calls[0].tool_id == "document.receive_attachment"
+    assert executor.calls[0].operation == "receive_attachment"
 
 
 def test_planned_receive_attachment_gateway_error_becomes_node_failure(

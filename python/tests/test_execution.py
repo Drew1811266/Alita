@@ -83,6 +83,10 @@ class FakeToolExecutor:
 
     def run(self, invocation):
         self.calls.append(invocation)
+        if invocation.tool_id == "document.receive_attachment":
+            return ToolResult(
+                values={"paths": str(invocation.arguments.get("paths", ""))}
+            )
         output_path = Path(invocation.arguments["output_path"])
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("# Markdown\n\nparsed text", encoding="utf-8")
