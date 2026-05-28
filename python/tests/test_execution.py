@@ -1544,10 +1544,28 @@ def test_document_parse_uses_markitdown_tool_executor(tmp_path: Path) -> None:
 def test_tool_executor_injection_is_wrapped_by_unified_gateway(
     tmp_path: Path,
 ) -> None:
+    class StrictGatewayTranslatedExecutor:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def run(self, invocation):
+            self.calls.append(invocation)
+            assert invocation.tool_id == "document.markitdown_convert"
+            assert invocation.operation == "convert_local_file"
+            assert "operation" not in invocation.arguments
+            output_path = Path(invocation.arguments["output_path"])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("# Markdown\n\nparsed text", encoding="utf-8")
+            return ToolResult(
+                values={"text": "# Markdown\n\nparsed text"},
+                artifacts=[str(output_path)],
+                metadata={"converter": "strict"},
+            )
+
     source = tmp_path / "input.pdf"
     source.write_bytes(b"%PDF-1.4\n")
     request = build_document_flow_request(tmp_path, source)
-    tool_executor = FakeToolExecutor()
+    tool_executor = StrictGatewayTranslatedExecutor()
 
     events = list(
         run_graph_events(
@@ -1558,10 +1576,7 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
     )
 
     assert events[-1].type == "task.completed"
-    assert tool_executor.calls
-    invocation = tool_executor.calls[0]
-    assert invocation.tool_id == "document.markitdown_convert"
-    assert invocation.operation == "convert_local_file"
+    assert len(tool_executor.calls) == 1
 
 
 def test_explicit_tool_gateway_takes_precedence_over_tool_executor(
