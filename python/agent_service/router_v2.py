@@ -156,6 +156,8 @@ def route_message(
     except Exception:
         return _fallback_decision(deterministic, "model router failed")
 
+    if model_decision.source == "fallback":
+        return model_decision
     if model_decision.confidence < LOW_CONFIDENCE_THRESHOLD:
         return _fallback_decision(deterministic, "model router confidence too low")
     if model_decision.confidence < HIGH_CONFIDENCE_THRESHOLD:

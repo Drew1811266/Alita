@@ -263,6 +263,29 @@ def test_route_message_malformed_model_output_falls_back_safely(
     assert decision.intent == "web_simple_inquiry"
 
 
+def test_route_message_malformed_model_output_preserves_complex_choice_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    model_client = FakeRouterModelClient("not json")
+
+    decision = route_message(
+        UserMessage(
+            task_id="bad-model-complex",
+            content="Research and compare current Python packaging tools",
+        ),
+        model_client=model_client,
+    )
+
+    assert model_client.calls == 1
+    assert decision.source == "fallback"
+    assert decision.intent == "web_complex_choice"
+    assert decision.missing_inputs == []
+    assert decision.legacy_route["intent"]["kind"] == "inquiry"
+    assert decision.legacy_route["inquiry"]["mode"] == "web_complex"
+    assert decision.legacy_route["missing_inputs"] == []
+
+
 def test_route_message_invalid_model_payload_falls_back_safely(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
