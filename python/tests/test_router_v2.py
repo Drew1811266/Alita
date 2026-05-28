@@ -288,6 +288,85 @@ def test_route_message_invalid_model_payload_falls_back_safely(
     assert decision.intent == "web_simple_inquiry"
 
 
+def test_route_message_string_list_model_payload_falls_back_without_character_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    model_client = FakeRouterModelClient(
+        json.dumps(
+            {
+                "intent": "missing_input",
+                "confidence": 0.9,
+                "task_type": "document_processing",
+                "missing_inputs": "document_file",
+                "reason": "bad list",
+            }
+        )
+    )
+
+    decision = route_message(
+        UserMessage(task_id="bad-list", content="What is the latest Python release?"),
+        model_client=model_client,
+    )
+
+    assert model_client.calls == 1
+    assert decision.source == "fallback"
+    assert decision.intent == "web_simple_inquiry"
+    assert decision.missing_inputs == []
+
+
+def test_route_message_string_bool_model_payload_falls_back_safely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    model_client = FakeRouterModelClient(
+        json.dumps(
+            {
+                "intent": "web_simple_inquiry",
+                "confidence": 0.9,
+                "task_type": "research",
+                "reason": "bad bool",
+                "should_clarify": "false",
+            }
+        )
+    )
+
+    decision = route_message(
+        UserMessage(task_id="bad-bool", content="What is the latest Python release?"),
+        model_client=model_client,
+    )
+
+    assert model_client.calls == 1
+    assert decision.source == "fallback"
+    assert decision.intent == "web_simple_inquiry"
+
+
+def test_route_message_model_task_override_uses_task_legacy_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    model_client = FakeRouterModelClient(
+        json.dumps(
+            {
+                "intent": "task",
+                "confidence": 0.9,
+                "task_type": "code_task",
+                "reason": "model selected task",
+            }
+        )
+    )
+
+    decision = route_message(
+        UserMessage(task_id="model-task", content="What is the latest Python release?"),
+        model_client=model_client,
+    )
+
+    assert model_client.calls == 1
+    assert decision.source == "model"
+    assert decision.intent == "task"
+    assert decision.legacy_route["intent"]["kind"] == "task"
+
+
 def test_route_message_protected_document_processing_does_not_call_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

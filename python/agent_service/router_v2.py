@@ -236,34 +236,49 @@ def parse_model_route_response(
         raw = json.loads(_extract_json_object(response))
         if not isinstance(raw, dict):
             raise ValueError("router response must be an object")
+        intent = _intent_from_payload(raw.get("intent"))
+        missing_inputs = _string_list_from_payload(
+            raw,
+            "missing_inputs",
+            "missingInputs",
+        )
+        required_permissions = _string_list_from_payload(
+            raw,
+            "required_permissions",
+            "requiredPermissions",
+        )
+        tool_candidates = [
+            _safe_reason(candidate)
+            for candidate in _string_list_from_payload(
+                raw,
+                "tool_candidates",
+                "toolCandidates",
+            )
+        ]
+        reason = _safe_reason(str(raw.get("reason") or "model router"))
         return RouterV2Decision(
-            intent=raw.get("intent"),
+            intent=intent,
             confidence=raw.get("confidence"),
             task_type=raw.get("task_type") or raw.get("taskType"),
-            missing_inputs=list(raw.get("missing_inputs") or raw.get("missingInputs") or []),
-            required_permissions=list(
-                raw.get("required_permissions") or raw.get("requiredPermissions") or []
-            ),
-            tool_candidates=[
-                _safe_reason(str(candidate))
-                for candidate in (
-                    raw.get("tool_candidates") or raw.get("toolCandidates") or []
-                )
-            ],
-            reason=_safe_reason(str(raw.get("reason") or "model router")),
+            missing_inputs=missing_inputs,
+            required_permissions=required_permissions,
+            tool_candidates=tool_candidates,
+            reason=reason,
             source="model",
-            should_clarify=bool(
-                raw.get("should_clarify") or raw.get("shouldClarify") or False
+            should_clarify=_bool_from_payload(
+                raw,
+                "should_clarify",
+                "shouldClarify",
+                default=False,
             ),
             clarification_prompt=_safe_optional_text(
                 raw.get("clarification_prompt") or raw.get("clarificationPrompt")
             ),
-            legacy_route=effective_legacy_route_payload(
-                classify_route(UserMessage(task_id="fallback", content="")),
-                fallback.intent,
+            legacy_route=_legacy_route_for_router_decision(
+                intent,
+                reason,
+                missing_inputs,
             )
-            if not fallback.legacy_route
-            else fallback.legacy_route,
         )
     except Exception:
         return _fallback_decision(fallback, "invalid model router response")
@@ -277,6 +292,91 @@ def _fallback_decision(
         update={
             "source": "fallback",
             "reason": _safe_reason(f"{decision.reason}; {reason}"),
+        }
+    )
+
+
+def _intent_from_payload(value: Any) -> AgentRouteIntent:
+    allowed = {
+        "chat",
+        "local_inquiry",
+        "web_simple_inquiry",
+        "web_complex_choice",
+        "web_complex_research_flow",
+        "task",
+        "missing_input",
+    }
+    if value not in allowed:
+        raise ValueError("router intent is invalid")
+    return value
+
+
+def _string_list_from_payload(raw: dict[str, Any], *keys: str) -> list[str]:
+    found, value = _payload_value(raw, *keys)
+    if not found:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError("router list field must be a list of strings")
+    return list(value)
+
+
+def _bool_from_payload(
+    raw: dict[str, Any],
+    *keys: str,
+    default: bool,
+) -> bool:
+    found, value = _payload_value(raw, *keys)
+    if not found:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError("router bool field must be a boolean")
+    return value
+
+
+def _payload_value(raw: dict[str, Any], *keys: str) -> tuple[bool, Any]:
+    for key in keys:
+        if key in raw:
+            return True, raw[key]
+    return False, None
+
+
+def _legacy_route_for_router_decision(
+    intent: AgentRouteIntent,
+    reason: str,
+    missing_inputs: list[str],
+) -> dict[str, Any]:
+    inquiry: dict[str, Any] | None = None
+    kind: str = IntentKind.CHAT.value
+
+    if intent == "task":
+        kind = IntentKind.TASK.value
+    elif intent == "missing_input":
+        kind = IntentKind.NEED_INPUT.value
+    elif intent == "local_inquiry":
+        kind = IntentKind.INQUIRY.value
+        inquiry = {
+            "mode": InquiryMode.LOCAL.value,
+            "requires_web": False,
+        }
+    elif intent == "web_simple_inquiry":
+        kind = IntentKind.INQUIRY.value
+        inquiry = {
+            "mode": InquiryMode.WEB_SIMPLE.value,
+            "requires_web": True,
+        }
+    elif intent in {"web_complex_choice", "web_complex_research_flow"}:
+        kind = IntentKind.INQUIRY.value
+        inquiry = {
+            "mode": InquiryMode.WEB_COMPLEX.value,
+            "requires_web": True,
+        }
+
+    return _scrub_payload(
+        {
+            "intent": {"kind": kind},
+            "inquiry": inquiry,
+            "reason": reason,
+            "missing_inputs": list(missing_inputs),
         }
     )
 
