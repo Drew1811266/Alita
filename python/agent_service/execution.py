@@ -188,12 +188,12 @@ class DocumentFlowExecutor:
         if node_id == "document-input":
             if not self.request.attachments:
                 raise ValueError("缺少可执行的文档附件")
-            return NodeOutput(
-                values={
-                    "paths": "\n".join(
-                        attachment.path for attachment in self.request.attachments
-                    )
-                }
+            paths = "\n".join(attachment.path for attachment in self.request.attachments)
+            return self._call_tool(
+                "document-input",
+                tool_id="document.receive_attachment",
+                operation="receive_attachment",
+                arguments={"paths": paths},
             )
 
         if node_id == "document-parse":

@@ -104,6 +104,11 @@ class TypstFlowToolExecutor:
 
     def run(self, invocation):
         self.calls.append(invocation)
+        if invocation.tool_id == "document.receive_attachment":
+            return ToolResult(
+                values={"paths": str(invocation.arguments.get("paths", ""))}
+            )
+
         if invocation.tool_id == "document.markitdown_convert":
             output_path = Path(invocation.arguments["output_path"])
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1531,7 +1536,11 @@ def test_document_parse_uses_markitdown_tool_executor(tmp_path: Path) -> None:
     )
 
     assert tool_executor.calls
-    invocation = tool_executor.calls[0]
+    invocation = next(
+        call
+        for call in tool_executor.calls
+        if call.tool_id == "document.markitdown_convert"
+    )
     assert invocation.tool_id == "document.markitdown_convert"
     assert invocation.operation == "convert_local_file"
     assert invocation.arguments["input_path"] == str(source)
@@ -1555,6 +1564,13 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
 
         def run(self, invocation):
             self.calls.append(invocation)
+            if invocation.tool_id == "document.receive_attachment":
+                assert invocation.operation == "receive_attachment"
+                assert "operation" not in invocation.arguments
+                return ToolResult(
+                    values={"paths": str(invocation.arguments.get("paths", ""))}
+                )
+
             assert invocation.tool_id == "document.markitdown_convert"
             assert invocation.operation == "convert_local_file"
             assert "operation" not in invocation.arguments
@@ -1577,10 +1593,14 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
 
         def call_tool(self, invocation):
             self.calls.append(invocation)
-            assert invocation.tool_id == "internal:document.markitdown_convert"
-            assert invocation.arguments["operation"] == "convert_local_file"
-            assert "input_path" in invocation.arguments
-            assert "output_path" in invocation.arguments
+            if invocation.tool_id == "internal:document.receive_attachment":
+                assert invocation.arguments["operation"] == "receive_attachment"
+                assert "paths" in invocation.arguments
+            else:
+                assert invocation.tool_id == "internal:document.markitdown_convert"
+                assert invocation.arguments["operation"] == "convert_local_file"
+                assert "input_path" in invocation.arguments
+                assert "output_path" in invocation.arguments
             return self.gateway.call_tool(invocation)
 
     source = tmp_path / "input.pdf"
@@ -1627,8 +1647,14 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
     assert len(factory_calls) == 1
     assert factory_calls[0]["internal_executor"] is tool_executor
     assert len(spy_gateways) == 1
-    assert len(spy_gateways[0].calls) == 1
-    assert len(tool_executor.calls) == 1
+    assert [call.tool_id for call in spy_gateways[0].calls] == [
+        "internal:document.receive_attachment",
+        "internal:document.markitdown_convert",
+    ]
+    assert [call.tool_id for call in tool_executor.calls] == [
+        "document.receive_attachment",
+        "document.markitdown_convert",
+    ]
 
 
 def test_explicit_tool_gateway_takes_precedence_over_tool_executor(
@@ -1671,10 +1697,11 @@ def test_document_flow_runs_typst_export_and_file_export_passes_pdf_artifact(
     )
 
     assert [call.tool_id for call in tool_executor.calls] == [
+        "document.receive_attachment",
         "document.markitdown_convert",
         "document.typst_compile",
     ]
-    typst_call = tool_executor.calls[1]
+    typst_call = tool_executor.calls[2]
     assert typst_call.operation == "compile_report_pdf"
     assert typst_call.arguments["source_output_path"].endswith(".typ")
     assert typst_call.arguments["pdf_output_path"].endswith(".pdf")
@@ -1709,10 +1736,15 @@ def test_document_parse_uses_unique_output_paths_for_duplicate_attachment_names(
         )
     )
 
-    assert len(tool_executor.calls) == 2
+    convert_calls = [
+        call
+        for call in tool_executor.calls
+        if call.tool_id == "document.markitdown_convert"
+    ]
+    assert len(convert_calls) == 2
     output_paths = [
         Path(invocation.arguments["output_path"])
-        for invocation in tool_executor.calls
+        for invocation in convert_calls
     ]
     assert output_paths[0] != output_paths[1]
     for output_path in output_paths:

@@ -52,6 +52,37 @@ def test_document_flow_parse_calls_unified_tool_gateway(tmp_path: Path) -> None:
     assert invocation.model_session_id is None
 
 
+def test_document_flow_receive_attachment_calls_unified_tool_gateway(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.docx"
+    source.write_bytes(b"fake docx")
+    request = build_document_flow_request(tmp_path, source)
+    gateway = RecordingGateway()
+
+    events = list(
+        run_graph_events(
+            request,
+            run_state=AgentRunState.from_run_graph_request(request),
+            model_client=FakeModelClient(),
+            tool_gateway=gateway,
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+    calls_by_node = {call.node_id: call for call in gateway.calls}
+    assert {
+        ("document-input", "internal:document.receive_attachment"),
+        ("document-parse", "internal:document.markitdown_convert"),
+    } <= {(call.node_id, call.tool_id) for call in gateway.calls}
+
+    invocation = calls_by_node["document-input"]
+    assert invocation.node_id == "document-input"
+    assert invocation.tool_id == "internal:document.receive_attachment"
+    assert invocation.arguments["operation"] == "receive_attachment"
+    assert invocation.arguments["paths"] == str(source)
+
+
 def test_document_flow_typst_export_calls_unified_tool_gateway(tmp_path: Path) -> None:
     source = tmp_path / "input.md"
     source.write_text("# Title\n\nBody", encoding="utf-8")
