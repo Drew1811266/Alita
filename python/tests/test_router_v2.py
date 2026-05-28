@@ -151,6 +151,29 @@ def test_model_router_prompt_scrubs_windows_paths_with_spaces_and_path_fragments
     assert "The phrase Software Project alone is just a label." in prompt_dump
 
 
+def test_model_router_prompt_scrubs_attachment_name_path_fragments() -> None:
+    attachment_name_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
+    message = UserMessage(
+        task_id="attachment-name-scrub",
+        content="Review the attached file.",
+        attachments=[
+            Attachment(
+                attachment_id="path-name",
+                name=attachment_name_path,
+                path=r"C:\safe\staged\attachment.bin",
+                size_bytes=128,
+                mime_type="text/plain",
+            )
+        ],
+    )
+
+    prompt_dump = repr(_build_model_router_messages(message))
+
+    assert attachment_name_path not in prompt_dump
+    assert "Software Project" not in prompt_dump
+    assert "agent_service" not in prompt_dump
+
+
 def test_model_reason_and_tool_candidates_payload_scrub_path_fragments() -> None:
     windows_path_with_spaces = (
         r"D:\Software Project\Alita\python\agent_service\graph.py"

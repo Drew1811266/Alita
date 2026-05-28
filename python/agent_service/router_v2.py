@@ -298,7 +298,9 @@ def _is_protected_fast_path(
 
 def _build_model_router_messages(message: UserMessage) -> list[ModelChatMessage]:
     content = _safe_reason(message.content.strip() or "continue")
-    attachment_names = ", ".join(attachment.name for attachment in message.attachments)
+    attachment_names = ", ".join(
+        _safe_reason(attachment.name) for attachment in message.attachments
+    )
     if attachment_names:
         content = f"{content}\nAttachments: {attachment_names}"
     return [
