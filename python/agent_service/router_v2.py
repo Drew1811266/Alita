@@ -82,7 +82,6 @@ class RouterV2Decision(BaseModel):
             "source": self.source,
             "shouldClarify": self.should_clarify,
             "clarificationPrompt": _safe_optional_text(self.clarification_prompt),
-            "legacyRoute": _scrub_payload(dict(self.legacy_route)),
         }
 
 

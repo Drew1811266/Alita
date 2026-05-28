@@ -6,11 +6,14 @@ import pytest
 from pydantic import ValidationError
 
 from agent_service.router_v2 import (
+    STRUCTURED_ROUTER_ENV,
     RouterV2Decision,
     _build_model_router_messages,
     deterministic_route,
     effective_legacy_route_payload,
     parse_model_route_response,
+    route_message,
+    structured_router_enabled,
 )
 from agent_service.schemas import Attachment, UserMessage
 
@@ -41,8 +44,8 @@ def test_router_v2_decision_payload_uses_frontend_safe_keys() -> None:
         "source": "deterministic",
         "shouldClarify": True,
         "clarificationPrompt": "What should I do?",
-        "legacyRoute": {"intent": {"kind": "task"}},
     }
+    assert decision.legacy_route == {"intent": {"kind": "task"}}
 
 
 @pytest.mark.parametrize("confidence", [-0.1, 1.1])
@@ -178,3 +181,124 @@ def test_model_reason_and_tool_candidates_payload_scrub_path_fragments() -> None
     assert "Software Project\\Alita" not in payload_dump
     assert "Software Project/Alita" not in payload_dump
     assert "agent_service" not in payload_dump
+
+
+class FakeRouterModelClient:
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.calls = 0
+
+    def chat(self, messages: list[object], **kwargs: object) -> str:
+        self.calls += 1
+        return self.response
+
+
+def test_structured_router_enabled_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(STRUCTURED_ROUTER_ENV, raising=False)
+
+    assert structured_router_enabled() is False
+
+
+def test_route_message_env_off_does_not_call_model_and_returns_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(STRUCTURED_ROUTER_ENV, raising=False)
+    model_client = FakeRouterModelClient(
+        json.dumps(
+            {
+                "intent": "task",
+                "confidence": 0.95,
+                "task_type": "code_task",
+                "reason": "model route",
+            }
+        )
+    )
+
+    decision = route_message(
+        UserMessage(task_id="env-off", content="What is the latest Python release?"),
+        model_client=model_client,
+    )
+
+    assert model_client.calls == 0
+    assert decision.source == "deterministic"
+    assert decision.intent == "web_simple_inquiry"
+
+
+def test_route_message_malformed_model_output_falls_back_safely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    model_client = FakeRouterModelClient("not json")
+
+    decision = route_message(
+        UserMessage(task_id="bad-model", content="What is the latest Python release?"),
+        model_client=model_client,
+    )
+
+    assert model_client.calls == 1
+    assert decision.source == "fallback"
+    assert decision.intent == "web_simple_inquiry"
+
+
+def test_route_message_protected_document_processing_does_not_call_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    model_client = FakeRouterModelClient("not json")
+
+    decision = route_message(
+        UserMessage(
+            task_id="doc",
+            content="请整理这个文档",
+            attachments=[
+                Attachment(
+                    attachment_id="doc-1",
+                    name="notes.docx",
+                    path=r"C:\Users\Drew\Desktop\notes.docx",
+                    size_bytes=128,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            ],
+        ),
+        model_client=model_client,
+    )
+
+    assert model_client.calls == 0
+    assert decision.source == "deterministic"
+    assert decision.task_type == "document_processing"
+
+
+def test_route_message_protected_weather_route_does_not_call_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    model_client = FakeRouterModelClient("not json")
+
+    decision = route_message(
+        UserMessage(task_id="weather", content="What's the weather in Seattle today?"),
+        model_client=model_client,
+    )
+
+    assert model_client.calls == 0
+    assert decision.source == "deterministic"
+    assert decision.intent == "web_simple_inquiry"
+
+
+def test_route_message_protected_inquiry_choice_does_not_call_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    model_client = FakeRouterModelClient("not json")
+
+    decision = route_message(
+        UserMessage(
+            task_id="choice",
+            content="Research and compare local LLM runtimes for a design proposal.",
+        ),
+        inquiry_choice="quick_answer",
+        model_client=model_client,
+    )
+
+    assert model_client.calls == 0
+    assert decision.source == "deterministic"
+    assert decision.intent == "web_simple_inquiry"
