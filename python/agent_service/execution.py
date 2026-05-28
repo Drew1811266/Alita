@@ -344,18 +344,140 @@ class PlannedTaskExecutor:
         *,
         run_state: AgentRunState | None = None,
         model_client: ModelClient | None = None,
+        tool_gateway: UnifiedToolGateway | None = None,
         tool_executor: ToolExecutor | None = None,
         tool_registry: ToolRegistry | None = None,
     ) -> None:
         self.request = request
+        self.run_state = run_state or AgentRunState.from_run_graph_request(request)
         self.nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
         self.model_client = model_client or LlamaCppModelClient()
+        self.tool_registry = tool_registry or _default_tool_registry()
+        self.tool_gateway = tool_gateway or _default_tool_gateway(
+            tool_executor=tool_executor
+        )
         self.document_executor = DocumentFlowExecutor(
             request,
-            run_state=run_state,
+            run_state=self.run_state,
             model_client=model_client,
+            tool_gateway=self.tool_gateway,
             tool_executor=tool_executor,
-            tool_registry=tool_registry,
+            tool_registry=self.tool_registry,
+        )
+
+    def _call_tool(
+        self,
+        node: GraphNode,
+        *,
+        operation: str,
+        arguments: dict[str, object],
+    ) -> NodeOutput:
+        if not node.toolRef:
+            raise HarnessError(
+                "unsupported_runtime",
+                f"tool node {node.nodeId} has no bound runtime: <missing>",
+            )
+        result = self.tool_gateway.call_tool(
+            UnifiedToolInvocation(
+                invocation_id=(
+                    f"{self.run_state.run_id or self.request.run_id}-"
+                    f"{node.nodeId}-{operation}"
+                ),
+                run_id=self.run_state.run_id or self.request.run_id,
+                task_id=self.run_state.task_id,
+                node_id=node.nodeId,
+                tool_id=normalize_tool_id(node.toolRef),
+                arguments={"operation": operation, **arguments},
+                project_path=self.run_state.project_path or self.request.project_path,
+                allowed_roots=self.document_executor._allowed_roots(),
+                requested_permissions=_required_permissions_for_tool_node(
+                    node,
+                    tool_registry=self.tool_registry,
+                ),
+                model_session_id=self.run_state.message.model_session_id,
+            )
+        )
+        return _node_output_from_unified_result(result)
+
+    def _run_fixed_tool_node(
+        self,
+        node: GraphNode,
+        inputs: dict[str, NodeOutput],
+    ) -> NodeOutput:
+        tool_id = provider_tool_id(node.toolRef or "")
+
+        if tool_id == "document.receive_attachment":
+            if not self.request.attachments:
+                raise HarnessError(
+                    "missing_input",
+                    f"tool node {node.nodeId} requires at least one attachment",
+                )
+            return NodeOutput(
+                values={
+                    "paths": "\n".join(
+                        attachment.path for attachment in self.request.attachments
+                    )
+                }
+            )
+
+        if tool_id == "document.markitdown_convert":
+            if not self.request.attachments:
+                raise HarnessError(
+                    "missing_input",
+                    f"tool node {node.nodeId} requires at least one attachment",
+                )
+            texts: list[str] = []
+            artifacts: list[str] = []
+            for index, attachment in enumerate(self.request.attachments):
+                input_path = Path(attachment.path)
+                output_path = self.document_executor._converted_output_path(
+                    index,
+                    input_path,
+                )
+                output = self._call_tool(
+                    node,
+                    operation="convert_local_file",
+                    arguments={
+                        "input_path": attachment.path,
+                        "output_path": str(output_path),
+                    },
+                )
+                text = str(output.values.get("text", ""))
+                if text:
+                    texts.append(text)
+                artifacts.extend(output.artifacts)
+            return NodeOutput(
+                artifacts=artifacts,
+                values={"text": "\n\n".join(texts)},
+            )
+
+        if tool_id == "document.typst_compile":
+            outline = _first_input_value(inputs, "outline")
+            report = _first_input_value(inputs, "report")
+            output_stem = f"report-{uuid4().hex[:8]}"
+            return self._call_tool(
+                node,
+                operation="compile_report_pdf",
+                arguments={
+                    "title": Path(self.request.project_path).stem or "Alita Report",
+                    "outline": outline,
+                    "report": report,
+                    "source_output_path": str(
+                        self.document_executor.artifact_dir
+                        / "typst"
+                        / f"{output_stem}.typ"
+                    ),
+                    "pdf_output_path": str(
+                        self.document_executor.artifact_dir
+                        / "typst"
+                        / f"{output_stem}.pdf"
+                    ),
+                },
+            )
+
+        raise HarnessError(
+            "unsupported_runtime",
+            f"tool node {node.nodeId} has no bound runtime: {node.toolRef or '<missing>'}",
         )
 
     def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
@@ -428,10 +550,7 @@ class PlannedTaskExecutor:
             )
 
         if node.nodeType == "fixed_tool":
-            raise HarnessError(
-                "unsupported_runtime",
-                f"tool node {node_id} has no bound runtime: {node.toolRef or '<missing>'}",
-            )
+            return self._run_fixed_tool_node(node, inputs)
 
         if node.nodeType == "output":
             return NodeOutput(
@@ -796,6 +915,7 @@ def run_graph_events(
     run_state: AgentRunState | None = None,
     executor: NodeExecutor | None = None,
     model_client: ModelClient | None = None,
+    tool_gateway: UnifiedToolGateway | None = None,
     tool_executor: ToolExecutor | None = None,
     search_provider: SearchProvider | None = None,
     source_fetcher: SourceContentFetcher | None = None,
@@ -826,6 +946,9 @@ def run_graph_events(
     try:
         ordered_nodes = _topological_nodes(request)
         effective_tool_registry = tool_registry or _default_tool_registry()
+        effective_tool_gateway = tool_gateway or _default_tool_gateway(
+            tool_executor=tool_executor
+        )
         _validate_graph_tools(request, effective_tool_registry)
     except (ValueError, HarnessError) as error:
         payload = harness_error_payload(error)
@@ -868,6 +991,7 @@ def run_graph_events(
             request,
             run_state=run_state,
             model_client=model_client,
+            tool_gateway=effective_tool_gateway,
             tool_executor=tool_executor,
             tool_registry=effective_tool_registry,
         )
@@ -876,6 +1000,7 @@ def run_graph_events(
             request,
             run_state=run_state,
             model_client=model_client,
+            tool_gateway=effective_tool_gateway,
             tool_executor=tool_executor,
             tool_registry=effective_tool_registry,
         )
