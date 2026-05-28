@@ -232,7 +232,10 @@ def request_required_inputs(state: AgentState) -> AgentState:
 
 def plan_task_graph(state: AgentState) -> AgentState:
     message = state["message"]
-    run_state = state.get("run_state")
+    run_state = _run_state_with_structured_route_for_planning(
+        message,
+        state.get("run_state"),
+    )
     graph_payload = _graph_payload_for_task(
         message,
         goal_spec=state.get("goal_spec"),
@@ -290,6 +293,21 @@ def _structured_route_payload_for_planning(
     if run_state is not None and run_state.structured_route_decision is not None:
         return dict(run_state.structured_route_decision)
     return deterministic_route(message).to_payload()
+
+
+def _run_state_with_structured_route_for_planning(
+    message: UserMessage,
+    run_state: AgentRunState | None,
+) -> AgentRunState | None:
+    if run_state is None or run_state.structured_route_decision is not None:
+        return run_state
+    decision = deterministic_route(message)
+    return run_state.with_routing(
+        intent=run_state.intent or decision.intent,
+        route_decision=run_state.route_decision or decision.legacy_route,
+        goal_spec=run_state.goal_spec or parse_goal_spec(message),
+        structured_route_decision=decision.to_payload(),
+    )
 
 
 def _with_model_policy_metadata(graph_payload: dict, policy_name: str) -> dict:
@@ -647,6 +665,7 @@ def stream_agent_events_from_state(
 
     run_state = _route_run_state(run_state, model_client=model_client)
     if run_state.intent == "task":
+        run_state = _run_state_with_structured_route_for_planning(message, run_state)
         graph_payload = _graph_payload_for_task(
             message,
             goal_spec=run_state.goal_spec,

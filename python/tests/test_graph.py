@@ -17,6 +17,7 @@ from agent_service.graph import (
     stream_agent_events_from_state,
 )
 from agent_service.graph_compiler import compile_task_graph_to_node_graph
+from agent_service.goal_spec import parse_goal_spec
 from agent_service.intent import IntentKind, classify_route
 from agent_service.model_client import ChatMessage
 from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
@@ -1206,6 +1207,26 @@ def test_task_graph_records_planner_chain_metadata() -> None:
     assert planner_chain["routeIntent"] == "task"
     assert planner_chain["taskType"] == "code_task"
     assert graph["metadata"]["routeDecision"]["intent"] == "task"
+
+
+def test_prerouted_task_state_without_structured_route_records_route_metadata() -> None:
+    message = UserMessage(
+        task_id="pre-routed-task",
+        content="Create a Python script that counts rows in a CSV file.",
+    )
+    run_state = AgentRunState.from_user_message(message).model_copy(
+        update={
+            "intent": "task",
+            "goal_spec": parse_goal_spec(message),
+        }
+    )
+
+    events = run_agent_from_state(run_state)
+
+    graph = events[0].payload["graph"]
+    assert graph["metadata"]["plannerChain"]["routeSource"] == "deterministic"
+    assert graph["metadata"]["routeDecision"]["source"] == "deterministic"
+    assert graph["metadata"]["routeDecision"]["taskType"] == "code_task"
 
 
 def test_document_task_graph_records_document_planner_chain_metadata() -> None:
