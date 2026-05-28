@@ -69,3 +69,4 @@ def test_route_context_validation_error_does_not_leak_path_values() -> None:
     assert local_path not in message
     assert "Software Project" not in message
     assert "agent_service" not in message
+    assert exc_info.value.__cause__ is None

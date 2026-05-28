@@ -78,8 +78,8 @@ class PlannerChainResult(BaseModel):
 def route_context_from_payload(payload: dict[str, Any]) -> StructuredRouteContext:
     try:
         return StructuredRouteContext.model_validate(payload)
-    except ValidationError as exc:
-        raise PlannerChainError("invalid structured route payload") from exc
+    except ValidationError:
+        raise PlannerChainError("invalid structured route payload") from None
 
 
 def _safe_text(value: str) -> str:
