@@ -110,6 +110,24 @@ def test_route_context_safe_payload_scrubs_path_values() -> None:
     assert "agent_service" not in payload_dump
 
 
+@pytest.mark.parametrize("local_path", [r"D:\secret.docx", "/tmp/secret.docx"])
+def test_route_context_safe_payload_scrubs_short_absolute_path_values(
+    local_path: str,
+) -> None:
+    route = route_context_from_payload(
+        _route_payload(
+            missingInputs=[local_path],
+            toolCandidates=[local_path],
+            reason=f"Need {local_path}",
+        )
+    )
+
+    payload_dump = repr(route.safe_payload())
+
+    assert local_path not in payload_dump
+    assert "secret.docx" not in payload_dump
+
+
 def test_route_context_rejects_invalid_payload() -> None:
     with pytest.raises(PlannerChainError, match="invalid structured route payload"):
         route_context_from_payload({"intent": "task"})
@@ -164,6 +182,32 @@ def test_planner_chain_does_not_treat_amd_as_markdown_token() -> None:
                 attachment_id="a1",
                 name="amd-filing.docx",
                 path=str(PROJECT_ROOT / "fixtures" / "amd-filing.docx"),
+                size_bytes=128,
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        ],
+    )
+    request = _request_for(
+        message,
+        _route_payload(taskType="document_processing"),
+    )
+
+    result = PlannerChain(tool_registry=_tool_registry()).plan(request)
+
+    assert result.planner == "template.document.v1"
+    assert result.strategy == "document_template"
+    assert [node["nodeId"] for node in result.graph_payload["nodes"]] == DOCUMENT_NODE_IDS
+
+
+def test_planner_chain_does_not_treat_mda_as_markdown_token() -> None:
+    message = UserMessage(
+        task_id="task-mda-document-chain",
+        content="Convert this MD&A filing into an organized document summary.",
+        attachments=[
+            Attachment(
+                attachment_id="a1",
+                name="mda-filing.docx",
+                path=str(PROJECT_ROOT / "fixtures" / "mda-filing.docx"),
                 size_bytes=128,
                 mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )

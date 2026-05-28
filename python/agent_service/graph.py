@@ -323,7 +323,9 @@ def _with_route_decision_metadata(
     if run_state is None or run_state.structured_route_decision is None:
         return graph_payload
     metadata = dict(graph_payload.get("metadata") or {})
-    metadata["routeDecision"] = dict(run_state.structured_route_decision)
+    metadata["routeDecision"] = route_context_from_payload(
+        run_state.structured_route_decision
+    ).safe_payload()
     return {**graph_payload, "metadata": metadata}
 
 

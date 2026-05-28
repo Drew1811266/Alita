@@ -1245,6 +1245,47 @@ def test_prerouted_task_state_without_structured_route_records_route_metadata() 
     assert graph["metadata"]["routeDecision"]["taskType"] == "code_task"
 
 
+def test_prerouted_task_route_decision_metadata_scrubs_structured_route_paths() -> None:
+    message = UserMessage(
+        task_id="pre-routed-task-paths",
+        content="Create a Python script that counts rows in a CSV file.",
+    )
+    structured_route_decision = {
+        "intent": "task",
+        "confidence": 0.88,
+        "taskType": "code_task",
+        "missingInputs": [],
+        "requiredPermissions": [r"D:\Software Project\Alita\secret.docx"],
+        "toolCandidates": [r"D:\secret.docx"],
+        "reason": r"Need D:\Software Project\Alita\secret.docx",
+        "source": "deterministic",
+        "shouldClarify": False,
+        "clarificationPrompt": None,
+    }
+    run_state = AgentRunState.from_user_message(message).model_copy(
+        update={
+            "intent": "task",
+            "goal_spec": parse_goal_spec(message),
+            "structured_route_decision": structured_route_decision,
+        }
+    )
+
+    events = run_agent_from_state(run_state)
+
+    graph = events[0].payload["graph"]
+    route_decision_dump = repr(graph["metadata"]["routeDecision"])
+    assert r"D:\Software Project\Alita\secret.docx" not in route_decision_dump
+    assert r"D:\secret.docx" not in route_decision_dump
+    assert "secret.docx" not in route_decision_dump
+    assert "Software Project" not in route_decision_dump
+    assert graph["metadata"]["plannerChain"]["routeSource"] == (
+        graph["metadata"]["routeDecision"]["source"]
+    )
+    assert graph["metadata"]["plannerChain"]["taskType"] == (
+        graph["metadata"]["routeDecision"]["taskType"]
+    )
+
+
 def test_document_task_graph_records_document_planner_chain_metadata() -> None:
     events = run_agent(
         UserMessage(
