@@ -1543,7 +1543,12 @@ def test_document_parse_uses_markitdown_tool_executor(tmp_path: Path) -> None:
 
 def test_tool_executor_injection_is_wrapped_by_unified_gateway(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
+    from agent_service.tool_gateway import (
+        default_unified_tool_gateway as real_default_unified_tool_gateway,
+    )
+
     class StrictGatewayTranslatedExecutor:
         def __init__(self) -> None:
             self.calls = []
@@ -1562,10 +1567,53 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
                 metadata={"converter": "strict"},
             )
 
+    class SpyGateway:
+        def __init__(self, gateway) -> None:
+            self.gateway = gateway
+            self.calls = []
+
+        def list_tools(self):
+            return self.gateway.list_tools()
+
+        def call_tool(self, invocation):
+            self.calls.append(invocation)
+            assert invocation.tool_id == "internal:document.markitdown_convert"
+            assert invocation.arguments["operation"] == "convert_local_file"
+            assert "input_path" in invocation.arguments
+            assert "output_path" in invocation.arguments
+            return self.gateway.call_tool(invocation)
+
     source = tmp_path / "input.pdf"
     source.write_bytes(b"%PDF-1.4\n")
     request = build_document_flow_request(tmp_path, source)
     tool_executor = StrictGatewayTranslatedExecutor()
+    factory_calls = []
+    spy_gateways = []
+
+    def spy_default_unified_tool_gateway(
+        *,
+        packages_root=None,
+        internal_executor=None,
+    ):
+        factory_calls.append(
+            {
+                "packages_root": packages_root,
+                "internal_executor": internal_executor,
+            }
+        )
+        spy_gateway = SpyGateway(
+            real_default_unified_tool_gateway(
+                packages_root=packages_root,
+                internal_executor=internal_executor,
+            )
+        )
+        spy_gateways.append(spy_gateway)
+        return spy_gateway
+
+    monkeypatch.setattr(
+        "agent_service.execution.default_unified_tool_gateway",
+        spy_default_unified_tool_gateway,
+    )
 
     events = list(
         run_graph_events(
@@ -1576,6 +1624,10 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
     )
 
     assert events[-1].type == "task.completed"
+    assert len(factory_calls) == 1
+    assert factory_calls[0]["internal_executor"] is tool_executor
+    assert len(spy_gateways) == 1
+    assert len(spy_gateways[0].calls) == 1
     assert len(tool_executor.calls) == 1
 
 
