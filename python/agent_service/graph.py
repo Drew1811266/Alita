@@ -238,6 +238,10 @@ def plan_task_graph(state: AgentState) -> AgentState:
         message,
         goal_spec=state.get("goal_spec"),
     )
+    graph_payload = _with_route_decision_metadata(
+        graph_payload,
+        state.get("run_state"),
+    )
     return {
         **state,
         "events": [
@@ -271,6 +275,17 @@ def _graph_payload_for_task(
 def _with_model_policy_metadata(graph_payload: dict, policy_name: str) -> dict:
     metadata = dict(graph_payload.get("metadata") or {})
     metadata["modelPolicy"] = policy_name
+    return {**graph_payload, "metadata": metadata}
+
+
+def _with_route_decision_metadata(
+    graph_payload: dict,
+    run_state: AgentRunState | None,
+) -> dict:
+    if run_state is None or run_state.structured_route_decision is None:
+        return graph_payload
+    metadata = dict(graph_payload.get("metadata") or {})
+    metadata["routeDecision"] = dict(run_state.structured_route_decision)
     return {**graph_payload, "metadata": metadata}
 
 
@@ -358,12 +373,16 @@ def plan_research_graph(state: AgentState) -> AgentState:
 
 
 def _research_graph_payload(state: AgentState) -> dict:
-    return _with_model_policy_metadata(
+    graph_payload = _with_model_policy_metadata(
         build_research_graph(
             state["message"],
             state.get("route_decision", {}),
         ),
         DEEP_REASONING_POLICY.profile.value,
+    )
+    return _with_route_decision_metadata(
+        graph_payload,
+        state.get("run_state"),
     )
 
 
@@ -628,6 +647,7 @@ def stream_agent_events_from_state(
             goal_spec=run_state.goal_spec,
         )
         yield from _task_planning_progress_events(message, graph_payload)
+        graph_payload = _with_route_decision_metadata(graph_payload, run_state)
         yield AgentEvent(
             type="node_graph.created",
             payload={"graph": graph_payload},

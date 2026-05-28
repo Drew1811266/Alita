@@ -220,6 +220,9 @@ def test_task_message_creates_graph_with_planning_and_executable_nodes() -> None
         "temporary-script-file-inspect",
         "task-output",
     ]
+    route_decision = graph["metadata"]["routeDecision"]
+    assert route_decision["intent"] == "task"
+    assert route_decision["source"] == "deterministic"
     assert executable_nodes[0]["scriptReview"]["status"] == "not_reviewed"
     assert executable_nodes[0].get("estimate")
     assert executable_nodes[1]["nodeType"] == "output"

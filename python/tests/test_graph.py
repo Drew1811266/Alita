@@ -824,6 +824,24 @@ def test_research_graph_records_deep_reasoning_policy_metadata() -> None:
     assert graph["metadata"].get("modelPolicy") == ModelCallProfile.DEEP_REASONING.value
 
 
+def test_research_graph_records_structured_route_decision_metadata() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="complex-web",
+            content="Research and compare current Python packaging tools",
+        ),
+        inquiry_choice="research_flow",
+    )
+
+    created_event = next(event for event in events if event.type == "node_graph.created")
+    graph = created_event.payload["graph"]
+    route_decision = graph["metadata"]["routeDecision"]
+    assert route_decision["intent"] == "web_complex_research_flow"
+    assert route_decision["source"] == "deterministic"
+    assert route_decision["taskType"] == "research"
+    assert graph["metadata"]["kind"] == "research"
+
+
 def test_chinese_github_research_with_context_attachment_asks_for_research_choice() -> None:
     events = run_agent(
         UserMessage(
@@ -1107,6 +1125,25 @@ def test_task_graph_records_deep_reasoning_policy_metadata() -> None:
     created_event = next(event for event in events if event.type == "node_graph.created")
     graph = created_event.payload["graph"]
     assert graph["metadata"].get("modelPolicy") == ModelCallProfile.DEEP_REASONING.value
+
+
+def test_task_graph_records_structured_route_decision_metadata() -> None:
+    events = list(
+        stream_agent_events(
+            UserMessage(
+                task_id="task-general",
+                content="Can you create a Python script that counts rows in a CSV file?",
+            )
+        )
+    )
+
+    created_event = next(event for event in events if event.type == "node_graph.created")
+    graph = created_event.payload["graph"]
+    route_decision = graph["metadata"]["routeDecision"]
+    assert route_decision["intent"] == "task"
+    assert route_decision["source"] == "deterministic"
+    assert route_decision["confidence"] >= 0.75
+    assert route_decision["taskType"]
 
 
 def test_temporary_placeholder_node_gets_default_script_review_state() -> None:
