@@ -217,7 +217,7 @@ def _with_planner_chain_metadata(
         "toolCandidates": _scrub_payload(list(request.route.tool_candidates)),
         "requiredPermissions": _scrub_payload(list(request.route.required_permissions)),
     }
-    return {**graph_payload, "metadata": metadata}
+    return {**graph_payload, "metadata": _scrub_payload(metadata)}
 
 
 def _validate_graph_payload(graph_payload: dict[str, Any]) -> None:

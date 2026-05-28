@@ -220,7 +220,7 @@ def test_planner_chain_metadata_does_not_include_raw_route_paths() -> None:
     local_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
     message = UserMessage(
         task_id="task-path-chain",
-        content="Create a Python script that counts rows in a CSV file.",
+        content=f"Create a Python script that counts rows in {local_path}.",
     )
     request = _request_for(
         message,
@@ -232,11 +232,12 @@ def test_planner_chain_metadata_does_not_include_raw_route_paths() -> None:
     )
 
     result = PlannerChain(tool_registry=_tool_registry()).plan(request)
-    metadata_dump = repr(result.graph_payload["metadata"]["plannerChain"])
+    metadata_dump = repr(result.graph_payload["metadata"])
 
     assert local_path not in metadata_dump
     assert "Software Project" not in metadata_dump
     assert "agent_service" not in metadata_dump
+    assert "graph.py" not in metadata_dump
 
 
 def test_planner_chain_preserves_markdown_conversion_legacy_strategy() -> None:
