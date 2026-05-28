@@ -263,6 +263,31 @@ def test_route_message_malformed_model_output_falls_back_safely(
     assert decision.intent == "web_simple_inquiry"
 
 
+def test_route_message_invalid_model_payload_falls_back_safely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    model_client = FakeRouterModelClient(
+        json.dumps(
+            {
+                "intent": "unknown_intent",
+                "confidence": 2.0,
+                "task_type": "research",
+                "reason": "bad",
+            }
+        )
+    )
+
+    decision = route_message(
+        UserMessage(task_id="bad-payload", content="What is the latest Python release?"),
+        model_client=model_client,
+    )
+
+    assert model_client.calls == 1
+    assert decision.source == "fallback"
+    assert decision.intent == "web_simple_inquiry"
+
+
 def test_route_message_protected_document_processing_does_not_call_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
