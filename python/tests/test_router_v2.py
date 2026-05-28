@@ -86,6 +86,40 @@ def test_deterministic_route_matches_existing_router_parity_cases(
     assert decision.task_type == expected_task_type
 
 
+def test_how_to_question_with_task_verb_remains_local_inquiry() -> None:
+    decision = deterministic_route(
+        UserMessage(
+            task_id="how-to-local",
+            content="Can you explain how to update Python?",
+        )
+    )
+
+    assert decision.intent == "local_inquiry"
+    assert decision.legacy_route["intent"]["kind"] == "inquiry"
+    assert decision.legacy_route["inquiry"]["mode"] == "local"
+
+
+def test_markdown_conversion_with_attachment_remains_task() -> None:
+    decision = deterministic_route(
+        UserMessage(
+            task_id="markdown-doc",
+            content="Convert this document to Markdown.",
+            attachments=[
+                Attachment(
+                    attachment_id="doc-1",
+                    name="input.docx",
+                    path=r"C:\Users\Drew\Desktop\input.docx",
+                    size_bytes=128,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            ],
+        )
+    )
+
+    assert decision.intent == "task"
+    assert decision.task_type == "document_processing"
+
+
 def test_attached_document_route_does_not_leak_attachment_path() -> None:
     attachment_path = r"C:\Users\Drew\Projects\Alita\inputs\notes.docx"
     message = UserMessage(
@@ -110,6 +144,25 @@ def test_attached_document_route_does_not_leak_attachment_path() -> None:
     assert attachment_path not in repr(payload)
     assert attachment_path not in decision.reason
     assert all(attachment_path not in candidate for candidate in decision.tool_candidates)
+
+
+def test_route_payload_does_not_include_raw_local_paths() -> None:
+    local_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
+    message = UserMessage(
+        task_id="route-path-scrub",
+        content=f"Can you inspect {local_path}?",
+    )
+
+    decision = deterministic_route(message)
+    payload_dump = repr(decision.to_payload())
+    legacy_dump = repr(decision.legacy_route)
+
+    assert local_path not in payload_dump
+    assert local_path not in legacy_dump
+    assert "Software Project\\Alita" not in payload_dump
+    assert "Software Project\\Alita" not in legacy_dump
+    assert "agent_service" not in payload_dump
+    assert "agent_service" not in legacy_dump
 
 
 def test_effective_legacy_route_payload_converts_complex_quick_answer_to_simple() -> None:
@@ -210,9 +263,11 @@ class FakeRouterModelClient:
     def __init__(self, response: str) -> None:
         self.response = response
         self.calls = 0
+        self.messages: list[list[object]] = []
 
     def chat(self, messages: list[object], **kwargs: object) -> str:
         self.calls += 1
+        self.messages.append(messages)
         return self.response
 
 
@@ -388,6 +443,42 @@ def test_route_message_high_confidence_model_route_returns_model_decision(
     assert decision.source == "model"
     assert decision.intent == "task"
     assert decision.legacy_route["intent"]["kind"] == "task"
+
+
+def test_model_route_payload_does_not_include_raw_local_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    local_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
+    model_client = FakeRouterModelClient(
+        json.dumps(
+            {
+                "intent": "task",
+                "confidence": 0.9,
+                "task_type": "code_task",
+                "reason": f"Route based on {local_path}",
+                "tool_candidates": [f"inspect:{local_path}"],
+            }
+        )
+    )
+
+    decision = route_message(
+        UserMessage(
+            task_id="model-path-scrub",
+            content=f"Please inspect {local_path}.",
+        ),
+        model_client=model_client,
+    )
+
+    payload_dump = repr(decision.to_payload())
+    legacy_dump = repr(decision.legacy_route)
+    prompt_dump = repr(model_client.messages)
+
+    assert model_client.calls == 1
+    for dump in (payload_dump, legacy_dump, prompt_dump):
+        assert local_path not in dump
+        assert "Software Project\\Alita" not in dump
+        assert "agent_service" not in dump
 
 
 def test_route_message_medium_confidence_model_route_asks_for_clarification(

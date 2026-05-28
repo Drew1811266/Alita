@@ -303,6 +303,31 @@ def test_medium_confidence_structured_model_route_requests_clarification(
     assert client.max_tokens == [512]
 
 
+def test_structured_model_router_is_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(STRUCTURED_ROUTER_ENV, raising=False)
+    model_reply = (
+        '{"intent":"task","confidence":0.95,"task_type":"code_task",'
+        '"reason":"model route should be ignored"}'
+    )
+    client = FakeModelClient(model_reply)
+
+    events = run_agent(
+        UserMessage(task_id="default-router-off", content="hello"),
+        model_client=client,
+    )
+
+    assert [event.type for event in events] == ["message.created"]
+    assert events[0].payload["message"]["content"] == model_reply
+    assert len(client.calls) == 1
+    assert client.calls[0][0].role == "system"
+    assert "本地 AI 助手" in client.calls[0][0].content
+    assert client.calls[0][1] == ChatMessage(role="user", content="hello")
+    assert client.temperatures == [None]
+    assert client.max_tokens == [None]
+
+
 def test_graph_state_records_effective_route_decision_for_quick_answer_choice() -> None:
     provider = FakeSearchProvider(
         SearchResponse(
