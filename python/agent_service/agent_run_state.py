@@ -28,6 +28,7 @@ class AgentRunState(BaseModel):
     pending_choice: dict[str, Any] | None = None
     inquiry_choice: InquiryChoice | None = None
     route_decision: dict[str, Any] | None = None
+    structured_route_decision: dict[str, Any] | None = None
     intent: str | None = None
     project_path: str | None = None
     run_mode: RunMode | None = None
@@ -92,11 +93,13 @@ class AgentRunState(BaseModel):
         intent: str,
         route_decision: dict[str, Any],
         goal_spec: GoalSpec,
+        structured_route_decision: dict[str, Any] | None = None,
     ) -> "AgentRunState":
-        return self.model_copy(
-            update={
-                "intent": intent,
-                "route_decision": route_decision,
-                "goal_spec": goal_spec,
-            }
-        )
+        update: dict[str, Any] = {
+            "intent": intent,
+            "route_decision": route_decision,
+            "goal_spec": goal_spec,
+        }
+        if structured_route_decision is not None:
+            update["structured_route_decision"] = structured_route_decision
+        return self.model_copy(update=update)

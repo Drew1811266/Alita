@@ -14,7 +14,6 @@ from agent_service.goal_spec import GoalSpec, parse_goal_spec
 from agent_service.graph_compiler import compile_task_graph_to_node_graph
 from agent_service.intent import (
     IntentKind,
-    InquiryMode,
     RouteDecision,
     classify_route,
 )
@@ -35,6 +34,12 @@ from agent_service.plan_feedback import (
     classify_graph_feedback,
 )
 from agent_service.planner_v2 import PlannerV2
+from agent_service.router_v2 import (
+    RouterV2Decision,
+    compatible_intent as router_v2_compatible_intent,
+    effective_legacy_route_payload,
+    route_message,
+)
 from agent_service.schemas import AgentEvent, RunGraph, UserMessage
 from agent_service.task_planner import (
     analyze_task,
@@ -93,6 +98,7 @@ class AgentState(TypedDict, total=False):
     events: list[AgentEvent]
     intent: AgentIntent
     route_decision: dict
+    structured_route_decision: dict
     inquiry_choice: InquiryChoice
     current_graph: RunGraph
     has_run_history: bool
@@ -132,16 +138,23 @@ def _agent_state_from_run_state(run_state: AgentRunState) -> AgentState:
         state["intent"] = run_state.intent
     if run_state.route_decision is not None:
         state["route_decision"] = run_state.route_decision
+    if run_state.structured_route_decision is not None:
+        state["structured_route_decision"] = run_state.structured_route_decision
     if run_state.goal_spec is not None:
         state["goal_spec"] = run_state.goal_spec
     return state
 
 
-def classify_intent(state: AgentState) -> AgentState:
+def classify_intent(
+    state: AgentState,
+    *,
+    model_client: ModelClient | None = None,
+) -> AgentState:
     run_state = _run_state_from_agent_state(state)
     routed_run_state = _route_run_state(
         run_state,
         inquiry_choice=state.get("inquiry_choice") or run_state.inquiry_choice,
+        model_client=model_client,
     )
     return {
         **state,
@@ -149,6 +162,7 @@ def classify_intent(state: AgentState) -> AgentState:
         "message": routed_run_state.message,
         "intent": routed_run_state.intent,
         "route_decision": routed_run_state.route_decision,
+        "structured_route_decision": routed_run_state.structured_route_decision,
         "goal_spec": routed_run_state.goal_spec,
     }
 
@@ -157,17 +171,17 @@ def _route_run_state(
     run_state: AgentRunState,
     *,
     inquiry_choice: InquiryChoice | None = None,
+    model_client: ModelClient | None = None,
 ) -> AgentRunState:
     effective_inquiry_choice = inquiry_choice or run_state.inquiry_choice
     message = run_state.message
-    decision = classify_route(message)
-    goal_spec = parse_goal_spec(message)
-    intent = _compatible_intent(
+    router_decision = route_message(
         message,
-        decision,
         inquiry_choice=effective_inquiry_choice,
-        goal_spec=goal_spec,
+        model_client=model_client,
     )
+    goal_spec = parse_goal_spec(message)
+    intent = router_decision.intent
     routed_run_state = run_state
     if effective_inquiry_choice != run_state.inquiry_choice:
         routed_run_state = routed_run_state.model_copy(
@@ -175,29 +189,17 @@ def _route_run_state(
         )
     return routed_run_state.with_routing(
         intent=intent,
-        route_decision=_effective_route_payload(decision, intent),
+        route_decision=router_decision.legacy_route,
         goal_spec=goal_spec,
+        structured_route_decision=router_decision.to_payload(),
     )
 
 
 def _effective_route_payload(
-    decision: RouteDecision,
-    intent: AgentIntent,
+    decision: RouteDecision | RouterV2Decision,
+    intent: AgentIntent | None = None,
 ) -> dict:
-    route_decision = decision.to_payload()
-    if (
-        intent == "web_simple_inquiry"
-        and route_decision.get("inquiry", {}).get("mode") == InquiryMode.WEB_COMPLEX.value
-    ):
-        route_decision = {
-            **route_decision,
-            "inquiry": {
-                **route_decision["inquiry"],
-                "mode": InquiryMode.WEB_SIMPLE.value,
-                "requires_web": True,
-            },
-        }
-    return route_decision
+    return effective_legacy_route_payload(decision, intent)
 
 
 def request_required_inputs(state: AgentState) -> AgentState:
@@ -370,7 +372,8 @@ def build_graph(
             {
                 **state,
                 "inquiry_choice": state.get("inquiry_choice") or inquiry_choice,
-            }
+            },
+            model_client=model_client,
         ),
     )
     graph.add_node("request_required_inputs", request_required_inputs)
@@ -609,7 +612,7 @@ def stream_agent_events_from_state(
         )
         return
 
-    run_state = _route_run_state(run_state)
+    run_state = _route_run_state(run_state, model_client=model_client)
     if run_state.intent == "task":
         graph_payload = _graph_payload_for_task(
             message,
@@ -751,34 +754,12 @@ def _compatible_intent(
     inquiry_choice: InquiryChoice | None = None,
     goal_spec: GoalSpec | None = None,
 ) -> AgentIntent:
-    if (
-        goal_spec is not None
-        and goal_spec.task_type == "document_processing"
-        and not _looks_like_external_web_request(message.content)
-    ):
-        if goal_spec.missing_inputs:
-            return "missing_input"
-        return "task"
-
-    if decision.intent.kind == IntentKind.NEED_INPUT:
-        return "missing_input"
-
-    if decision.intent.kind == IntentKind.TASK:
-        return "task"
-
-    if decision.intent.kind == IntentKind.INQUIRY and decision.inquiry is not None:
-        if decision.inquiry.mode == InquiryMode.LOCAL:
-            return "local_inquiry"
-        if decision.inquiry.mode == InquiryMode.WEB_SIMPLE:
-            return "web_simple_inquiry"
-        if decision.inquiry.mode == InquiryMode.WEB_COMPLEX:
-            if inquiry_choice == "quick_answer":
-                return "web_simple_inquiry"
-            if inquiry_choice == "research_flow":
-                return "web_complex_research_flow"
-            return "web_complex_choice"
-
-    return "chat"
+    return router_v2_compatible_intent(
+        message,
+        decision,
+        inquiry_choice=inquiry_choice,
+        goal_spec=goal_spec,
+    )
 
 
 def _is_markdown_conversion_only(content: str) -> bool:

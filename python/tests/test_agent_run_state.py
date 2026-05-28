@@ -53,6 +53,7 @@ def test_from_message_request_preserves_request_context_without_alias_leaks() ->
     assert state.pending_choice == {"id": "confirm_overwrite", "kind": "full_replan"}
     assert state.goal_spec is None
     assert state.route_decision is None
+    assert state.structured_route_decision is None
     assert state.intent is None
     assert state.project_path is None
     assert state.run_mode is None
@@ -176,6 +177,7 @@ def test_with_routing_returns_updated_copy_without_mutating_original() -> None:
 
     assert state.intent is None
     assert state.route_decision is None
+    assert state.structured_route_decision is None
     assert state.goal_spec is None
     assert updated.intent == "chat"
     assert updated.route_decision == {
@@ -185,6 +187,48 @@ def test_with_routing_returns_updated_copy_without_mutating_original() -> None:
         "missing_inputs": [],
     }
     assert updated.goal_spec == goal_spec
+    assert updated.structured_route_decision is None
+
+
+def test_with_routing_can_store_structured_route_decision() -> None:
+    state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-structured-routing", content="hello")
+    )
+    goal_spec = GoalSpec(
+        goal="hello",
+        task_type="chat",
+        deliverable="chat_answer",
+        success_criteria=["回答用户的问题"],
+        risk_level="read_only",
+        confidence=0.7,
+    )
+    structured_route_decision = {
+        "intent": "chat",
+        "confidence": 0.85,
+        "taskType": "chat",
+        "missingInputs": [],
+        "requiredPermissions": [],
+        "toolCandidates": [],
+        "reason": "conversation",
+        "source": "deterministic",
+        "shouldClarify": False,
+        "clarificationPrompt": None,
+    }
+
+    updated = state.with_routing(
+        intent="chat",
+        route_decision={
+            "intent": {"kind": "chat"},
+            "inquiry": None,
+            "reason": "conversation",
+            "missing_inputs": [],
+        },
+        goal_spec=goal_spec,
+        structured_route_decision=structured_route_decision,
+    )
+
+    assert state.structured_route_decision is None
+    assert updated.structured_route_decision == structured_route_decision
 
 
 def _sample_graph(metadata: dict | None = None) -> RunGraph:

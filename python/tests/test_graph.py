@@ -223,6 +223,11 @@ def test_graph_state_preserves_structured_route_decision_for_inquiries() -> None
         "reason": "question requests current or external factual data",
         "missing_inputs": [],
     }
+    assert result["structured_route_decision"]["intent"] == "web_simple_inquiry"
+    assert result["structured_route_decision"]["taskType"] == "research"
+    assert result["structured_route_decision"]["missingInputs"] == []
+    assert result["structured_route_decision"]["source"] == "deterministic"
+    assert result["run_state"].structured_route_decision == result["structured_route_decision"]
     assert result["events"][0].type == "message.created"
 
 
@@ -266,6 +271,10 @@ def test_graph_state_updates_agent_run_state_with_routing_metadata() -> None:
         "reason": "question requests current or external factual data",
         "missing_inputs": [],
     }
+    assert updated.structured_route_decision is not None
+    assert updated.structured_route_decision["intent"] == "web_simple_inquiry"
+    assert updated.structured_route_decision["taskType"] == "research"
+    assert result["structured_route_decision"] == updated.structured_route_decision
     assert result["intent"] == "web_simple_inquiry"
 
 
@@ -302,6 +311,8 @@ def test_graph_state_records_effective_route_decision_for_quick_answer_choice() 
     assert updated.intent == "web_simple_inquiry"
     assert updated.route_decision["inquiry"]["mode"] == "web_simple"
     assert result["route_decision"]["inquiry"]["mode"] == "web_simple"
+    assert updated.structured_route_decision["intent"] == "web_simple_inquiry"
+    assert result["structured_route_decision"] == updated.structured_route_decision
 
 
 def test_build_graph_still_accepts_legacy_state_without_run_state() -> None:
@@ -375,7 +386,7 @@ def test_stream_agent_events_from_state_matches_public_stream_behavior() -> None
     assert client.calls
 
 
-def test_stream_agent_events_from_state_routes_non_chat_without_reclassifying(
+def test_stream_agent_events_from_state_routes_non_chat_through_router_v2(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
@@ -407,6 +418,28 @@ def test_stream_agent_events_from_state_routes_non_chat_without_reclassifying(
     )
 
     events = list(stream_agent_events_from_state(run_state, search_provider=provider))
+
+    assert calls == 0
+    assert [event.type for event in events] == ["message.created"]
+
+
+def test_graph_feedback_guard_still_uses_legacy_classifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original_classify_route = graph_module.classify_route
+
+    def counting_classify_route(message: UserMessage):
+        nonlocal calls
+        calls += 1
+        return original_classify_route(message)
+
+    monkeypatch.setattr(graph_module, "classify_route", counting_classify_route)
+
+    events = run_agent(
+        UserMessage(task_id="task-feedback-guard", content="hello"),
+        current_graph=_existing_graph(),
+    )
 
     assert calls == 1
     assert [event.type for event in events] == ["message.created"]
