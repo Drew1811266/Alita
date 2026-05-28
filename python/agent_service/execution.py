@@ -1706,6 +1706,8 @@ def _validate_graph_tools(
 ) -> None:
     available_tool_ids: set[str] = set()
     for tool in available_tools:
+        if not tool.enabled:
+            continue
         available_tool_ids.update(equivalent_tool_ids(tool.id))
 
     for node in request.graph.nodes:

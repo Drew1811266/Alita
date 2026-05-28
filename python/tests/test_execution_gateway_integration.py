@@ -6,6 +6,7 @@ from agent_service.agent_run_state import AgentRunState
 from agent_service.execution import DocumentFlowExecutor, NodeOutput, run_graph_events
 from agent_service.schemas import RunGraphRequest
 from agent_service.tool_execution import ToolResult
+from agent_service.tool_protocol import ToolSafetyPolicy, UnifiedToolDefinition
 from tests.helpers.tool_gateway import RecordingGateway
 from tests.test_execution import (
     FakeModelClient,
@@ -198,6 +199,98 @@ def test_graph_tool_validation_uses_gateway_catalog_for_prefixed_internal_tools(
     )
 
     assert events[-1].type == "task.completed"
+
+
+def test_graph_tool_validation_rejects_disabled_gateway_catalog_tool_before_running_nodes(
+    tmp_path: Path,
+) -> None:
+    class DisabledGateway:
+        provider_id = "disabled-test"
+
+        def list_tools(self) -> list[UnifiedToolDefinition]:
+            return [
+                UnifiedToolDefinition(
+                    id="internal:document.markitdown_convert",
+                    source="internal",
+                    provider_id="internal",
+                    provider_tool_name="document.markitdown_convert",
+                    display_name="Disabled converter",
+                    description="Disabled test definition.",
+                    capabilities=[],
+                    input_schema={"type": "object"},
+                    output_schema={"type": "object"},
+                    permissions=["read_project_files", "write_project_outputs"],
+                    safety_policy=ToolSafetyPolicy(
+                        filesystem="project_write",
+                        network="none",
+                        user_approval="high_risk_only",
+                        secrets="none",
+                        sandbox="not_required",
+                        max_runtime_ms=60000,
+                    ),
+                    timeout_ms=60000,
+                    enabled=False,
+                )
+            ]
+
+        def call_tool(self, invocation):
+            raise AssertionError(f"disabled tool should not run: {invocation.tool_id}")
+
+    source = tmp_path / "input.docx"
+    source.write_bytes(b"fake docx")
+    request = RunGraphRequest(
+        task_id="task-disabled-tool",
+        run_id="run-disabled-tool",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[
+            {
+                "attachment_id": "a1",
+                "name": source.name,
+                "path": str(source),
+                "size_bytes": source.stat().st_size,
+                "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            }
+        ],
+        graph={
+            "graphId": "disabled-tool-graph",
+            "metadata": {"taskKind": "document_processing"},
+            "nodes": [
+                build_node(
+                    "tool-document-markitdown-convert",
+                    "fixed_tool",
+                    [],
+                    tool_ref="internal:document.markitdown_convert",
+                    permissions=["read_project_files", "write_project_outputs"],
+                ),
+                build_node(
+                    "task-output",
+                    "output",
+                    ["tool-document-markitdown-convert"],
+                ),
+            ],
+            "edges": [],
+        },
+    )
+
+    events = list(
+        run_graph_events(
+            request,
+            run_state=AgentRunState.from_run_graph_request(request),
+            tool_gateway=DisabledGateway(),
+        )
+    )
+
+    assert "node.running" not in [event.type for event in events]
+    suggestion_event = next(
+        event for event in events if event.type == "graph.patch_suggested"
+    )
+    assert suggestion_event.payload["operations"][0]["op"] == "request_tool_enablement"
+    assert suggestion_event.payload["operations"][0]["node_id"] == (
+        "tool-document-markitdown-convert"
+    )
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "unsupported_tool"
+    assert "internal:document.markitdown_convert" in events[-1].payload["error"]
 
 
 def test_planned_receive_attachment_node_executes_through_unified_gateway(
