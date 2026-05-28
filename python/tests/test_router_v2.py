@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
 from agent_service.router_v2 import (
     RouterV2Decision,
+    _build_model_router_messages,
     deterministic_route,
     effective_legacy_route_payload,
+    parse_model_route_response,
 )
 from agent_service.schemas import Attachment, UserMessage
 
@@ -117,3 +121,60 @@ def test_effective_legacy_route_payload_converts_complex_quick_answer_to_simple(
     assert decision.intent == "web_simple_inquiry"
     assert payload["inquiry"]["mode"] == "web_simple"
     assert payload["inquiry"]["requires_web"] is True
+
+
+def test_model_router_prompt_scrubs_windows_paths_with_spaces_and_path_fragments() -> None:
+    windows_path_with_spaces = (
+        r"D:\Software Project\Alita\python\agent_service\graph.py"
+    )
+    ordinary_windows_path = r"C:\Users\Drew\Projects\Alita\README.md"
+    unix_path = "/Users/drew/Software Project/Alita/python/agent_service/graph.py"
+    message = UserMessage(
+        task_id="prompt-scrub",
+        content=(
+            f"Review {windows_path_with_spaces}, {ordinary_windows_path}, "
+            f"and {unix_path}. The phrase Software Project alone is just a label."
+        ),
+    )
+
+    prompt_dump = repr(_build_model_router_messages(message))
+
+    assert windows_path_with_spaces not in prompt_dump
+    assert ordinary_windows_path not in prompt_dump
+    assert unix_path not in prompt_dump
+    assert "Software Project\\Alita" not in prompt_dump
+    assert "Software Project/Alita" not in prompt_dump
+    assert "agent_service" not in prompt_dump
+    assert "The phrase Software Project alone is just a label." in prompt_dump
+
+
+def test_model_reason_and_tool_candidates_payload_scrub_path_fragments() -> None:
+    windows_path_with_spaces = (
+        r"D:\Software Project\Alita\python\agent_service\graph.py"
+    )
+    ordinary_windows_path = r"C:\Users\Drew\Projects\Alita\README.md"
+    unix_path = "/Users/drew/Software Project/Alita/python/agent_service/graph.py"
+    fallback = deterministic_route(
+        UserMessage(task_id="fallback", content="What is the latest Python release?")
+    )
+    response = {
+        "intent": "web_simple_inquiry",
+        "confidence": 0.82,
+        "task_type": "research",
+        "reason": f"Use {windows_path_with_spaces} and {unix_path}",
+        "tool_candidates": [
+            f"inspect:{ordinary_windows_path}",
+            f"inspect:{windows_path_with_spaces}",
+            f"inspect:{unix_path}",
+        ],
+    }
+
+    decision = parse_model_route_response(json.dumps(response), fallback=fallback)
+    payload_dump = repr(decision.to_payload())
+
+    assert windows_path_with_spaces not in payload_dump
+    assert ordinary_windows_path not in payload_dump
+    assert unix_path not in payload_dump
+    assert "Software Project\\Alita" not in payload_dump
+    assert "Software Project/Alita" not in payload_dump
+    assert "agent_service" not in payload_dump

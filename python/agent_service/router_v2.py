@@ -36,8 +36,12 @@ STRUCTURED_ROUTER_ENV = "ALITA_STRUCTURED_ROUTER"
 HIGH_CONFIDENCE_THRESHOLD = 0.75
 LOW_CONFIDENCE_THRESHOLD = 0.45
 LOCAL_PATH_PATTERN = re.compile(
-    r"(?i)(?:[a-z]:[\\/](?:[^\\/\s:<>|\"?*]+[\\/]?)+|"
-    r"(?:/[\w .@+-]+){2,})"
+    r"(?ix)"
+    r"(?:"
+    r"\b[a-z]:[\\/](?:[^\\/:\r\n,;<>\"|?*]+[\\/])+[^\\/\s:\r\n,;<>\"|?*]+"
+    r"|"
+    r"/(?:[^/\r\n,;<>\"|?*]+/){2,}[^/\s\r\n,;<>\"|?*]+"
+    r")"
 )
 
 
@@ -72,13 +76,13 @@ class RouterV2Decision(BaseModel):
             "confidence": self.confidence,
             "taskType": self.task_type,
             "missingInputs": list(self.missing_inputs),
-            "requiredPermissions": list(self.required_permissions),
-            "toolCandidates": list(self.tool_candidates),
-            "reason": self.reason,
+            "requiredPermissions": _scrub_payload(list(self.required_permissions)),
+            "toolCandidates": _scrub_payload(list(self.tool_candidates)),
+            "reason": _safe_reason(self.reason),
             "source": self.source,
             "shouldClarify": self.should_clarify,
-            "clarificationPrompt": self.clarification_prompt,
-            "legacyRoute": dict(self.legacy_route),
+            "clarificationPrompt": _safe_optional_text(self.clarification_prompt),
+            "legacyRoute": _scrub_payload(dict(self.legacy_route)),
         }
 
 
