@@ -158,6 +158,8 @@ def route_message(
 
     if model_decision.confidence < LOW_CONFIDENCE_THRESHOLD:
         return _fallback_decision(deterministic, "model router confidence too low")
+    if model_decision.confidence < HIGH_CONFIDENCE_THRESHOLD:
+        return _clarification_decision_from_model_decision(model_decision)
     return model_decision
 
 
@@ -293,6 +295,33 @@ def _fallback_decision(
             "source": "fallback",
             "reason": _safe_reason(f"{decision.reason}; {reason}"),
         }
+    )
+
+
+def _clarification_decision_from_model_decision(
+    decision: RouterV2Decision,
+) -> RouterV2Decision:
+    missing_inputs = ["clarification"]
+    reason = _safe_reason(
+        f"{decision.reason}; model router confidence requires confirmation"
+    )
+    prompt = "请确认你的意图后我再继续：你希望我按这个任务方向处理吗？"
+    return RouterV2Decision(
+        intent="missing_input",
+        confidence=decision.confidence,
+        task_type=decision.task_type,
+        missing_inputs=missing_inputs,
+        required_permissions=[],
+        tool_candidates=[],
+        reason=reason,
+        source="model",
+        should_clarify=True,
+        clarification_prompt=prompt,
+        legacy_route=_legacy_route_for_router_decision(
+            "missing_input",
+            reason,
+            missing_inputs,
+        ),
     )
 
 

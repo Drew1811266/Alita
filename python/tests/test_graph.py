@@ -19,6 +19,7 @@ from agent_service.graph import (
 from agent_service.intent import IntentKind, classify_route
 from agent_service.model_client import ChatMessage
 from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
+from agent_service.router_v2 import STRUCTURED_ROUTER_ENV
 from agent_service.schemas import Attachment, GraphNode, RunGraph, UserMessage
 from agent_service.task_graph import build_document_task_graph
 from agent_service.web_search import SearchResponse, SearchResult
@@ -276,6 +277,30 @@ def test_graph_state_updates_agent_run_state_with_routing_metadata() -> None:
     assert updated.structured_route_decision["taskType"] == "research"
     assert result["structured_route_decision"] == updated.structured_route_decision
     assert result["intent"] == "web_simple_inquiry"
+
+
+def test_medium_confidence_structured_model_route_requests_clarification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    client = FakeModelClient(
+        (
+            '{"intent":"task","confidence":0.61,"task_type":"code_task",'
+            '"reason":"model selected task but needs confirmation"}'
+        )
+    )
+
+    events = run_agent(
+        UserMessage(task_id="medium-model-route", content="Please handle the Python thing."),
+        model_client=client,
+    )
+
+    assert [event.type for event in events] == ["input.required"]
+    assert events[0].payload["missing"] == ["clarification"]
+    assert "确认" in events[0].payload["prompt"]
+    assert len(client.calls) == 1
+    assert client.temperatures == [0.0]
+    assert client.max_tokens == [512]
 
 
 def test_graph_state_records_effective_route_decision_for_quick_answer_choice() -> None:

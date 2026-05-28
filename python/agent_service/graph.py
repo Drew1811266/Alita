@@ -206,6 +206,15 @@ def request_required_inputs(state: AgentState) -> AgentState:
     missing_inputs = state.get("route_decision", {}).get("missing_inputs", [])
     if "document_file" in missing_inputs:
         prompt = "请把需要处理的文件添加到聊天框里。"
+    elif "clarification" in missing_inputs:
+        structured_decision = state.get("structured_route_decision")
+        if structured_decision is None and "run_state" in state:
+            structured_decision = state["run_state"].structured_route_decision
+        prompt = (
+            structured_decision.get("clarificationPrompt")
+            if isinstance(structured_decision, dict)
+            else None
+        ) or "请先输入你想让我处理的问题或任务。"
     else:
         prompt = "请先输入你想让我处理的问题或任务。"
 

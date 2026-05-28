@@ -341,7 +341,7 @@ def test_route_message_string_bool_model_payload_falls_back_safely(
     assert decision.intent == "web_simple_inquiry"
 
 
-def test_route_message_model_task_override_uses_task_legacy_route(
+def test_route_message_high_confidence_model_route_returns_model_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
@@ -365,6 +365,62 @@ def test_route_message_model_task_override_uses_task_legacy_route(
     assert decision.source == "model"
     assert decision.intent == "task"
     assert decision.legacy_route["intent"]["kind"] == "task"
+
+
+def test_route_message_medium_confidence_model_route_asks_for_clarification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    model_client = FakeRouterModelClient(
+        json.dumps(
+            {
+                "intent": "task",
+                "confidence": 0.61,
+                "task_type": "code_task",
+                "reason": "model selected task but needs confirmation",
+            }
+        )
+    )
+
+    decision = route_message(
+        UserMessage(task_id="model-medium", content="Please handle the Python thing."),
+        model_client=model_client,
+    )
+
+    assert model_client.calls == 1
+    assert decision.source == "model"
+    assert decision.intent == "missing_input"
+    assert decision.missing_inputs == ["clarification"]
+    assert decision.should_clarify is True
+    assert decision.clarification_prompt is not None
+    assert "确认" in decision.clarification_prompt
+    assert decision.legacy_route["intent"]["kind"] == "need_input"
+    assert decision.legacy_route["missing_inputs"] == ["clarification"]
+
+
+def test_route_message_low_confidence_model_route_uses_deterministic_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    model_client = FakeRouterModelClient(
+        json.dumps(
+            {
+                "intent": "task",
+                "confidence": 0.3,
+                "task_type": "code_task",
+                "reason": "uncertain model route",
+            }
+        )
+    )
+
+    decision = route_message(
+        UserMessage(task_id="model-low", content="What is the latest Python release?"),
+        model_client=model_client,
+    )
+
+    assert model_client.calls == 1
+    assert decision.source == "fallback"
+    assert decision.intent == "web_simple_inquiry"
 
 
 def test_route_message_protected_document_processing_does_not_call_model(
