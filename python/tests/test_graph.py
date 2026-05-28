@@ -1209,6 +1209,22 @@ def test_task_graph_records_planner_chain_metadata() -> None:
     assert graph["metadata"]["routeDecision"]["intent"] == "task"
 
 
+def test_planner_chain_metadata_does_not_change_node_graph_event_shape() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="planner-chain-event-shape",
+            content="Create a Python script that counts rows in a CSV file.",
+        )
+    )
+
+    assert [event.type for event in events] == ["node_graph.created"]
+    event = events[0]
+    assert set(event.payload.keys()) == {"graph"}
+    graph = event.payload["graph"]
+    assert "plannerChain" in graph["metadata"]
+    assert "routeDecision" in graph["metadata"]
+
+
 def test_prerouted_task_state_without_structured_route_records_route_metadata() -> None:
     message = UserMessage(
         task_id="pre-routed-task",

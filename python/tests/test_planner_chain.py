@@ -292,6 +292,30 @@ def test_planner_chain_rejects_missing_inputs_before_planning() -> None:
         PlannerChain(tool_registry=_tool_registry()).plan(request)
 
 
+def test_planner_chain_rejects_missing_goal_spec_inputs_even_if_route_is_clean() -> None:
+    message = UserMessage(task_id="missing-doc-goal", content="summarize this document")
+    goal_spec = parse_goal_spec(message)
+    registry = _tool_registry()
+    context = build_context_bundle(
+        message,
+        goal_spec,
+        str(PROJECT_ROOT),
+        registry,
+    )
+    request = PlannerChainRequest(
+        task_id=message.task_id,
+        message=message,
+        goal_spec=goal_spec,
+        route=route_context_from_payload(
+            _route_payload(taskType="document_processing", missingInputs=[])
+        ),
+        context=context,
+    )
+
+    with pytest.raises(PlannerChainError, match="missing inputs: document_file"):
+        PlannerChain(tool_registry=registry).plan(request)
+
+
 def test_planner_chain_rejects_missing_inputs_without_leaking_paths() -> None:
     local_path = r"D:\Software Project\Alita\secret.docx"
     message = UserMessage(task_id="missing-doc-path", content="summarize this document")
@@ -309,6 +333,22 @@ def test_planner_chain_rejects_missing_inputs_without_leaking_paths() -> None:
     assert local_path not in message
     assert "Software Project" not in message
     assert "secret.docx" not in message
+    assert exc_info.value.__cause__ is None
+
+
+def test_planner_chain_wraps_invalid_document_plan_errors() -> None:
+    message = _document_message()
+    request = _request_for(
+        message,
+        _route_payload(taskType="document_processing"),
+    )
+
+    with pytest.raises(
+        PlannerChainError,
+        match="invalid plan: unknown tool binding",
+    ) as exc_info:
+        PlannerChain(tool_registry=ToolRegistry([])).plan(request)
+
     assert exc_info.value.__cause__ is None
 
 
