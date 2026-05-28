@@ -1,12 +1,43 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from agent_service.context_manager import build_context_bundle
+from agent_service.goal_spec import parse_goal_spec
 from agent_service.planner_chain import (
+    PlannerChain,
     PlannerChainError,
-    StructuredRouteContext,
+    PlannerChainRequest,
     route_context_from_payload,
 )
+from agent_service.schemas import Attachment, RunGraph, UserMessage
+from agent_service.tool_registry import ToolRegistry
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TOOL_PACKAGES_ROOT = PROJECT_ROOT / "tool-packages"
+
+
+def _tool_registry() -> ToolRegistry:
+    return ToolRegistry.from_packages_root(TOOL_PACKAGES_ROOT)
+
+
+def _document_message() -> UserMessage:
+    return UserMessage(
+        task_id="task-document-chain",
+        content="summarize this document as a PDF report",
+        attachments=[
+            Attachment(
+                attachment_id="a1",
+                name="source.docx",
+                path=str(PROJECT_ROOT / "fixtures" / "source.docx"),
+                size_bytes=128,
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        ],
+    )
 
 
 def _route_payload(**overrides):
@@ -24,6 +55,24 @@ def _route_payload(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def _request_for(message: UserMessage, route_payload: dict) -> PlannerChainRequest:
+    goal_spec = parse_goal_spec(message)
+    registry = _tool_registry()
+    context = build_context_bundle(
+        message,
+        goal_spec,
+        str(PROJECT_ROOT),
+        registry,
+    )
+    return PlannerChainRequest(
+        task_id=message.task_id,
+        message=message,
+        goal_spec=goal_spec,
+        route=route_context_from_payload(route_payload),
+        context=context,
+    )
 
 
 def test_route_context_parses_phase_d_payload_keys() -> None:
@@ -70,3 +119,51 @@ def test_route_context_validation_error_does_not_leak_path_values() -> None:
     assert "Software Project" not in message
     assert "agent_service" not in message
     assert exc_info.value.__cause__ is None
+
+
+def test_planner_chain_uses_planner_v2_for_document_processing() -> None:
+    message = _document_message()
+    request = _request_for(
+        message,
+        _route_payload(taskType="document_processing"),
+    )
+
+    result = PlannerChain(tool_registry=_tool_registry()).plan(request)
+
+    assert result.planner == "template.document.v1"
+    assert result.strategy == "document_template"
+    RunGraph.model_validate(result.graph_payload)
+    assert [node["nodeId"] for node in result.graph_payload["nodes"]] == [
+        "document-input",
+        "document-parse",
+        "content-organize",
+        "report-generate",
+        "typst-export",
+        "file-export",
+    ]
+    metadata = result.graph_payload["metadata"]["plannerChain"]
+    assert metadata["version"] == "planner_chain.v1"
+    assert metadata["strategy"] == "document_template"
+    assert metadata["taskType"] == "document_processing"
+
+
+def test_planner_chain_rejects_missing_inputs_before_planning() -> None:
+    message = UserMessage(task_id="missing-doc", content="summarize this document")
+    request = _request_for(
+        message,
+        _route_payload(taskType="document_processing", missingInputs=["document_file"]),
+    )
+
+    with pytest.raises(PlannerChainError, match="missing inputs: document_file"):
+        PlannerChain(tool_registry=_tool_registry()).plan(request)
+
+
+def test_planner_chain_rejects_non_task_routes() -> None:
+    message = UserMessage(task_id="not-task", content="hello")
+    request = _request_for(
+        message,
+        _route_payload(intent="chat", taskType="chat"),
+    )
+
+    with pytest.raises(PlannerChainError, match="cannot plan non-task route"):
+        PlannerChain(tool_registry=_tool_registry()).plan(request)
