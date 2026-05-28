@@ -181,6 +181,105 @@ def test_planner_chain_does_not_treat_amd_as_markdown_token() -> None:
     assert [node["nodeId"] for node in result.graph_payload["nodes"]] == DOCUMENT_NODE_IDS
 
 
+def test_planner_chain_uses_legacy_task_planner_for_code_task() -> None:
+    message = UserMessage(
+        task_id="task-code-chain",
+        content="Create a Python script that counts rows in a CSV file.",
+    )
+    request = _request_for(
+        message,
+        _route_payload(taskType="code_task", toolCandidates=[]),
+    )
+
+    result = PlannerChain(tool_registry=_tool_registry()).plan(request)
+
+    assert result.planner == "legacy.task_planner.v1"
+    assert result.strategy == "legacy_task_planner"
+    RunGraph.model_validate(result.graph_payload)
+    assert result.graph_payload["graphId"] == "task-code-chain-graph"
+    assert result.graph_payload["metadata"]["plannerChain"]["strategy"] == (
+        "legacy_task_planner"
+    )
+    assert [
+        node["nodeId"]
+        for node in result.graph_payload["nodes"]
+        if node["nodeType"] == "planning"
+    ] == [
+        "task-analysis",
+        "context-gathering",
+        "evidence-summary",
+        "plan-draft",
+        "capability-analysis",
+        "tool-selection",
+        "plan-review",
+        "execution-order-planning",
+    ]
+
+
+def test_planner_chain_metadata_does_not_include_raw_route_paths() -> None:
+    local_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
+    message = UserMessage(
+        task_id="task-path-chain",
+        content="Create a Python script that counts rows in a CSV file.",
+    )
+    request = _request_for(
+        message,
+        _route_payload(
+            taskType="code_task",
+            toolCandidates=[local_path],
+            requiredPermissions=[local_path],
+        ),
+    )
+
+    result = PlannerChain(tool_registry=_tool_registry()).plan(request)
+    metadata_dump = repr(result.graph_payload["metadata"]["plannerChain"])
+
+    assert local_path not in metadata_dump
+    assert "Software Project" not in metadata_dump
+    assert "agent_service" not in metadata_dump
+
+
+def test_planner_chain_preserves_markdown_conversion_legacy_strategy() -> None:
+    message = UserMessage(
+        task_id="doc-markdown-chain",
+        content="Please convert this document to Markdown.",
+        attachments=[
+            Attachment(
+                attachment_id="a-markdown",
+                name="markdown-source.docx",
+                path=str(PROJECT_ROOT / "fixtures" / "markdown-source.docx"),
+                size_bytes=128,
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        ],
+    )
+    request = _request_for(
+        message,
+        _route_payload(taskType="document_processing", toolCandidates=[]),
+    )
+
+    result = PlannerChain(tool_registry=_tool_registry()).plan(request)
+
+    assert result.planner == "legacy.task_planner.v1"
+    assert result.strategy == "legacy_task_planner"
+    assert [node["nodeId"] for node in result.graph_payload["nodes"]] == [
+        "document-input",
+        "document-parse",
+        "file-export",
+        "task-analysis",
+        "context-gathering",
+        "evidence-summary",
+        "plan-draft",
+        "capability-analysis",
+        "tool-selection",
+        "plan-review",
+        "execution-order-planning",
+    ]
+    assert "typst-export" not in {
+        node["nodeId"] for node in result.graph_payload["nodes"]
+    }
+
+
 def test_planner_chain_rejects_missing_inputs_before_planning() -> None:
     message = UserMessage(task_id="missing-doc", content="summarize this document")
     request = _request_for(
@@ -262,7 +361,7 @@ def test_validate_graph_payload_does_not_leak_path_values() -> None:
         "Convert this document as md",
     ],
 )
-def test_planner_chain_markdown_only_conversion_falls_through(content: str) -> None:
+def test_planner_chain_markdown_only_conversion_uses_legacy_strategy(content: str) -> None:
     message = UserMessage(
         task_id="task-markdown-document-chain",
         content=content,
@@ -281,8 +380,10 @@ def test_planner_chain_markdown_only_conversion_falls_through(content: str) -> N
         _route_payload(taskType="document_processing"),
     )
 
-    with pytest.raises(
-        PlannerChainError,
-        match="unsupported planner chain task type: document_processing",
-    ):
-        PlannerChain(tool_registry=_tool_registry()).plan(request)
+    result = PlannerChain(tool_registry=_tool_registry()).plan(request)
+
+    assert result.planner == "legacy.task_planner.v1"
+    assert result.strategy == "legacy_task_planner"
+    assert "typst-export" not in {
+        node["nodeId"] for node in result.graph_payload["nodes"]
+    }

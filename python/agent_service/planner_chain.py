@@ -12,6 +12,12 @@ from agent_service.model_runtime import SupportedModelRegistry
 from agent_service.planner_v2 import PlannerV2, PlannerV2Error
 from agent_service.router_v2 import AgentRouteIntent, RouteSource
 from agent_service.schemas import RunGraph, UserMessage
+from agent_service.task_planner import (
+    analyze_task,
+    build_task_graph,
+    resolve_tool_gaps,
+    select_tools,
+)
 from agent_service.tool_registry import ToolRegistry
 
 try:
@@ -100,7 +106,7 @@ class PlannerChain:
             request.message.content
         ):
             return self._plan_document_template(request)
-        raise PlannerChainError(f"unsupported planner chain task type: {request.route.task_type}")
+        return self._plan_legacy_task(request)
 
     def _validate_request(self, request: PlannerChainRequest) -> None:
         if request.route.intent != "task":
@@ -142,6 +148,32 @@ class PlannerChain:
             strategy="document_template",
             graph_payload=graph_payload,
             validation_warnings=list(plan.validation_warnings),
+        )
+
+    def _plan_legacy_task(self, request: PlannerChainRequest) -> PlannerChainResult:
+        task_plan = analyze_task(request.message.content, request.message.attachments)
+        task_plan.task_id = request.task_id
+        task_plan.selected_tools = select_tools(
+            task_plan.requirements,
+            self.tool_registry.enabled_tools(),
+        )
+        task_plan.tool_gaps = resolve_tool_gaps(
+            task_plan.requirements,
+            task_plan.selected_tools,
+        )
+        graph_payload = build_task_graph(task_plan)
+        graph_payload = _with_planner_chain_metadata(
+            graph_payload,
+            request=request,
+            planner="legacy.task_planner.v1",
+            strategy="legacy_task_planner",
+        )
+        _validate_graph_payload(graph_payload)
+        return PlannerChainResult(
+            planner="legacy.task_planner.v1",
+            strategy="legacy_task_planner",
+            graph_payload=graph_payload,
+            validation_warnings=[],
         )
 
 
