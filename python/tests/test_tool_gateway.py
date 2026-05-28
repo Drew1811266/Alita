@@ -2,11 +2,44 @@ from pathlib import Path
 
 from agent_service.tool_execution import ToolResult
 from agent_service.tool_providers.internal import InternalToolProvider
-from agent_service.tool_registry import ToolRegistry
+from agent_service.tool_registry import ToolManifestSpec, ToolOperationSpec, ToolRegistry
 
 
 def _packages_root() -> Path:
     return Path(__file__).resolve().parents[2] / "tool-packages"
+
+
+def _custom_registry() -> ToolRegistry:
+    return ToolRegistry(
+        [
+            ToolManifestSpec(
+                tool_id="document.injected_custom",
+                name="Injected Custom",
+                description="A custom injected registry tool.",
+                version="1.0.0",
+                source_type="test",
+                license="internal",
+                runtime=None,
+                entrypoint=None,
+                capabilities=["test_custom"],
+                operations=[
+                    ToolOperationSpec(
+                        name="run",
+                        description="Run the injected custom tool.",
+                    )
+                ],
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+                permissions=["read_project_files"],
+                error_codes=[],
+                timeout_policy={},
+                artifact_policy={},
+                security_policy={},
+                examples=[],
+                node_templates=[],
+            )
+        ]
+    )
 
 
 def test_internal_provider_lists_existing_manifest_tools() -> None:
@@ -137,6 +170,16 @@ def test_default_unified_tool_gateway_lists_internal_tools() -> None:
     tool_ids = {tool.id for tool in gateway.list_tools()}
     assert "internal:document.markitdown_convert" in tool_ids
     assert "internal:document.typst_compile" in tool_ids
+
+
+def test_default_unified_tool_gateway_uses_injected_registry_catalog() -> None:
+    from agent_service.tool_gateway import default_unified_tool_gateway
+
+    gateway = default_unified_tool_gateway(registry=_custom_registry())
+
+    tool_ids = {tool.id for tool in gateway.list_tools()}
+    assert "internal:document.injected_custom" in tool_ids
+    assert "internal:document.markitdown_convert" not in tool_ids
 
 
 def test_default_unified_tool_gateway_uses_injected_internal_executor() -> None:

@@ -26,6 +26,7 @@ from agent_service.schemas import (
 )
 from agent_service.script_review import script_review_fingerprint as canonical_script_review_fingerprint
 from agent_service.tool_execution import ToolResult
+from agent_service.tool_registry import ToolManifestSpec, ToolOperationSpec, ToolRegistry
 from agent_service.web_research import build_research_graph
 from agent_service.web_search import SearchFailure, SearchResponse, SearchResult
 from tests.helpers.tool_gateway import RecordingGateway
@@ -961,6 +962,68 @@ def test_graph_tool_validation_uses_configured_tool_packages_root(
     ]
 
 
+def test_graph_tool_validation_uses_injected_tool_registry_catalog(
+    tmp_path: Path,
+) -> None:
+    custom_registry = ToolRegistry(
+        [
+            ToolManifestSpec(
+                tool_id="document.injected_custom",
+                name="Injected Custom",
+                description="A test-only injected registry tool.",
+                version="1.0.0",
+                source_type="test",
+                license="internal",
+                runtime=None,
+                entrypoint=None,
+                capabilities=["test_custom"],
+                operations=[
+                    ToolOperationSpec(
+                        name="run",
+                        description="Run the injected registry tool.",
+                    )
+                ],
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+                permissions=["read_project_files"],
+                error_codes=[],
+                timeout_policy={},
+                artifact_policy={},
+                security_policy={},
+                examples=[],
+                node_templates=[],
+            )
+        ]
+    )
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "custom-tool",
+                "fixed_tool",
+                [],
+                tool_ref="document.injected_custom",
+            )
+        ],
+    )
+
+    events = list(
+        run_graph_events(
+            request,
+            executor=FakeNodeExecutor(),
+            tool_registry=custom_registry,
+        )
+    )
+
+    assert [event.type for event in events] == [
+        "run.started",
+        "node.running",
+        "node.completed",
+        "node.run_recorded",
+        "task.completed",
+    ]
+
+
 def test_runs_nodes_after_all_dependencies_complete(tmp_path: Path) -> None:
     request = build_request(
         tmp_path,
@@ -1613,17 +1676,20 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
     def spy_default_unified_tool_gateway(
         *,
         packages_root=None,
+        registry=None,
         internal_executor=None,
     ):
         factory_calls.append(
             {
                 "packages_root": packages_root,
+                "registry": registry,
                 "internal_executor": internal_executor,
             }
         )
         spy_gateway = SpyGateway(
             real_default_unified_tool_gateway(
                 packages_root=packages_root,
+                registry=registry,
                 internal_executor=internal_executor,
             )
         )

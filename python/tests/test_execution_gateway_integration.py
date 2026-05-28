@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from agent_service.agent_run_state import AgentRunState
 from agent_service.execution import DocumentFlowExecutor, NodeOutput, run_graph_events
+from agent_service.harness_errors import HarnessError
 from agent_service.schemas import RunGraphRequest
 from agent_service.tool_execution import ToolResult
 from agent_service.tool_protocol import ToolSafetyPolicy, UnifiedToolDefinition
@@ -81,6 +84,57 @@ def test_document_flow_receive_attachment_calls_unified_tool_gateway(
     assert invocation.tool_id == "internal:document.receive_attachment"
     assert invocation.arguments["operation"] == "receive_attachment"
     assert invocation.arguments["paths"] == str(source)
+
+
+def test_document_flow_malformed_parse_binding_fails_before_gateway_call(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.docx"
+    source.write_bytes(b"fake docx")
+    request = build_document_flow_request(tmp_path, source)
+    request.graph.nodes[1].toolRef = "document.receive_attachment"
+    request.disabled_tool_ids = ["document.markitdown_convert"]
+    gateway = RecordingGateway()
+
+    events = list(
+        run_graph_events(
+            request,
+            run_state=AgentRunState.from_run_graph_request(request),
+            model_client=FakeModelClient(),
+            tool_gateway=gateway,
+        )
+    )
+
+    assert "node.running" not in [event.type for event in events]
+    assert gateway.calls == []
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "unsupported_tool"
+    assert "document-parse" in events[-1].payload["error"]
+    assert "document.markitdown_convert" in events[-1].payload["error"]
+
+
+def test_document_flow_executor_rejects_malformed_parse_binding_before_gateway_call(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.docx"
+    source.write_bytes(b"fake docx")
+    request = build_document_flow_request(tmp_path, source)
+    request.graph.nodes[1].toolRef = None
+    gateway = RecordingGateway()
+    executor = DocumentFlowExecutor(
+        request,
+        run_state=AgentRunState.from_run_graph_request(request),
+        model_client=FakeModelClient(),
+        tool_gateway=gateway,
+    )
+
+    with pytest.raises(HarnessError) as error:
+        executor.run("document-parse", {})
+
+    assert error.value.code == "unsupported_tool"
+    assert "document-parse" in error.value.message
+    assert "document.markitdown_convert" in error.value.message
+    assert gateway.calls == []
 
 
 def test_document_flow_typst_export_calls_unified_tool_gateway(tmp_path: Path) -> None:

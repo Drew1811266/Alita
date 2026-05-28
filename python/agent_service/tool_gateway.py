@@ -48,15 +48,16 @@ class UnifiedToolGateway:
 def default_unified_tool_gateway(
     *,
     packages_root: Path | None = None,
+    registry: ToolRegistry | None = None,
     internal_executor: ToolExecutor | None = None,
 ) -> UnifiedToolGateway:
-    registry = ToolRegistry.from_packages_root(
+    effective_registry = registry or ToolRegistry.from_packages_root(
         packages_root or default_tool_packages_root()
     )
     return UnifiedToolGateway(
         providers=[
             InternalToolProvider(
-                registry=registry,
+                registry=effective_registry,
                 executor=internal_executor,
             )
         ]

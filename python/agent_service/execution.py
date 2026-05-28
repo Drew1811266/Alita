@@ -102,6 +102,12 @@ DOCUMENT_FLOW_NODE_IDS = {
     "file-export",
 }
 
+DOCUMENT_FLOW_RUNTIME_TOOL_BINDINGS = {
+    "document-input": "document.receive_attachment",
+    "document-parse": "document.markitdown_convert",
+    "typst-export": "document.typst_compile",
+}
+
 DATA_DEPENDENT_NODE_IDS = {
     *DOCUMENT_FLOW_NODE_IDS.difference({"document-input"}),
     "research-privacy-guard",
@@ -165,7 +171,8 @@ class DocumentFlowExecutor:
         self.model_runtime = model_runtime or ModelRuntime(model_client=self.model_client)
         self.tool_registry = tool_registry or _default_tool_registry()
         self.tool_gateway = tool_gateway or _default_tool_gateway(
-            tool_executor=tool_executor
+            tool_executor=tool_executor,
+            tool_registry=self.tool_registry,
         )
         self.nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
         self.project_dir = Path(request.project_path).parent
@@ -290,6 +297,11 @@ class DocumentFlowExecutor:
         arguments: dict[str, object],
     ) -> NodeOutput:
         node = self.nodes_by_id.get(node_id)
+        _ensure_document_flow_runtime_tool_binding(
+            node,
+            node_id=node_id,
+            runtime_tool_id=tool_id,
+        )
         permissions = (
             _required_permissions_for_tool_node(
                 node,
@@ -354,7 +366,8 @@ class PlannedTaskExecutor:
         self.model_client = model_client or LlamaCppModelClient()
         self.tool_registry = tool_registry or _default_tool_registry()
         self.tool_gateway = tool_gateway or _default_tool_gateway(
-            tool_executor=tool_executor
+            tool_executor=tool_executor,
+            tool_registry=self.tool_registry,
         )
         self.document_executor = DocumentFlowExecutor(
             request,
@@ -946,7 +959,8 @@ def run_graph_events(
         ordered_nodes = _topological_nodes(request)
         effective_tool_registry = tool_registry or _default_tool_registry()
         effective_tool_gateway = tool_gateway or _default_tool_gateway(
-            tool_executor=tool_executor
+            tool_executor=tool_executor,
+            tool_registry=effective_tool_registry,
         )
         _validate_graph_tools(request, effective_tool_gateway.list_tools())
     except (ValueError, HarnessError) as error:
@@ -1658,8 +1672,12 @@ def _default_tool_registry() -> ToolRegistry:
 def _default_tool_gateway(
     *,
     tool_executor: ToolExecutor | None = None,
+    tool_registry: ToolRegistry | None = None,
 ) -> UnifiedToolGateway:
-    return default_unified_tool_gateway(internal_executor=tool_executor)
+    return default_unified_tool_gateway(
+        registry=tool_registry,
+        internal_executor=tool_executor,
+    )
 
 
 def _node_output_from_unified_result(result) -> NodeOutput:
@@ -1704,6 +1722,18 @@ def _validate_graph_tools(
     request: RunGraphRequest,
     available_tools: list[UnifiedToolDefinition],
 ) -> None:
+    if not _is_planned_task_graph(request) and not _is_research_graph(request):
+        nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
+        for node_id, runtime_tool_id in DOCUMENT_FLOW_RUNTIME_TOOL_BINDINGS.items():
+            node = nodes_by_id.get(node_id)
+            if node is None:
+                continue
+            _ensure_document_flow_runtime_tool_binding(
+                node,
+                node_id=node_id,
+                runtime_tool_id=runtime_tool_id,
+            )
+
     available_tool_ids: set[str] = set()
     for tool in available_tools:
         if not tool.enabled:
@@ -1723,6 +1753,30 @@ def _validate_graph_tools(
                 "unsupported_tool",
                 f"unsupported tool: {node.toolRef}",
             )
+
+
+def _ensure_document_flow_runtime_tool_binding(
+    node: GraphNode | None,
+    *,
+    node_id: str,
+    runtime_tool_id: str,
+) -> None:
+    if node is not None and node.nodeType == "fixed_tool" and node.toolRef:
+        if equivalent_tool_ids(node.toolRef) & equivalent_tool_ids(runtime_tool_id):
+            return
+
+    actual = "<missing>"
+    if node is not None:
+        actual = node.toolRef or "<missing>"
+        if node.nodeType != "fixed_tool":
+            actual = f"{node.nodeType}:{actual}"
+    raise HarnessError(
+        "unsupported_tool",
+        (
+            f"unsupported tool: {node_id} binding must be fixed_tool "
+            f"{runtime_tool_id}; got {actual}"
+        ),
+    )
 
 
 def _unsupported_tool_node(
