@@ -55,3 +55,17 @@ def test_route_context_safe_payload_scrubs_path_values() -> None:
 def test_route_context_rejects_invalid_payload() -> None:
     with pytest.raises(PlannerChainError, match="invalid structured route payload"):
         route_context_from_payload({"intent": "task"})
+
+
+def test_route_context_validation_error_does_not_leak_path_values() -> None:
+    local_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
+
+    with pytest.raises(PlannerChainError) as exc_info:
+        route_context_from_payload(_route_payload(taskType=local_path))
+
+    message = str(exc_info.value)
+
+    assert "invalid structured route payload" in message
+    assert local_path not in message
+    assert "Software Project" not in message
+    assert "agent_service" not in message
