@@ -345,6 +345,7 @@ class PlannedTaskExecutor:
         run_state: AgentRunState | None = None,
         model_client: ModelClient | None = None,
         tool_gateway: UnifiedToolGateway | None = None,
+        tool_gateway_explicit: bool | None = None,
         tool_executor: ToolExecutor | None = None,
         tool_registry: ToolRegistry | None = None,
     ) -> None:
@@ -353,6 +354,11 @@ class PlannedTaskExecutor:
         self.nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
         self.model_client = model_client or LlamaCppModelClient()
         self.tool_registry = tool_registry or _default_tool_registry()
+        self._explicit_tool_gateway = (
+            tool_gateway is not None
+            if tool_gateway_explicit is None
+            else tool_gateway_explicit
+        )
         self.tool_gateway = tool_gateway or _default_tool_gateway(
             tool_executor=tool_executor
         )
@@ -412,13 +418,23 @@ class PlannedTaskExecutor:
                     "missing_input",
                     f"tool node {node.nodeId} requires at least one attachment",
                 )
-            return NodeOutput(
-                values={
-                    "paths": "\n".join(
-                        attachment.path for attachment in self.request.attachments
-                    )
-                }
-            )
+            paths = "\n".join(attachment.path for attachment in self.request.attachments)
+            try:
+                return self._call_tool(
+                    node,
+                    operation="receive_attachment",
+                    arguments={"paths": paths},
+                )
+            except HarnessError as error:
+                if self._explicit_tool_gateway:
+                    raise
+                if error.code not in {
+                    "unsupported_tool",
+                    "unsupported_operation",
+                    "tool_failed",
+                }:
+                    raise
+                return NodeOutput(values={"paths": paths})
 
         if tool_id == "document.markitdown_convert":
             if not self.request.attachments:
@@ -482,6 +498,9 @@ class PlannedTaskExecutor:
 
     def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
         node = self.nodes_by_id[node_id]
+
+        if node.nodeType == "fixed_tool":
+            return self._run_fixed_tool_node(node, inputs)
 
         if node_id in DOCUMENT_FLOW_NODE_IDS:
             return self.document_executor.run(node_id, inputs)
@@ -548,9 +567,6 @@ class PlannedTaskExecutor:
                     "text": content,
                 }
             )
-
-        if node.nodeType == "fixed_tool":
-            return self._run_fixed_tool_node(node, inputs)
 
         if node.nodeType == "output":
             return NodeOutput(
@@ -992,6 +1008,7 @@ def run_graph_events(
             run_state=run_state,
             model_client=model_client,
             tool_gateway=effective_tool_gateway,
+            tool_gateway_explicit=tool_gateway is not None,
             tool_executor=tool_executor,
             tool_registry=effective_tool_registry,
         )

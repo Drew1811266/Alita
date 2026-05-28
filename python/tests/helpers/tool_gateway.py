@@ -105,10 +105,11 @@ class RecordingGateway:
             )
 
         if invocation.tool_id == "internal:document.receive_attachment":
+            paths = str(invocation.arguments.get("paths", ""))
             return UnifiedToolResult(
                 ok=True,
                 content=[],
-                structured_content={"paths": ""},
+                structured_content={"paths": paths},
                 artifacts=[],
                 metadata={},
             )
