@@ -93,9 +93,9 @@ import {
   type TemporaryScriptPermissionDecision,
   type TemporaryScriptPermissionPayload,
 } from "../features/task/useTaskEvents";
+import { reduceGraphRunControllerEvents } from "../features/task/useGraphRunController";
 import { WorkbenchTopBar } from "../features/workbench/WorkbenchTopBar";
 import {
-  reduceBackendEvents,
   toGraphOverwriteSubmitChoice,
   type PendingGraphOverwriteChoice,
   type PendingResearchChoice,
@@ -506,7 +506,7 @@ export function App() {
     submittedPayload?: SubmitMessagePayload,
   ) => {
     setMessages((current) => {
-      const result = reduceBackendEvents(
+      const result = reduceGraphRunControllerEvents(
         {
           messages: current,
           graph: graphRef.current,
@@ -516,6 +516,7 @@ export function App() {
           activeRunId: activeRunIdRef.current,
           runHistory: runHistoryRef.current,
           artifacts: artifactsRef.current,
+          selectedCanvasNode,
         },
         [event],
         (eventContent) => createMessage("assistant", eventContent),
