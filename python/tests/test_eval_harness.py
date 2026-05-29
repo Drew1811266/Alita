@@ -108,3 +108,41 @@ def test_run_eval_cases_handles_planner_case() -> None:
 
     assert summary.failed == 0
     assert summary.results[0].passed is True
+
+
+def test_run_eval_cases_handles_tool_case() -> None:
+    summary = run_eval_cases(
+        [
+            EvalCase(
+                case_id="tool-receive-attachment",
+                category="tool",
+                input={
+                    "tool_id": "document.receive_attachment",
+                    "arguments": {"paths": "example.docx"},
+                },
+                expected={"ok": True},
+            )
+        ]
+    )
+
+    assert summary.failed == 0
+    assert summary.results[0].details["ok"] is True
+
+
+def test_run_eval_cases_handles_research_case_without_network() -> None:
+    summary = run_eval_cases(
+        [
+            EvalCase(
+                case_id="research-citations",
+                category="research",
+                input={
+                    "task_id": "research-citations",
+                    "content": "Research Python packaging.",
+                },
+                expected={"requiresCitation": True},
+            )
+        ]
+    )
+
+    assert summary.failed == 0
+    assert summary.results[0].details["citationPresent"] is True

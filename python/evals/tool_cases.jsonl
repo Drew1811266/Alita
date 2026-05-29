@@ -1,0 +1,1 @@
+{"case_id":"tool-gateway-smoke","category":"tool","input":{"tool_id":"document.receive_attachment","arguments":{"paths":"example.docx"}},"expected":{"ok":true},"tags":["smoke","offline"]}

@@ -2,21 +2,30 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from agent_service.context_manager import build_context_bundle
+from agent_service.execution import run_graph_events
 from agent_service.goal_spec import parse_goal_spec
+from agent_service.intent import classify_route
 from agent_service.planner_chain import (
     PlannerChain,
     PlannerChainRequest,
     route_context_from_payload,
 )
 from agent_service.router_v2 import deterministic_route
-from agent_service.schemas import UserMessage
-from agent_service.tool_execution import default_tool_packages_root
+from agent_service.schemas import RunGraphRequest, UserMessage
+from agent_service.tool_execution import (
+    ToolExecutor,
+    ToolInvocation,
+    default_tool_packages_root,
+)
 from agent_service.tool_registry import ToolRegistry
+from agent_service.web_research import build_research_graph
+from agent_service.web_search import SearchResponse, SearchResult
 
 
 class EvalCase(BaseModel):
@@ -101,6 +110,10 @@ def _run_eval_case(case: EvalCase) -> EvalCaseResult:
             return _run_router_case(case)
         if case.category == "planner":
             return _run_planner_case(case)
+        if case.category == "tool":
+            return _run_tool_case(case)
+        if case.category == "research":
+            return _run_research_case(case)
         return EvalCaseResult(
             case_id=case.case_id,
             category=case.category,
@@ -165,6 +178,82 @@ def _run_planner_case(case: EvalCase) -> EvalCaseResult:
     )
 
 
+def _run_tool_case(case: EvalCase) -> EvalCaseResult:
+    tool_id = str(case.input.get("tool_id") or "")
+    operation = str(
+        case.input.get("operation")
+        or _default_operation_for_tool(tool_id)
+        or ""
+    )
+    invocation = ToolInvocation(
+        tool_id=tool_id,
+        operation=operation,
+        arguments=dict(case.input.get("arguments") or {}),
+        project_path=str(case.input.get("project_path") or "eval.alita"),
+    )
+    result = ToolExecutor().run(invocation)
+    details = {
+        "ok": True,
+        "toolId": tool_id,
+        "operation": operation,
+        "values": dict(result.values),
+        "artifacts": list(result.artifacts),
+        "metadata": dict(result.metadata),
+    }
+    return EvalCaseResult(
+        case_id=case.case_id,
+        category=case.category,
+        passed=_expected_subset_matches(details, case.expected),
+        details=details,
+    )
+
+
+def _run_research_case(case: EvalCase) -> EvalCaseResult:
+    message = _message_from_case(case)
+    with TemporaryDirectory(prefix="alita-eval-research-") as temp_dir:
+        temp_path = Path(temp_dir)
+        request = RunGraphRequest(
+            task_id=message.task_id,
+            run_id=f"{case.case_id}-run",
+            project_path=str(temp_path / "eval.alita"),
+            graph=build_research_graph(message, classify_route(message)),
+        )
+        events = list(
+            run_graph_events(
+                request,
+                search_provider=_OfflineEvalSearchProvider(message.content),
+                source_fetcher=_OfflineEvalSourceFetcher(),
+            )
+        )
+
+        artifact_event = next(
+            (event for event in events if event.type == "artifact.created"),
+            None,
+        )
+        markdown = ""
+        if artifact_event is not None:
+            markdown = Path(artifact_event.payload["path"]).read_text(
+                encoding="utf-8"
+            )
+        citation_present = "[S1]" in markdown or "[1]" in markdown
+        details = {
+            "ok": bool(artifact_event),
+            "citationPresent": citation_present,
+            "eventTypes": [event.type for event in events],
+        }
+        expected = dict(case.expected)
+        requires_citation = bool(expected.pop("requiresCitation", False))
+        passed = _expected_subset_matches(details, expected)
+        if requires_citation:
+            passed = passed and citation_present
+        return EvalCaseResult(
+            case_id=case.case_id,
+            category=case.category,
+            passed=passed,
+            details=details,
+        )
+
+
 def _message_from_case(case: EvalCase) -> UserMessage:
     return UserMessage(
         task_id=str(case.input.get("task_id") or case.case_id),
@@ -188,6 +277,45 @@ def _planner_expectation_matches(
     expected_node_ids = [str(value) for value in expected.get("nodeIds", [])]
     actual_node_ids = set(str(value) for value in actual.get("nodeIds", []))
     return all(node_id in actual_node_ids for node_id in expected_node_ids)
+
+
+def _default_operation_for_tool(tool_id: str) -> str | None:
+    return {
+        "document.receive_attachment": "receive_attachment",
+        "document.markitdown_convert": "convert_local_file",
+        "document.typst_compile": "compile_report_pdf",
+    }.get(tool_id)
+
+
+class _OfflineEvalSearchProvider:
+    def __init__(self, question: str) -> None:
+        self.question = question
+        self.queries: list[str] = []
+
+    def search(self, query: str) -> SearchResponse:
+        self.queries.append(query)
+        if query != self.question:
+            return SearchResponse(results=[])
+        return SearchResponse(
+            results=[
+                SearchResult(
+                    title="Python Packaging User Guide",
+                    url="https://packaging.python.org/en/latest/",
+                    snippet="Official guide to Python packaging tools and workflows.",
+                )
+            ],
+            metadata={"provider": "offline_eval"},
+        )
+
+
+class _OfflineEvalSourceFetcher:
+    def fetch(self, url: str) -> str:
+        if url != "https://packaging.python.org/en/latest/":
+            raise ValueError(f"unexpected eval source URL: {url}")
+        return (
+            "The Python Packaging User Guide explains pip, build backends, "
+            "publishing workflows, and project metadata."
+        )
 
 
 def _summary_markdown(summary: EvalRunSummary) -> str:
