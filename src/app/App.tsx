@@ -1,6 +1,6 @@
 import "./app.css";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { NodeCanvas } from "../features/canvas/NodeCanvas";
 import { ArtifactPreviewPanel } from "../features/artifacts/ArtifactPreviewPanel";
@@ -19,28 +19,10 @@ import { useArtifactPreviewController } from "../features/artifacts/useArtifactP
 import { pickChatAttachments } from "../features/chat/attachmentApi";
 import { ChatPanel } from "../features/chat/ChatPanel";
 import {
-  getAsrStatus,
-  transcribeVoiceAudio,
-} from "../features/voice/asrApi";
-import {
-  buildLevelBuckets,
-  encodeWav,
-  MAX_RECORDING_SECONDS,
-} from "../features/voice/audioCapture";
-import {
   insertTranscriptIntoDraft,
   type DraftSelection,
 } from "../features/voice/draftInsertion";
-import {
-  createInitialVoiceInput,
-  voiceFailed,
-  voiceRecording,
-  voiceTranscribing,
-} from "../features/voice/voiceSession";
-import {
-  canStartVoiceRecording,
-  canStopVoiceRecording,
-} from "../features/voice/voiceRecordingGuards";
+import { useVoiceInputController } from "../features/voice/useVoiceInputController";
 import {
   addModelFile,
   addSpeechToTextModelDirectory,
@@ -212,19 +194,27 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const messagesRef = useRef<ChatMessage[]>(initialMessages);
   const [draft, setDraft] = useState("");
-  const [voiceInput, setVoiceInput] = useState(() =>
-    createInitialVoiceInput(null),
+  const handleVoiceTranscript = useCallback(
+    (transcript: string, selection: DraftSelection | null) => {
+      setDraft((currentDraft) =>
+        insertTranscriptIntoDraft({
+          currentDraft,
+          transcript,
+          selection,
+        }),
+      );
+    },
+    [],
   );
-  const lastDraftSelectionRef = useRef<DraftSelection | null>(null);
-  const recordingStreamRef = useRef<MediaStream | null>(null);
-  const recordingStartingRef = useRef(false);
-  const recordingStoppingRef = useRef(false);
-  const recordingChunksRef = useRef<Float32Array[]>([]);
-  const recordingSampleRateRef = useRef(16_000);
-  const recordingStartedAtRef = useRef(0);
-  const recordingTimerRef = useRef<number | null>(null);
-  const recordingAudioContextRef = useRef<AudioContext | null>(null);
-  const recordingProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const voiceInputController = useVoiceInputController({
+    onTranscript: handleVoiceTranscript,
+  });
+  const { voiceInput } = voiceInputController.state;
+  const {
+    handleDraftSelectionChange,
+    handleVoiceToggle,
+    refreshVoiceInputAvailability,
+  } = voiceInputController;
   const [pendingAttachments, setPendingAttachments] = useState<
     ChatAttachment[]
   >([]);
@@ -284,48 +274,11 @@ export function App() {
   } = preferencesController;
   const [recentProjects, setRecentProjects] = useState<string[]>([]);
 
-  const stopRecordingStream = () => {
-    if (recordingTimerRef.current !== null) {
-      window.clearInterval(recordingTimerRef.current);
-      recordingTimerRef.current = null;
-    }
-
-    recordingProcessorRef.current?.disconnect();
-    recordingProcessorRef.current = null;
-
-    const audioContext = recordingAudioContextRef.current;
-    recordingAudioContextRef.current = null;
-    void audioContext?.close();
-
-    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-    recordingStreamRef.current = null;
-  };
-
   useEffect(() => {
     reloadPreferences()
       .then((view) => setRecentProjects(view.preferences.recentProjects))
       .catch(() => setRecentProjects([]));
   }, [reloadPreferences]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    getAsrStatus().then((status) => {
-      if (!cancelled) {
-        setVoiceInput(createInitialVoiceInput(status));
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      stopRecordingStream();
-    };
-  }, []);
 
   useEffect(() => {
     graphRef.current = graph;
@@ -721,165 +674,6 @@ export function App() {
     setSelectedCanvasNodeId(node?.nodeId ?? null);
   };
 
-  const handleDraftSelectionChange = (selection: DraftSelection | null) => {
-    lastDraftSelectionRef.current = selection;
-  };
-
-  const startVoiceRecording = async () => {
-    if (
-      !canStartVoiceRecording({
-        starting: recordingStartingRef.current,
-        stopping: recordingStoppingRef.current,
-        hasActiveStream: recordingStreamRef.current !== null,
-      })
-    ) {
-      return;
-    }
-
-    recordingStartingRef.current = true;
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      recordingStreamRef.current = stream;
-
-      const audioContext = new AudioContext();
-      const source = audioContext.createMediaStreamSource(stream);
-      const analyser = audioContext.createAnalyser();
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
-      const monitorGain = audioContext.createGain();
-
-      monitorGain.gain.value = 0;
-      analyser.fftSize = 64;
-      recordingChunksRef.current = [];
-      recordingSampleRateRef.current = audioContext.sampleRate;
-      recordingStartedAtRef.current = Date.now();
-      recordingAudioContextRef.current = audioContext;
-      recordingProcessorRef.current = processor;
-
-      processor.onaudioprocess = (event) => {
-        const input = event.inputBuffer.getChannelData(0);
-        recordingChunksRef.current.push(new Float32Array(input));
-      };
-
-      source.connect(analyser);
-      source.connect(processor);
-      processor.connect(monitorGain);
-      monitorGain.connect(audioContext.destination);
-
-      setVoiceInput((current) => voiceRecording(current));
-
-      const levelData = new Uint8Array(analyser.frequencyBinCount);
-      recordingTimerRef.current = window.setInterval(() => {
-        analyser.getByteTimeDomainData(levelData);
-        const elapsedSeconds = Math.min(
-          MAX_RECORDING_SECONDS,
-          Math.floor((Date.now() - recordingStartedAtRef.current) / 1000),
-        );
-
-        setVoiceInput((current) =>
-          voiceRecording(
-            current,
-            buildLevelBuckets(levelData, 32),
-            elapsedSeconds,
-          ),
-        );
-
-        if (elapsedSeconds >= MAX_RECORDING_SECONDS) {
-          void stopVoiceRecording(lastDraftSelectionRef.current);
-        }
-      }, 250);
-    } catch (error) {
-      stopRecordingStream();
-      setVoiceInput((current) =>
-        voiceFailed(current, `麦克风不可用：${formatUnknownError(error)}`),
-      );
-    } finally {
-      recordingStartingRef.current = false;
-    }
-  };
-
-  const stopVoiceRecording = async (selection?: DraftSelection | null) => {
-    if (recordingStoppingRef.current) {
-      return;
-    }
-
-    if (recordingStreamRef.current === null) {
-      return;
-    }
-
-    recordingStoppingRef.current = true;
-
-    const capturedSelection = selection ?? lastDraftSelectionRef.current;
-    const chunks = [...recordingChunksRef.current];
-    const sampleRate = recordingSampleRateRef.current;
-
-    if (
-      !canStopVoiceRecording({
-        stopping: false,
-        hasActiveStream: recordingStreamRef.current !== null,
-        chunkCount: chunks.length,
-      })
-    ) {
-      stopRecordingStream();
-      recordingChunksRef.current = [];
-      setVoiceInput((current) => ({
-        ...current,
-        available: true,
-        status: "idle",
-        message: "语音模型已就绪",
-        elapsedSeconds: 0,
-        levels: [],
-      }));
-      recordingStoppingRef.current = false;
-      return;
-    }
-
-    stopRecordingStream();
-    recordingChunksRef.current = [];
-    setVoiceInput((current) => voiceTranscribing(current));
-
-    try {
-      const samples = concatenateFloat32Arrays(chunks);
-      const transcript = await transcribeVoiceAudio(encodeWav(samples, sampleRate));
-
-      setDraft((currentDraft) =>
-        insertTranscriptIntoDraft({
-          currentDraft,
-          transcript: transcript.text,
-          selection: capturedSelection,
-        }),
-      );
-      setVoiceInput((current) => ({
-        ...current,
-        available: true,
-        status: "idle",
-        message: "语音模型已就绪",
-        elapsedSeconds: 0,
-        levels: [],
-      }));
-    } catch (error) {
-      setVoiceInput((current) =>
-        voiceFailed(current, `语音转写失败：${formatUnknownError(error)}`),
-      );
-    } finally {
-      recordingChunksRef.current = [];
-      recordingStoppingRef.current = false;
-    }
-  };
-
-  const handleVoiceToggle = async (selection: DraftSelection | null) => {
-    if (!voiceInput.available || voiceInput.status === "transcribing") {
-      return;
-    }
-
-    if (voiceInput.status === "recording") {
-      await stopVoiceRecording(selection);
-      return;
-    }
-
-    await startVoiceRecording();
-  };
-
   const submitAgentMessagePayload = async (payload: SubmitMessagePayload) => {
     await submitUserMessageWithStreamFallback({
       payload,
@@ -1059,12 +853,6 @@ export function App() {
     } catch (error) {
       void error;
     }
-  };
-
-  const refreshVoiceInputAvailability = async () => {
-    setVoiceInput(createInitialVoiceInput(null));
-    const status = await getAsrStatus();
-    setVoiceInput(createInitialVoiceInput(status));
   };
 
   const applyPreferencesView = (view: PreferencesView) => {
@@ -1472,19 +1260,6 @@ function lastRunHistoryEntry(
   runHistory: RunHistoryEntry[],
 ): RunHistoryEntry | undefined {
   return runHistory.length > 0 ? runHistory[runHistory.length - 1] : undefined;
-}
-
-function concatenateFloat32Arrays(chunks: Float32Array[]): Float32Array {
-  const totalLength = chunks.reduce((total, chunk) => total + chunk.length, 0);
-  const samples = new Float32Array(totalLength);
-  let offset = 0;
-
-  for (const chunk of chunks) {
-    samples.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  return samples;
 }
 
 function formatUnknownError(error: unknown): string {
