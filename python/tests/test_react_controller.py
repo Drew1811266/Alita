@@ -134,3 +134,70 @@ def test_react_controller_rejects_malformed_action() -> None:
 
     assert result.ok is False
     assert result.error_code == "malformed_action"
+
+
+def test_react_controller_stops_when_tool_budget_is_exceeded() -> None:
+    model = SequencedModel(
+        [
+            '{"kind":"tool","tool_id":"internal:file.inspect","arguments":{}}',
+            '{"kind":"tool","tool_id":"internal:file.inspect","arguments":{}}',
+        ]
+    )
+    result = ReActController(model_client=model, gateway=RecordingGateway()).run(
+        messages=[ChatMessage(role="user", content="Use tools.")],
+        tools=[_tool()],
+        base_invocation=_base_invocation(),
+        policy=ReActPolicy(
+            enabled=True,
+            max_steps=3,
+            max_tool_calls=1,
+            allowed_tool_ids=["internal:file.inspect"],
+        ),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "tool_budget_exceeded"
+    assert result.tool_call_count == 1
+
+
+def test_react_controller_stops_when_step_budget_is_exceeded() -> None:
+    model = SequencedModel(
+        [
+            '{"kind":"tool","tool_id":"internal:file.inspect","arguments":{}}',
+            '{"kind":"tool","tool_id":"internal:file.inspect","arguments":{}}',
+        ]
+    )
+    result = ReActController(model_client=model, gateway=RecordingGateway()).run(
+        messages=[ChatMessage(role="user", content="Use tools.")],
+        tools=[_tool()],
+        base_invocation=_base_invocation(),
+        policy=ReActPolicy(
+            enabled=True,
+            max_steps=1,
+            max_tool_calls=3,
+            allowed_tool_ids=["internal:file.inspect"],
+        ),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "step_budget_exceeded"
+
+
+def test_react_controller_rejects_permission_outside_policy() -> None:
+    model = SequencedModel(
+        ['{"kind":"tool","tool_id":"internal:file.inspect","arguments":{}}']
+    )
+    result = ReActController(model_client=model, gateway=RecordingGateway()).run(
+        messages=[ChatMessage(role="user", content="Use a tool.")],
+        tools=[_tool()],
+        base_invocation=_base_invocation(),
+        policy=ReActPolicy(
+            enabled=True,
+            allowed_tool_ids=["internal:file.inspect"],
+            allowed_permissions=["network"],
+        ),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "permission_not_allowed"
+    assert result.tool_call_count == 0
