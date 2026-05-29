@@ -533,7 +533,7 @@ class PlannedTaskExecutor:
                     f"temporary script requires approval before execution: {node_id}",
                 )
             script = review.codePreview if review is not None else None
-            if script:
+            if script and review is not None and review.riskLevel == "low":
                 result = run_sandboxed_python(
                     SandboxRequest(
                         script=script,
