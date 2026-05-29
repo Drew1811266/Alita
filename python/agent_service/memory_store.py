@@ -44,8 +44,11 @@ class MemoryStore:
 
     def append(self, record: MemoryRecord) -> None:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
+        safe_record = record.model_copy(
+            update={"summary": sanitize_memory_summary(record.summary)}
+        )
         with self.memory_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record.model_dump(), ensure_ascii=False) + "\n")
+            handle.write(json.dumps(safe_record.model_dump(), ensure_ascii=False) + "\n")
 
     def list(
         self,

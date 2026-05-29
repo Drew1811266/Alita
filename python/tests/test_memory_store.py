@@ -35,6 +35,23 @@ def test_memory_store_appends_and_lists_records(tmp_path: Path) -> None:
     assert store.list(tags=["missing"]) == []
 
 
+def test_memory_store_sanitizes_summary_before_persisting(tmp_path: Path) -> None:
+    store = MemoryStore(str(tmp_path / "demo.alita"))
+    record = MemoryRecord(
+        memory_id="m-secret",
+        kind="tool_outcome",
+        summary="api_key=sk-secret D:\\Project\\secret.docx",
+        source_ref="run-1",
+        created_at="2026-05-29T00:00:00Z",
+    )
+
+    store.append(record)
+
+    stored_summary = store.list()[0].summary
+    assert "sk-secret" not in stored_summary
+    assert "secret.docx" not in stored_summary
+
+
 def test_sanitize_memory_summary_removes_secrets_paths_and_large_content() -> None:
     text = "api_key=sk-secret D:\\Project\\secret.docx " + ("x" * 2000)
 
