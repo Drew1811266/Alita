@@ -1,0 +1,1 @@
+{"case_id":"router-code-task","category":"router","input":{"task_id":"router-code-task","content":"Create a Python script that counts rows in a CSV file."},"expected":{"intent":"task","taskType":"code_task"},"tags":["smoke"]}

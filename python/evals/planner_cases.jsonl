@@ -1,0 +1,1 @@
+{"case_id":"planner-code-task","category":"planner","input":{"task_id":"planner-code-task","content":"Create a Python script that counts rows in a CSV file."},"expected":{"strategy":"legacy_task_planner","nodeIds":["task-analysis","temporary-script-file-inspect","task-output"]},"tags":["smoke"]}
