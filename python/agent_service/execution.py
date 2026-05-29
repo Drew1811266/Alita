@@ -1921,7 +1921,7 @@ def _is_planned_task_graph(request: RunGraphRequest) -> bool:
 def _react_policy_from_graph_metadata(metadata: dict) -> ReActPolicy:
     react = dict(metadata.get("react") or {})
     return ReActPolicy(
-        enabled=bool(react.get("enabled", False)),
+        enabled=react.get("enabled") is True,
         max_steps=int(react.get("maxSteps", 4)),
         max_tool_calls=int(react.get("maxToolCalls", 3)),
         allowed_tool_ids=list(react.get("allowedToolIds") or []),

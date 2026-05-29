@@ -1185,6 +1185,68 @@ def test_react_enabled_model_node_records_observations(tmp_path: Path) -> None:
     assert gateway.calls[0].tool_id == "internal:document.receive_attachment"
 
 
+def test_react_metadata_string_false_does_not_enable_react(tmp_path: Path) -> None:
+    class SequencedExecutionModel:
+        def __init__(self) -> None:
+            self.replies = [
+                (
+                    '{"kind":"tool","tool_id":"internal:document.receive_attachment",'
+                    '"arguments":{"paths":"README.md"}}'
+                ),
+                '{"kind":"final","text":"React should not run."}',
+            ]
+            self.calls: list[list[ChatMessage]] = []
+
+        def chat(
+            self,
+            messages: list[ChatMessage],
+            *,
+            temperature=None,
+            max_tokens=None,
+            policy=None,
+        ) -> str:
+            self.calls.append(messages)
+            return self.replies.pop(0)
+
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "model-reasoning",
+                "model",
+                [],
+                model_ref="local-task-reasoner",
+            ),
+            build_node("task-output", "output", ["model-reasoning"]),
+        ],
+        graph_metadata={
+            "plannerChain": {"strategy": "legacy_task_planner"},
+            "react": {
+                "enabled": "false",
+                "allowedToolIds": ["internal:document.receive_attachment"],
+            },
+        },
+    )
+    gateway = RecordingGateway()
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=SequencedExecutionModel(),
+            tool_gateway=gateway,
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+    model_record = RunJournal(
+        project_path=request.project_path,
+        run_id=request.run_id,
+    ).read_node("model-reasoning")
+    assert "react" not in model_record["values"]
+    assert model_record["values"]["text"].startswith('{"kind":"tool"')
+    assert gateway.calls == []
+
+
 def test_runs_nodes_after_all_dependencies_complete(tmp_path: Path) -> None:
     request = build_request(
         tmp_path,
