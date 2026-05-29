@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from time import monotonic
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 
 from agent_service.model_client import ChatMessage
+from agent_service.model_tool_adapter import (
+    build_model_tool_invocation,
+    safe_observation_payload,
+)
 from agent_service.model_policy import ModelCallPolicy
 from agent_service.tool_gateway import UnifiedToolGateway
 from agent_service.tool_protocol import (
@@ -210,18 +213,11 @@ def _tool_invocation(
     arguments: dict[str, Any],
     tool_call_index: int,
 ) -> UnifiedToolInvocation:
-    return UnifiedToolInvocation(
+    return build_model_tool_invocation(
+        base_invocation=base_invocation,
         invocation_id=f"{base_invocation.invocation_id}-react-{tool_call_index}",
-        run_id=base_invocation.run_id,
-        task_id=base_invocation.task_id,
-        node_id=base_invocation.node_id,
-        tool_id=tool.id,
-        arguments=dict(arguments),
-        project_path=base_invocation.project_path,
-        allowed_roots=list(base_invocation.allowed_roots),
-        requested_permissions=list(tool.permissions),
-        approval_token=base_invocation.approval_token,
-        model_session_id=base_invocation.model_session_id,
+        tool=tool,
+        arguments=arguments,
     )
 
 
@@ -229,39 +225,18 @@ def _safe_observation(
     invocation: UnifiedToolInvocation,
     result: UnifiedToolResult,
 ) -> ReActObservation:
-    values = {
-        str(key): _safe_value(value)
-        for key, value in dict(result.structured_content or {}).items()
-        if _safe_key(str(key))
-    }
+    payload = safe_observation_payload(invocation, result)
     return ReActObservation(
-        tool_id=invocation.tool_id,
-        ok=bool(result.ok),
-        values=values,
-        artifacts=[Path(path).name for path in result.artifacts],
-        error_code=result.error.code if result.error is not None else None,
+        tool_id=str(payload["toolId"]),
+        ok=bool(payload["ok"]),
+        values=dict(payload["values"]),
+        artifacts=[str(artifact) for artifact in payload["artifacts"]],
+        error_code=(
+            str(payload["errorCode"])
+            if payload["errorCode"] is not None
+            else None
+        ),
     )
-
-
-def _safe_key(key: str) -> bool:
-    lowered = key.lower()
-    return not any(marker in lowered for marker in ("secret", "key", "token", "credential"))
-
-
-def _safe_value(value: Any) -> Any:
-    if isinstance(value, str):
-        if ":\\" in value or value.startswith("/"):
-            return Path(value).name
-        return value
-    if isinstance(value, int | float | bool) or value is None:
-        return value
-    if isinstance(value, list):
-        return [
-            _safe_value(item)
-            for item in value
-            if isinstance(item, str | int | float | bool) or item is None
-        ]
-    return str(value)
 
 
 def _elapsed_ms(started_at: float) -> int:
