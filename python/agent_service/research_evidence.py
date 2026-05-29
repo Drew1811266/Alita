@@ -83,8 +83,12 @@ def evidence_from_search_results(
             accepted=accepted,
             score=_score_result(result, accepted),
             snippet=str(_get(result, "snippet", "")),
-            observed_date=_optional_str(_get(result, "observed_date", None)),
-            rejection_reason=_optional_str(_get(result, "rejection_reason", None)),
+            observed_date=_optional_str(
+                _get(result, "observed_date", _get(result, "observedDate", None))
+            ),
+            rejection_reason=_optional_str(
+                _get(result, "rejection_reason", _get(result, "rejectionReason", None))
+            ),
         )
         if normalized_url in seen_urls:
             evidence.duplicate_sources.append(
@@ -97,6 +101,48 @@ def evidence_from_search_results(
         else:
             evidence.rejected_sources.append(source)
     return evidence
+
+
+def attach_read_content(
+    evidence_set: ResearchEvidenceSet | dict[str, Any],
+    read_payloads: list[dict[str, Any]],
+    failed_reads: list[dict[str, Any]],
+) -> ResearchEvidenceSet:
+    evidence = (
+        evidence_set
+        if isinstance(evidence_set, ResearchEvidenceSet)
+        else ResearchEvidenceSet.model_validate(evidence_set)
+    )
+    accepted_sources = list(evidence.accepted_sources)
+    source_indexes_by_url = {
+        normalize_source_url(source.url): index
+        for index, source in enumerate(accepted_sources)
+    }
+
+    for payload in read_payloads:
+        if str(_get(payload, "readStatus", _get(payload, "status", ""))) != "read":
+            continue
+        url = str(_get(payload, "url", ""))
+        normalized_url = normalize_source_url(url)
+        source_index = source_indexes_by_url.get(normalized_url)
+        if source_index is None:
+            continue
+        content = str(_get(payload, "sourceContent", _get(payload, "content", "")))
+        if not content.strip():
+            continue
+        accepted_sources[source_index] = accepted_sources[source_index].model_copy(
+            update={
+                "content_excerpt": _content_excerpt(content),
+                "content_hash": content_hash(content),
+            }
+        )
+
+    return evidence.model_copy(
+        update={
+            "accepted_sources": accepted_sources,
+            "failed_reads": [_failed_read_payload(item) for item in failed_reads],
+        }
+    )
 
 
 def citation_ids_in_markdown(markdown: str) -> set[str]:
@@ -154,3 +200,18 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _content_excerpt(text: str, *, limit: int = 600) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
+def _failed_read_payload(item: dict[str, Any]) -> dict[str, str]:
+    return {
+        "ref": str(_get(item, "ref", "")),
+        "url": str(_get(item, "url", "")),
+        "error": str(_get(item, "error", _get(item, "message", ""))),
+    }

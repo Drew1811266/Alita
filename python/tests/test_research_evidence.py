@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agent_service.research_evidence import (
+    attach_read_content,
     citation_ids_in_markdown,
     content_hash,
     evidence_from_search_results,
@@ -59,3 +60,34 @@ def test_citation_coverage_reports_missing_citations() -> None:
 
 def test_content_hash_is_stable_for_whitespace_variants() -> None:
     assert content_hash("A\n\nB") == content_hash("A B")
+
+
+def test_attach_read_content_adds_excerpt_and_hash() -> None:
+    evidence = evidence_from_search_results(
+        "Question",
+        [
+            {
+                "title": "Accepted",
+                "url": "https://example.com/a",
+                "snippet": "Useful.",
+                "accepted": True,
+            }
+        ],
+    )
+
+    updated = attach_read_content(
+        evidence,
+        [
+            {
+                "url": "https://example.com/a",
+                "sourceContent": "Long source content " * 80,
+                "readStatus": "read",
+            }
+        ],
+        [],
+    )
+
+    source = updated.accepted_sources[0]
+    assert source.content_hash
+    assert source.content_excerpt.startswith("Long source content")
+    assert len(source.content_excerpt) <= 600

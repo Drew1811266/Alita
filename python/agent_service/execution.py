@@ -33,6 +33,10 @@ from agent_service.permission_gate import PermissionGate
 from agent_service.privacy import sanitize_for_web_search
 from agent_service.replan import FailureReplanner
 from agent_service.react_controller import ReActController, ReActPolicy
+from agent_service.research_evidence import (
+    attach_read_content,
+    evidence_from_search_results,
+)
 from agent_service.result_verifier import ResultVerifier
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY, RunRegistry
@@ -852,10 +856,12 @@ class ResearchFlowExecutor:
             ]
             accepted_sources = [source for source in sources if source["accepted"]]
             rejected_sources = [source for source in sources if not source["accepted"]]
+            evidence_set = evidence_from_search_results(question, sources)
             return NodeOutput(
                 values={
                     "acceptedSources": accepted_sources,
                     "rejectedSources": rejected_sources,
+                    "evidenceSet": evidence_set.model_dump(),
                     "sourceCount": len(sources),
                 }
             )
@@ -917,10 +923,21 @@ class ResearchFlowExecutor:
                     }
                 )
 
+            evidence_payload = _input_value(inputs, "evidenceSet")
+            evidence_set = attach_read_content(
+                evidence_payload
+                or evidence_from_search_results(
+                    self._question(),
+                    [*accepted_sources, *rejected_sources],
+                ),
+                enriched_sources,
+                failed_reads,
+            )
             return NodeOutput(
                 values={
                     "acceptedSources": enriched_sources,
                     "rejectedSources": rejected_sources,
+                    "evidenceSet": evidence_set.model_dump(),
                     "sourceContents": source_contents,
                     "readSourceCount": sum(
                         1 for source in enriched_sources
@@ -949,6 +966,7 @@ class ResearchFlowExecutor:
                     "summary": summary,
                     "acceptedSources": accepted_sources,
                     "rejectedSources": rejected_sources,
+                    "evidenceSet": _input_value(inputs, "evidenceSet") or {},
                     "readSourceCount": read_source_count,
                     "failedSourceReads": failed_source_reads,
                     "sectionOrder": self._section_order(),
@@ -967,6 +985,7 @@ class ResearchFlowExecutor:
                     "summary": _input_value(inputs, "summary") or "",
                     "acceptedSources": accepted_sources,
                     "rejectedSources": rejected_sources,
+                    "evidenceSet": _input_value(inputs, "evidenceSet") or {},
                     "readSourceCount": _input_value(inputs, "readSourceCount") or 0,
                     "failedSourceReads": failed_source_reads,
                     "qualityStatus": "passed" if not issues else "needs_review",
@@ -987,6 +1006,7 @@ class ResearchFlowExecutor:
                     "summary": _input_value(inputs, "summary") or "",
                     "acceptedSources": _input_value(inputs, "acceptedSources") or [],
                     "rejectedSources": _input_value(inputs, "rejectedSources") or [],
+                    "evidenceSet": _input_value(inputs, "evidenceSet") or {},
                     "readSourceCount": _input_value(inputs, "readSourceCount") or 0,
                     "failedSourceReads": _input_value(inputs, "failedSourceReads") or [],
                     "qualityStatus": _input_value(inputs, "qualityStatus") or "",
