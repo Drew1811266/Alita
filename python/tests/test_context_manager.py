@@ -3,7 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from agent_service.context_manager import build_context_bundle
-from agent_service.goal_spec import GoalSpec
+from agent_service.goal_spec import GoalSpec, parse_goal_spec
+from agent_service.memory_store import MemoryRecord
 from agent_service.schemas import Attachment, UserMessage
 from agent_service.tool_gateway import UnifiedToolGateway
 from agent_service.tool_providers.internal import InternalToolProvider
@@ -111,3 +112,28 @@ def test_build_context_bundle_can_use_filtered_unified_tool_catalog(
 
     assert "internal:document.markitdown_convert" in tool_ids
     assert "internal:document.typst_compile" not in tool_ids
+
+
+def test_context_bundle_includes_selected_memory_summaries(tmp_path: Path) -> None:
+    message = UserMessage(task_id="task-memory", content="Continue the report.")
+    goal_spec = parse_goal_spec(message)
+    registry = ToolRegistry([])
+    memory_records = [
+        MemoryRecord(
+            memory_id="m1",
+            kind="graph_summary",
+            summary="Previous run summarized the PDF.",
+            source_ref="run-1",
+            created_at="2026-05-29T00:00:00Z",
+        )
+    ]
+
+    bundle = build_context_bundle(
+        message,
+        goal_spec,
+        str(tmp_path / "project.alita"),
+        registry,
+        memory_records=memory_records,
+    )
+
+    assert bundle.memory_summaries == ["Previous run summarized the PDF."]
