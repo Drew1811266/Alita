@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agent_service.context_policy import budget_for_mode, select_memory_for_context
 from agent_service.memory_store import (
     MemoryRecord,
     MemoryStore,
@@ -43,3 +44,35 @@ def test_sanitize_memory_summary_removes_secrets_paths_and_large_content() -> No
     assert "D:\\Project" not in sanitized
     assert "secret.docx" not in sanitized
     assert len(sanitized) <= 120
+
+
+def test_context_policy_selects_recent_allowed_memory_records() -> None:
+    records = [
+        MemoryRecord(
+            memory_id="old",
+            kind="tool_outcome",
+            summary="old",
+            source_ref="r1",
+            created_at="2026-05-28T00:00:00Z",
+        ),
+        MemoryRecord(
+            memory_id="new",
+            kind="graph_summary",
+            summary="new",
+            source_ref="r2",
+            created_at="2026-05-29T00:00:00Z",
+        ),
+        MemoryRecord(
+            memory_id="pref",
+            kind="preference",
+            summary="pref",
+            source_ref="user",
+            created_at="2026-05-27T00:00:00Z",
+        ),
+    ]
+    budget = budget_for_mode("planning")
+
+    selected = select_memory_for_context(records, budget)
+
+    assert [record.memory_id for record in selected] == ["new", "pref"]
+    assert budget.max_chars > 0
