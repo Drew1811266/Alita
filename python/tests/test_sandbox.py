@@ -46,6 +46,22 @@ def test_sandbox_rejects_network_import_when_network_denied(tmp_path: Path) -> N
     assert result.error_code == "network_import_denied"
 
 
+def test_sandbox_rejects_dynamic_network_import_when_network_denied(
+    tmp_path: Path,
+) -> None:
+    result = run_sandboxed_python(
+        SandboxRequest(
+            script="__import__('socket')\nprint('{}')\n",
+            project_path=str(tmp_path / "project.alita"),
+            allowed_roots=[str(tmp_path)],
+            artifact_dir=str(tmp_path / "artifacts"),
+        )
+    )
+
+    assert result.ok is False
+    assert result.error_code == "network_import_denied"
+
+
 def test_sandbox_rejects_artifact_outside_artifact_dir(tmp_path: Path) -> None:
     artifact_dir = tmp_path / "artifacts"
     artifact_dir.mkdir()

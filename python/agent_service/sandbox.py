@@ -18,6 +18,7 @@ FORBIDDEN_NETWORK_IMPORTS = (
     "requests",
     "urllib",
     "http.client",
+    "importlib",
     "ftplib",
     "smtplib",
     "subprocess",
@@ -148,13 +149,18 @@ def run_sandboxed_python(request: SandboxRequest) -> SandboxResult:
 def _reject_forbidden_imports(script: str, network_allowed: bool) -> None:
     if network_allowed:
         return
-    tree = ast.parse(script)
+    try:
+        tree = ast.parse(script)
+    except SyntaxError as error:
+        raise SandboxViolation("sandbox_process_failed", str(error)) from error
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 _reject_module_name(alias.name)
         elif isinstance(node, ast.ImportFrom) and node.module:
             _reject_module_name(node.module)
+        elif isinstance(node, ast.Call):
+            _reject_dynamic_import_call(node)
 
 
 def _reject_module_name(name: str) -> None:
@@ -164,6 +170,26 @@ def _reject_module_name(name: str) -> None:
                 "network_import_denied",
                 f"import is not allowed in sandbox: {name}",
             )
+
+
+def _reject_dynamic_import_call(node: ast.Call) -> None:
+    if isinstance(node.func, ast.Name) and node.func.id == "__import__":
+        _reject_literal_import_argument(node)
+    if (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "import_module"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "importlib"
+    ):
+        _reject_literal_import_argument(node)
+
+
+def _reject_literal_import_argument(node: ast.Call) -> None:
+    if not node.args:
+        return
+    first_arg = node.args[0]
+    if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+        _reject_module_name(first_arg.value)
 
 
 def _validate_argument_paths(value: Any, allowed_roots: list[str]) -> None:
