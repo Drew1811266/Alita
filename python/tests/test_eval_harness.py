@@ -146,3 +146,17 @@ def test_run_eval_cases_handles_research_case_without_network() -> None:
 
     assert summary.failed == 0
     assert summary.results[0].details["citationPresent"] is True
+
+
+def test_eval_harness_writes_summary_for_loaded_cases(tmp_path: Path) -> None:
+    cases_path = tmp_path / "cases.jsonl"
+    cases_path.write_text(
+        '{"case_id":"router-hello","category":"router","input":{"task_id":"router-hello","content":"Hello"},"expected":{"intent":"chat"}}\n',
+        encoding="utf-8",
+    )
+
+    summary = run_eval_cases(load_eval_cases(cases_path), output_dir=tmp_path / "out")
+
+    assert summary.total == 1
+    assert (tmp_path / "out" / "summary.json").is_file()
+    assert (tmp_path / "out" / "summary.md").is_file()

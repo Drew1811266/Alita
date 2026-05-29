@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -102,6 +103,24 @@ def write_eval_summary(
     )
     markdown_path.write_text(_summary_markdown(summary), encoding="utf-8")
     return json_path, markdown_path
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run deterministic Alita eval cases.")
+    parser.add_argument("--cases", required=True, help="Path to a JSONL eval case file.")
+    parser.add_argument(
+        "--output",
+        required=True,
+        help="Directory for summary.json and summary.md.",
+    )
+    args = parser.parse_args(argv)
+
+    summary = run_eval_cases(load_eval_cases(args.cases), output_dir=args.output)
+    print(
+        f"Agent eval summary: {summary.passed}/{summary.total} passed, "
+        f"{summary.failed} failed."
+    )
+    return 1 if summary.failed else 0
 
 
 def _run_eval_case(case: EvalCase) -> EvalCaseResult:
@@ -333,3 +352,7 @@ def _summary_markdown(summary: EvalRunSummary) -> str:
         status = "PASS" if result.passed else "FAIL"
         lines.append(f"| {result.case_id} | {result.category} | {status} |")
     return "\n".join(lines) + "\n"
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
