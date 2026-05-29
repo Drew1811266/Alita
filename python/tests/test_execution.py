@@ -1117,6 +1117,74 @@ def test_execution_graph_does_not_change_run_event_shape(tmp_path: Path) -> None
     assert all("executionGraph" not in event.payload for event in events)
 
 
+def test_react_enabled_model_node_records_observations(tmp_path: Path) -> None:
+    class SequencedExecutionModel:
+        def __init__(self) -> None:
+            self.replies = [
+                (
+                    '{"kind":"tool","tool_id":"internal:document.receive_attachment",'
+                    '"arguments":{"paths":"README.md"}}'
+                ),
+                '{"kind":"final","text":"Inspected README."}',
+            ]
+            self.calls: list[list[ChatMessage]] = []
+
+        def chat(
+            self,
+            messages: list[ChatMessage],
+            *,
+            temperature=None,
+            max_tokens=None,
+            policy=None,
+        ) -> str:
+            self.calls.append(messages)
+            return self.replies.pop(0)
+
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "model-reasoning",
+                "model",
+                [],
+                model_ref="local-task-reasoner",
+            ),
+            build_node("task-output", "output", ["model-reasoning"]),
+        ],
+        graph_metadata={
+            "plannerChain": {"strategy": "legacy_task_planner"},
+            "react": {
+                "enabled": True,
+                "allowedToolIds": ["internal:document.receive_attachment"],
+                "maxSteps": 2,
+                "maxToolCalls": 1,
+            },
+        },
+    )
+    gateway = RecordingGateway()
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=SequencedExecutionModel(),
+            tool_gateway=gateway,
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+    model_record = RunJournal(
+        project_path=request.project_path,
+        run_id=request.run_id,
+    ).read_node("model-reasoning")
+    assert model_record["values"]["text"] == "Inspected README."
+    assert model_record["values"]["react"]["toolCallCount"] == 1
+    assert (
+        model_record["values"]["react"]["observations"][0]["tool_id"]
+        == "internal:document.receive_attachment"
+    )
+    assert gateway.calls[0].tool_id == "internal:document.receive_attachment"
+
+
 def test_runs_nodes_after_all_dependencies_complete(tmp_path: Path) -> None:
     request = build_request(
         tmp_path,

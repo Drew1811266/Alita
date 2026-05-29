@@ -32,6 +32,7 @@ from agent_service.node_output import NodeOutput
 from agent_service.permission_gate import PermissionGate
 from agent_service.privacy import sanitize_for_web_search
 from agent_service.replan import FailureReplanner
+from agent_service.react_controller import ReActController, ReActPolicy
 from agent_service.result_verifier import ResultVerifier
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY, RunRegistry
@@ -556,33 +557,88 @@ class PlannedTaskExecutor:
                     "unsupported_runtime",
                     f"model node {node_id} has no bound runtime: {runtime_ref}",
                 )
-            content = self.model_client.chat(
-                [
-                    ModelChatMessage(
-                        role="system",
-                        content=(
-                            "Execute the planned model step. Return only the useful "
-                            "task result, not a description of the plan."
+            messages = [
+                ModelChatMessage(
+                    role="system",
+                    content=(
+                        "Execute the planned model step. Return only the useful "
+                        "task result, not a description of the plan."
+                    ),
+                ),
+                ModelChatMessage(
+                    role="user",
+                    content=_planned_model_prompt(node, inputs),
+                ),
+            ]
+            model_policy = policy_for_graph_node(
+                node,
+                graph_metadata=self.request.graph.metadata,
+            )
+            react_policy = _react_policy_from_graph_metadata(
+                self.request.graph.metadata
+            )
+            if react_policy.enabled:
+                result = ReActController(
+                    model_client=self.model_client,
+                    gateway=self.tool_gateway,
+                ).run(
+                    messages=messages,
+                    tools=self.tool_gateway.list_tools(),
+                    base_invocation=UnifiedToolInvocation(
+                        invocation_id=(
+                            f"{self.run_state.run_id or self.request.run_id}-"
+                            f"{node.nodeId}-react-base"
                         ),
+                        run_id=self.run_state.run_id or self.request.run_id,
+                        task_id=self.run_state.task_id,
+                        node_id=node.nodeId,
+                        tool_id=f"react:{node.nodeId}",
+                        arguments={},
+                        project_path=(
+                            self.run_state.project_path or self.request.project_path
+                        ),
+                        allowed_roots=self.document_executor._allowed_roots(),
+                        requested_permissions=list(
+                            react_policy.allowed_permissions
+                        ),
+                        model_session_id=self.run_state.message.model_session_id,
                     ),
-                    ModelChatMessage(
-                        role="user",
-                        content=_planned_model_prompt(node, inputs),
-                    ),
-                ],
+                    policy=react_policy,
+                    model_policy=model_policy,
+                )
+                if not result.ok:
+                    raise HarnessError(
+                        result.error_code or "react_failed",
+                        "react controller failed",
+                    )
+                return NodeOutput(
+                    values={
+                        "mode": "planned_task",
+                        "nodeType": node.nodeType,
+                        "summary": node.summary,
+                        "modelRef": model_binding.model_ref,
+                        "text": result.text,
+                        "react": {
+                            "ok": result.ok,
+                            "toolCallCount": result.tool_call_count,
+                            "observations": result.observations,
+                            "errorCode": result.error_code,
+                        },
+                    }
+                )
+
+            content = self.model_client.chat(
+                messages,
                 temperature=0.2,
                 max_tokens=1536,
-                policy=policy_for_graph_node(
-                    node,
-                    graph_metadata=self.request.graph.metadata,
-                ),
+                policy=model_policy,
             )
             return NodeOutput(
                 values={
                     "mode": "planned_task",
                     "nodeType": node.nodeType,
                     "summary": node.summary,
-                    "modelRef": node.modelRef or "",
+                    "modelRef": model_binding.model_ref,
                     "text": content,
                 }
             )
@@ -1860,6 +1916,17 @@ def _is_planned_task_graph(request: RunGraphRequest) -> bool:
     ):
         return True
     return any(node.nodeType == "planning" for node in request.graph.nodes)
+
+
+def _react_policy_from_graph_metadata(metadata: dict) -> ReActPolicy:
+    react = dict(metadata.get("react") or {})
+    return ReActPolicy(
+        enabled=bool(react.get("enabled", False)),
+        max_steps=int(react.get("maxSteps", 4)),
+        max_tool_calls=int(react.get("maxToolCalls", 3)),
+        allowed_tool_ids=list(react.get("allowedToolIds") or []),
+        allowed_permissions=list(react.get("allowedPermissions") or []),
+    )
 
 
 def _selected_nodes_for_mode(
