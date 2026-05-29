@@ -12,6 +12,7 @@ from agent_service.execution import (
     DocumentFlowExecutor,
     NodeOutput,
     PlannedTaskExecutor,
+    ResearchFlowExecutor,
     _runtime_notice_for_node,
     run_graph_events,
 )
@@ -20,6 +21,7 @@ from agent_service.graph import run_agent
 from agent_service.harness_errors import HarnessError
 from agent_service.model_client import ChatMessage
 from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
+from agent_service.research_evidence import evidence_from_search_results
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import RunRegistry
 from agent_service.schemas import (
@@ -643,6 +645,92 @@ def test_research_graph_executes_nodes_and_writes_markdown_report(tmp_path: Path
     assert quality_record["values"]["qualityStatus"] == "passed"
     assert quality_record["values"]["checkedReferenceCount"] == 2
     assert events[-1].type == "task.completed"
+
+
+def test_research_report_synthesis_includes_source_citations(tmp_path: Path) -> None:
+    question = "Compare current Python packaging tools"
+    request = build_research_flow_request(tmp_path, question)
+    provider = SequencedSearchProvider(
+        {
+            question: [
+                SearchResponse(
+                    results=[
+                        SearchResult(
+                            title="Python packaging user guide",
+                            url="https://packaging.python.org/en/latest/",
+                            snippet="Official guide to Python packaging tools.",
+                        )
+                    ]
+                )
+            ],
+            f"{question} official sources": [SearchResponse(results=[])],
+        }
+    )
+    source_fetcher = FakeSourceFetcher(
+        {
+            "https://packaging.python.org/en/latest/": (
+                "The Python Packaging User Guide explains pip, build backends, "
+                "publishing workflows, and modern project metadata."
+            )
+        }
+    )
+
+    events = list(
+        run_graph_events(
+            request,
+            search_provider=provider,
+            source_fetcher=source_fetcher,
+        )
+    )
+
+    artifact_event = next(event for event in events if event.type == "artifact.created")
+    report = Path(artifact_event.payload["path"]).read_text(encoding="utf-8")
+
+    assert "[S1]" in report
+    assert "## References" in report
+    assert "S1" in report
+    assert "https://packaging.python.org/en/latest/" in report
+
+
+def test_research_quality_check_flags_missing_evidence_citations(tmp_path: Path) -> None:
+    question = "Compare current Python packaging tools"
+    request = build_research_flow_request(tmp_path, question)
+    evidence = evidence_from_search_results(
+        question,
+        [
+            {
+                "title": "Python packaging user guide",
+                "url": "https://packaging.python.org/en/latest/",
+                "snippet": "Official guide to Python packaging tools.",
+                "accepted": True,
+            }
+        ],
+    )
+    output = ResearchFlowExecutor(request).run(
+        "research-report-quality-check",
+        {
+            "research-report-synthesis": NodeOutput(
+                values={
+                    "markdown": "# Research Report\n\nNo citations here.",
+                    "summary": "No citations here.",
+                    "acceptedSources": [
+                        {
+                            "title": "Python packaging user guide",
+                            "url": "https://packaging.python.org/en/latest/",
+                            "snippet": "Official guide to Python packaging tools.",
+                            "accepted": True,
+                            "sourceContent": "Readable content.",
+                        }
+                    ],
+                    "rejectedSources": [],
+                    "evidenceSet": evidence.model_dump(),
+                }
+            )
+        },
+    )
+
+    assert output.values["qualityStatus"] == "needs_review"
+    assert "missing_citations" in output.values["qualityIssues"]
 
 
 def test_research_search_retries_failed_query_without_repeating_success(
@@ -1762,8 +1850,8 @@ def test_research_report_binds_each_key_finding_to_source_reference(
 
     artifact_event = next(event for event in events if event.type == "artifact.created")
     content = Path(artifact_event.payload["path"]).read_text(encoding="utf-8")
-    assert "- [1] Python packaging docs:" in content
-    assert "- [1] Python packaging docs - https://docs.python.org/3/" in content
+    assert "- [S1] Python packaging docs:" in content
+    assert "- S1 Python packaging docs - https://docs.python.org/3/" in content
 
 
 def test_generated_markdown_conversion_graph_exports_converted_artifact(

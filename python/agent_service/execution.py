@@ -34,8 +34,11 @@ from agent_service.privacy import sanitize_for_web_search
 from agent_service.replan import FailureReplanner
 from agent_service.react_controller import ReActController, ReActPolicy
 from agent_service.research_evidence import (
+    ResearchEvidenceSet,
     attach_read_content,
     evidence_from_search_results,
+    normalize_source_url,
+    validate_citation_coverage,
 )
 from agent_service.result_verifier import ResultVerifier
 from agent_service.run_journal import RunJournal
@@ -952,6 +955,9 @@ class ResearchFlowExecutor:
             rejected_sources = list(_input_value(inputs, "rejectedSources") or [])
             failed_source_reads = list(_input_value(inputs, "failedSourceReads") or [])
             read_source_count = int(_input_value(inputs, "readSourceCount") or 0)
+            evidence_set = _research_evidence_from_value(
+                _input_value(inputs, "evidenceSet")
+            )
             summary = self._summary(accepted_sources)
             markdown = _synthesize_research_markdown(
                 self._question(),
@@ -959,6 +965,7 @@ class ResearchFlowExecutor:
                 accepted_sources,
                 rejected_sources,
                 self._section_order(),
+                evidence_set=evidence_set,
             )
             return NodeOutput(
                 values={
@@ -966,7 +973,7 @@ class ResearchFlowExecutor:
                     "summary": summary,
                     "acceptedSources": accepted_sources,
                     "rejectedSources": rejected_sources,
-                    "evidenceSet": _input_value(inputs, "evidenceSet") or {},
+                    "evidenceSet": evidence_set.model_dump() if evidence_set else {},
                     "readSourceCount": read_source_count,
                     "failedSourceReads": failed_source_reads,
                     "sectionOrder": self._section_order(),
@@ -978,14 +985,24 @@ class ResearchFlowExecutor:
             accepted_sources = list(_input_value(inputs, "acceptedSources") or [])
             rejected_sources = list(_input_value(inputs, "rejectedSources") or [])
             failed_source_reads = list(_input_value(inputs, "failedSourceReads") or [])
-            issues = _research_quality_issues(markdown, accepted_sources)
+            evidence_set = _research_evidence_from_value(
+                _input_value(inputs, "evidenceSet")
+            )
+            quality_sources = _sources_with_evidence_refs(
+                accepted_sources,
+                evidence_set,
+            )
+            issues = _research_quality_issues(markdown, quality_sources)
+            if evidence_set is not None:
+                issues.extend(validate_citation_coverage(markdown, evidence_set))
+            issues = _dedupe_issue_codes(issues)
             return NodeOutput(
                 values={
                     "markdown": markdown,
                     "summary": _input_value(inputs, "summary") or "",
                     "acceptedSources": accepted_sources,
                     "rejectedSources": rejected_sources,
-                    "evidenceSet": _input_value(inputs, "evidenceSet") or {},
+                    "evidenceSet": evidence_set.model_dump() if evidence_set else {},
                     "readSourceCount": _input_value(inputs, "readSourceCount") or 0,
                     "failedSourceReads": failed_source_reads,
                     "qualityStatus": "passed" if not issues else "needs_review",
@@ -2333,17 +2350,20 @@ def _synthesize_research_markdown(
     accepted_sources: list[dict[str, Any]],
     rejected_sources: list[dict[str, Any]],
     section_order: list[str],
+    *,
+    evidence_set: ResearchEvidenceSet | None = None,
 ) -> str:
+    cited_sources = _sources_with_evidence_refs(accepted_sources, evidence_set)
     section_renderers = {
         "summary": lambda: f"## Summary\n\n{summary}\n",
-        "key_findings": lambda: _key_findings_section(accepted_sources),
-        "project_summaries": lambda: _project_summaries_section(accepted_sources),
-        "source_review": lambda: _source_review_section(accepted_sources, rejected_sources),
+        "key_findings": lambda: _key_findings_section(cited_sources),
+        "project_summaries": lambda: _project_summaries_section(cited_sources),
+        "source_review": lambda: _source_review_section(cited_sources, rejected_sources),
         "open_questions": lambda: (
             "## Open Questions\n\n"
             "- Validate whether newer source material appeared after this run.\n"
         ),
-        "references": lambda: _references_section(accepted_sources),
+        "references": lambda: _references_section(cited_sources),
     }
     sections = [
         f"# Research Report\n\nQuestion: {question.strip()}\n",
@@ -2361,7 +2381,7 @@ def _key_findings_section(accepted_sources: list[dict[str, Any]]) -> str:
         lines.append("- No accepted sources were available for synthesis.")
     else:
         for source in accepted_sources:
-            ref = source.get("ref") or "[-]"
+            ref = _source_citation_ref(source)
             lines.append(
                 f"- {ref} {source['title']}: {source.get('snippet') or 'No snippet available.'}"
             )
@@ -2374,7 +2394,7 @@ def _project_summaries_section(accepted_sources: list[dict[str, Any]]) -> str:
         lines.append("- No accepted source content was available for project summaries.")
     else:
         for source in accepted_sources:
-            ref = source.get("ref") or "[-]"
+            ref = _source_citation_ref(source)
             excerpt = _source_excerpt(source)
             lines.append(f"- {ref} {source['title']}: {excerpt}")
     return "\n".join(lines) + "\n"
@@ -2388,7 +2408,7 @@ def _source_review_section(
     lines.append(f"- Accepted sources: {len(accepted_sources)}")
     lines.append(f"- Rejected sources: {len(rejected_sources)}")
     for source in accepted_sources:
-        ref = source.get("ref") or "[-]"
+        ref = _source_citation_ref(source)
         lines.append(f"- Accepted {ref} {source['title']}: {source.get('sourceType')}")
     for source in rejected_sources:
         ref = source.get("ref") or "[-]"
@@ -2404,9 +2424,39 @@ def _references_section(accepted_sources: list[dict[str, Any]]) -> str:
         lines.append("- No accepted references.")
     else:
         for source in accepted_sources:
-            ref = source.get("ref") or "-"
+            ref = str(source.get("citationId") or source.get("ref") or "-")
             lines.append(f"- {ref} {source['title']} - {source['url']}")
     return "\n".join(lines) + "\n"
+
+
+def _sources_with_evidence_refs(
+    accepted_sources: list[dict[str, Any]],
+    evidence_set: ResearchEvidenceSet | None,
+) -> list[dict[str, Any]]:
+    if evidence_set is None:
+        return [dict(source) for source in accepted_sources]
+
+    evidence_by_url = {
+        normalize_source_url(source.url): source
+        for source in evidence_set.accepted_sources
+    }
+    cited_sources: list[dict[str, Any]] = []
+    for source in accepted_sources:
+        enriched = dict(source)
+        evidence_source = evidence_by_url.get(
+            normalize_source_url(str(source.get("url") or ""))
+        )
+        if evidence_source is not None:
+            enriched["citationId"] = evidence_source.source_id
+            enriched["citationRef"] = f"[{evidence_source.source_id}]"
+            if not str(enriched.get("sourceContent") or "").strip():
+                enriched["sourceContent"] = evidence_source.content_excerpt
+        cited_sources.append(enriched)
+    return cited_sources
+
+
+def _source_citation_ref(source: dict[str, Any]) -> str:
+    return str(source.get("citationRef") or source.get("ref") or "[-]")
 
 
 def _source_excerpt(source: dict[str, Any]) -> str:
@@ -2470,9 +2520,10 @@ def _research_quality_issues(
         issues.append("missing_references_section")
 
     missing_refs = [
-        str(source.get("ref"))
+        _source_citation_ref(source)
         for source in accepted_sources
-        if source.get("ref") and str(source.get("ref")) not in markdown
+        if _source_citation_ref(source) != "[-]"
+        and _source_citation_ref(source) not in markdown
     ]
     if missing_refs:
         issues.append("missing_source_references:" + ",".join(missing_refs))
@@ -2483,6 +2534,25 @@ def _research_quality_issues(
     ):
         issues.append("no_read_source_content")
     return issues
+
+
+def _research_evidence_from_value(value: Any) -> ResearchEvidenceSet | None:
+    if not value:
+        return None
+    if isinstance(value, ResearchEvidenceSet):
+        return value
+    return ResearchEvidenceSet.model_validate(value)
+
+
+def _dedupe_issue_codes(issues: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for issue in issues:
+        if issue in seen:
+            continue
+        deduped.append(issue)
+        seen.add(issue)
+    return deduped
 
 
 def _now_iso() -> str:
