@@ -981,6 +981,9 @@ def run_graph_events(
     try:
         ordered_nodes = _topological_nodes(request)
         execution_graph = compile_execution_graph(request)
+        # Binding validation belongs to the internal planned-task executor path.
+        # Injected executors and document/research flows keep their existing
+        # runtime binding semantics.
         if (
             executor is None
             and _is_planned_task_graph(request)
