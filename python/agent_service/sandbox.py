@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -62,6 +63,7 @@ def run_sandboxed_python(request: SandboxRequest) -> SandboxResult:
 
     try:
         _reject_forbidden_imports(request.script, request.network_allowed)
+        _validate_argument_paths(request.arguments, request.allowed_roots)
     except SandboxViolation as error:
         return SandboxResult(ok=False, error_code=error.code, stderr=str(error))
 
@@ -162,6 +164,25 @@ def _reject_module_name(name: str) -> None:
                 "network_import_denied",
                 f"import is not allowed in sandbox: {name}",
             )
+
+
+def _validate_argument_paths(value: Any, allowed_roots: list[str]) -> None:
+    if isinstance(value, str) and _looks_like_path(value):
+        validate_sandbox_path(value, allowed_roots)
+    elif isinstance(value, list):
+        for item in value:
+            _validate_argument_paths(item, allowed_roots)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _validate_argument_paths(item, allowed_roots)
+
+
+def _looks_like_path(value: str) -> bool:
+    return (
+        Path(value).is_absolute()
+        or value.startswith("\\\\")
+        or re.match(r"^[a-zA-Z]:[\\/]", value) is not None
+    )
 
 
 def _artifact_paths_inside_dir(

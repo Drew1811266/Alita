@@ -65,3 +65,43 @@ def test_sandbox_rejects_artifact_outside_artifact_dir(tmp_path: Path) -> None:
 
     assert result.ok is False
     assert result.error_code == "artifact_path_not_allowed"
+
+
+def test_sandbox_times_out_long_running_script(tmp_path: Path) -> None:
+    result = run_sandboxed_python(
+        SandboxRequest(
+            script="import time\ntime.sleep(2)\nprint('{}')\n",
+            project_path=str(tmp_path / "project.alita"),
+            allowed_roots=[str(tmp_path)],
+            artifact_dir=str(tmp_path / "artifacts"),
+            timeout_seconds=0.1,
+        )
+    )
+
+    assert result.ok is False
+    assert result.error_code == "timeout"
+
+
+def test_sandbox_rejects_project_path_escape_argument(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+
+    result = run_sandboxed_python(
+        SandboxRequest(
+            script=(
+                "import json, sys\n"
+                "payload=json.load(sys.stdin)\n"
+                "open(payload['path']).read()\n"
+                "print(json.dumps({'values': {'ok': True}}))\n"
+            ),
+            arguments={"path": str(outside)},
+            project_path=str(project / "project.alita"),
+            allowed_roots=[str(project)],
+            artifact_dir=str(tmp_path / "artifacts"),
+        )
+    )
+
+    assert result.ok is False
+    assert result.error_code == "path_not_allowed"
