@@ -50,7 +50,7 @@ export function reduceGraphRunControllerEvents(
     {
       messages: state.messages,
       graph: state.graph,
-      dirty: false,
+      dirty: state.dirty,
       pendingResearchChoice: state.pendingResearchChoice,
       pendingGraphOverwriteChoice: state.pendingGraphOverwriteChoice,
       activeRunId: state.activeRunId,
@@ -71,7 +71,7 @@ export function reduceGraphRunControllerEvents(
     pendingResearchChoice: reduced.pendingResearchChoice ?? null,
     pendingGraphOverwriteChoice: reduced.pendingGraphOverwriteChoice ?? null,
     activeRunId: reduced.activeRunId ?? null,
-    dirty: reduced.dirty,
+    dirty: state.dirty || reduced.dirty,
   };
 }
 

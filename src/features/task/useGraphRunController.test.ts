@@ -27,4 +27,13 @@ describe("useGraphRunController state reducer", () => {
     expect(next.graph?.graphId).toBe("g1");
     expect(next.pendingResearchChoice).toBeNull();
   });
+
+  it("preserves existing dirty state when no backend event changes it", () => {
+    const next = reduceGraphRunControllerEvents(
+      { ...createGraphRunControllerState(), dirty: true },
+      [],
+    );
+
+    expect(next.dirty).toBe(true);
+  });
 });
