@@ -47,7 +47,6 @@ import {
   deleteApiProviderConfig,
   deleteMcpToolProviderConfig,
   fetchApiProviderModels,
-  getPreferences,
   importModelFile,
   pickModelDirectory,
   pickModelFile,
@@ -71,6 +70,7 @@ import {
   type SaveMcpToolProviderPayload,
 } from "../features/preferences/preferencesApi";
 import { PreferencesDialog } from "../features/preferences/PreferencesDialog";
+import { usePreferencesController } from "../features/preferences/usePreferencesController";
 import {
   createProject,
   openProject,
@@ -271,10 +271,17 @@ export function App() {
     loading: artifactPreviewLoading,
     error: artifactPreviewError,
   } = artifactPreviewController.state;
-  const [preferencesView, setPreferencesView] =
-    useState<PreferencesView | null>(null);
-  const [preferencesLoading, setPreferencesLoading] = useState(false);
-  const [preferencesError, setPreferencesError] = useState<string | null>(null);
+  const preferencesController = usePreferencesController();
+  const {
+    preferences: preferencesView,
+    loading: preferencesLoading,
+    error: preferencesError,
+  } = preferencesController.state;
+  const {
+    reloadPreferences,
+    setPreferences,
+    setPreferencesError,
+  } = preferencesController;
   const [recentProjects, setRecentProjects] = useState<string[]>([]);
 
   const stopRecordingStream = () => {
@@ -295,10 +302,10 @@ export function App() {
   };
 
   useEffect(() => {
-    getPreferences()
+    reloadPreferences()
       .then((view) => setRecentProjects(view.preferences.recentProjects))
       .catch(() => setRecentProjects([]));
-  }, []);
+  }, [reloadPreferences]);
 
   useEffect(() => {
     let cancelled = false;
@@ -600,8 +607,7 @@ export function App() {
     let view = preferencesView;
     if (!view) {
       try {
-        view = await getPreferences();
-        setPreferencesView(view);
+        view = await reloadPreferences();
         setRecentProjects(view.preferences.recentProjects);
       } catch {
         return [];
@@ -1047,16 +1053,11 @@ export function App() {
 
   const handleOpenPreferences = async () => {
     setPreferencesOpen(true);
-    setPreferencesLoading(true);
-    setPreferencesError(null);
     try {
-      const view = await getPreferences();
-      setPreferencesView(view);
+      const view = await reloadPreferences();
       setRecentProjects(view.preferences.recentProjects);
     } catch (error) {
-      setPreferencesError(String(error));
-    } finally {
-      setPreferencesLoading(false);
+      void error;
     }
   };
 
@@ -1071,7 +1072,7 @@ export function App() {
       preferencesView,
       view,
     );
-    setPreferencesView(view);
+    setPreferences(view);
     setRecentProjects(view.preferences.recentProjects);
     if (shouldRefreshAsr) {
       void refreshVoiceInputAvailability();
@@ -1084,7 +1085,7 @@ export function App() {
       return;
     }
     try {
-      setPreferencesView(await addModelFile(path));
+      setPreferences(await addModelFile(path));
     } catch (error) {
       setPreferencesError(String(error));
     }
@@ -1110,7 +1111,7 @@ export function App() {
     }
     try {
       setPreferencesError(null);
-      setPreferencesView(await importModelFile(path));
+      setPreferences(await importModelFile(path));
     } catch (error) {
       setPreferencesError(String(error));
     }
@@ -1122,7 +1123,7 @@ export function App() {
       return;
     }
     try {
-      setPreferencesView(await scanModelDirectory(path));
+      setPreferences(await scanModelDirectory(path));
     } catch (error) {
       setPreferencesError(String(error));
     }
@@ -1135,7 +1136,7 @@ export function App() {
     }
     try {
       setPreferencesError(null);
-      setPreferencesView(await setModelStorageDirectory(path));
+      setPreferences(await setModelStorageDirectory(path));
     } catch (error) {
       setPreferencesError(String(error));
     }
@@ -1144,7 +1145,7 @@ export function App() {
   const handleSetDefaultModel = async (modelId: string) => {
     try {
       setPreferencesError(null);
-      setPreferencesView(await setDefaultModel(modelId));
+      setPreferences(await setDefaultModel(modelId));
     } catch (error) {
       setPreferencesError(String(error));
     }
@@ -1257,7 +1258,7 @@ export function App() {
 
   const handleSetToolEnabled = async (toolId: string, enabled: boolean) => {
     try {
-      setPreferencesView(await setToolEnabled(toolId, enabled));
+      setPreferences(await setToolEnabled(toolId, enabled));
     } catch (error) {
       setPreferencesError(String(error));
     }
