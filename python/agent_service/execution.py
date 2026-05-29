@@ -15,7 +15,11 @@ from uuid import uuid4
 
 from agent_service.agent_run_state import AgentRunState
 from agent_service.final_verifier import FinalVerifier
-from agent_service.execution_graph import ExecutionGraph, compile_execution_graph
+from agent_service.execution_graph import (
+    ExecutionGraph,
+    compile_execution_graph,
+    validate_execution_graph_bindings,
+)
 from agent_service.goal_spec import GoalSpec
 from agent_service.harness_errors import HarnessError, harness_error_payload
 from agent_service.model_client import (
@@ -976,6 +980,13 @@ def run_graph_events(
     replanner = failure_replanner or FailureReplanner()
     try:
         ordered_nodes = _topological_nodes(request)
+        execution_graph = compile_execution_graph(request)
+        if (
+            executor is None
+            and _is_planned_task_graph(request)
+            and not _is_research_graph(request)
+        ):
+            validate_execution_graph_bindings(execution_graph)
         effective_tool_registry = tool_registry or _default_tool_registry()
         effective_tool_gateway = tool_gateway or _default_tool_gateway(
             tool_executor=tool_executor,
@@ -1026,6 +1037,7 @@ def run_graph_events(
             tool_gateway=effective_tool_gateway,
             tool_executor=tool_executor,
             tool_registry=effective_tool_registry,
+            execution_graph=execution_graph,
         )
     else:
         node_executor = DocumentFlowExecutor(
@@ -1840,7 +1852,9 @@ def _is_research_graph(request: RunGraphRequest) -> bool:
 
 
 def _is_planned_task_graph(request: RunGraphRequest) -> bool:
-    if request.graph.metadata.get("taskKind"):
+    if request.graph.metadata.get("taskKind") or request.graph.metadata.get(
+        "plannerChain"
+    ):
         return True
     return any(node.nodeType == "planning" for node in request.graph.nodes)
 

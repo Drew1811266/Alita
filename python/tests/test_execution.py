@@ -1064,6 +1064,36 @@ def test_planned_executor_uses_execution_graph_tool_binding(tmp_path: Path) -> N
     assert "requires at least one attachment" in error.value.message
 
 
+def test_missing_fixed_tool_binding_fails_before_run_started(tmp_path: Path) -> None:
+    request = RunGraphRequest(
+        task_id="task-missing-binding",
+        run_id="run-missing-binding",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[],
+        graph=RunGraph(
+            graphId="missing-binding-graph",
+            nodes=[
+                build_node("missing-tool", "fixed_tool", []),
+                build_node("task-output", "output", ["missing-tool"]),
+            ],
+            edges=[
+                {
+                    "id": "missing-tool-task-output",
+                    "source": "missing-tool",
+                    "target": "task-output",
+                }
+            ],
+            metadata={"plannerChain": {"strategy": "legacy_task_planner"}},
+        ),
+    )
+
+    events = list(run_graph_events(request))
+
+    assert [event.type for event in events] == ["task.failed"]
+    assert events[0].payload["errorCode"] == "unsupported_binding"
+    assert "missing-tool" in events[0].payload["error"]
+
+
 def test_runs_nodes_after_all_dependencies_complete(tmp_path: Path) -> None:
     request = build_request(
         tmp_path,
