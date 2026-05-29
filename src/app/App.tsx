@@ -9,13 +9,13 @@ import {
   openArtifact,
   readArtifactText,
   revealArtifact,
-  type ArtifactTextPreview,
 } from "../features/artifacts/artifactApi";
 import { resolvePreviewArtifactForNode } from "../features/artifacts/artifactPreview";
 import {
   detectArtifactPreviewKind,
   shouldReadArtifactText,
 } from "../features/artifacts/artifactPreviewKind";
+import { useArtifactPreviewController } from "../features/artifacts/useArtifactPreviewController";
 import { pickChatAttachments } from "../features/chat/attachmentApi";
 import { ChatPanel } from "../features/chat/ChatPanel";
 import {
@@ -258,12 +258,19 @@ export function App() {
   const [selectedCanvasNodeId, setSelectedCanvasNodeId] = useState<
     string | null
   >(null);
-  const [artifactPreview, setArtifactPreview] =
-    useState<ArtifactTextPreview | null>(null);
-  const [artifactPreviewLoading, setArtifactPreviewLoading] = useState(false);
-  const [artifactPreviewError, setArtifactPreviewError] = useState<
-    string | null
-  >(null);
+  const artifactPreviewController = useArtifactPreviewController();
+  const {
+    clearPreview,
+    setArtifactPreview,
+    setPreviewError,
+    setPreviewLoading,
+    startPreviewLoad,
+  } = artifactPreviewController;
+  const {
+    artifactPreview,
+    loading: artifactPreviewLoading,
+    error: artifactPreviewError,
+  } = artifactPreviewController.state;
   const [preferencesView, setPreferencesView] =
     useState<PreferencesView | null>(null);
   const [preferencesLoading, setPreferencesLoading] = useState(false);
@@ -364,17 +371,13 @@ export function App() {
     let cancelled = false;
 
     if (!selectedPreviewPath || !shouldReadArtifactText(selectedPreviewKind)) {
-      setArtifactPreview(null);
-      setArtifactPreviewError(null);
-      setArtifactPreviewLoading(false);
+      clearPreview();
       return () => {
         cancelled = true;
       };
     }
 
-    setArtifactPreview(null);
-    setArtifactPreviewError(null);
-    setArtifactPreviewLoading(true);
+    startPreviewLoad();
     readArtifactText(selectedPreviewPath)
       .then((preview) => {
         if (!cancelled) {
@@ -383,19 +386,27 @@ export function App() {
       })
       .catch((error) => {
         if (!cancelled) {
-          setArtifactPreviewError(String(error));
+          setPreviewError(String(error));
         }
       })
       .finally(() => {
         if (!cancelled) {
-          setArtifactPreviewLoading(false);
+          setPreviewLoading(false);
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [selectedPreviewKind, selectedPreviewPath]);
+  }, [
+    clearPreview,
+    selectedPreviewKind,
+    selectedPreviewPath,
+    setArtifactPreview,
+    setPreviewError,
+    setPreviewLoading,
+    startPreviewLoad,
+  ]);
 
   const applyProjectOpenResult = (result: ProjectOpenResult) => {
     const projectMessages =
