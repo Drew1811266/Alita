@@ -1094,6 +1094,29 @@ def test_missing_fixed_tool_binding_fails_before_run_started(tmp_path: Path) -> 
     assert "missing-tool" in events[0].payload["error"]
 
 
+def test_execution_graph_does_not_change_run_event_shape(tmp_path: Path) -> None:
+    graph_event = run_agent(
+        UserMessage(
+            task_id="execution-graph-event-shape",
+            content="Create a Python script that counts rows in a CSV file.",
+        )
+    )[0]
+    graph = graph_event.payload["graph"]
+    request = RunGraphRequest(
+        task_id="execution-graph-event-shape",
+        run_id="execution-graph-run",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[],
+        graph=RunGraph.model_validate(graph),
+    )
+
+    events = list(run_graph_events(request))
+
+    assert events[0].type == "run.started"
+    assert set(events[0].payload.keys()) == {"runId", "taskId", "startedAt"}
+    assert all("executionGraph" not in event.payload for event in events)
+
+
 def test_runs_nodes_after_all_dependencies_complete(tmp_path: Path) -> None:
     request = build_request(
         tmp_path,
