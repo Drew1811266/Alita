@@ -4,14 +4,18 @@ import tempfile
 from pathlib import Path
 from time import sleep
 
+import pytest
+
 from agent_service.agent_run_state import AgentRunState
 from agent_service.intent import classify_route
 from agent_service.execution import (
     DocumentFlowExecutor,
     NodeOutput,
+    PlannedTaskExecutor,
     _runtime_notice_for_node,
     run_graph_events,
 )
+from agent_service.execution_graph import compile_execution_graph
 from agent_service.graph import run_agent
 from agent_service.harness_errors import HarnessError
 from agent_service.model_client import ChatMessage
@@ -20,6 +24,7 @@ from agent_service.run_journal import RunJournal
 from agent_service.run_registry import RunRegistry
 from agent_service.schemas import (
     Attachment,
+    RunGraph,
     RunGraphRequest,
     ScriptReviewState,
     UserMessage,
@@ -1022,6 +1027,41 @@ def test_graph_tool_validation_uses_injected_tool_registry_catalog(
         "node.run_recorded",
         "task.completed",
     ]
+
+
+def test_planned_executor_uses_execution_graph_tool_binding(tmp_path: Path) -> None:
+    request = RunGraphRequest(
+        task_id="task-binding-runtime",
+        run_id="run-binding-runtime",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[],
+        graph=RunGraph(
+            graphId="binding-graph",
+            nodes=[
+                build_node(
+                    "tool-node",
+                    "fixed_tool",
+                    [],
+                    tool_ref="internal:document.markitdown_convert",
+                )
+            ],
+            edges=[],
+            metadata={"plannerChain": {"strategy": "legacy_task_planner"}},
+        ),
+    )
+    execution_graph = compile_execution_graph(request)
+    request.graph.nodes[0].toolRef = "internal:missing.after.compile"
+    executor = PlannedTaskExecutor(
+        request,
+        tool_gateway=RecordingGateway(),
+        execution_graph=execution_graph,
+    )
+
+    with pytest.raises(HarnessError) as error:
+        executor.run("tool-node", {})
+
+    assert error.value.code == "missing_input"
+    assert "requires at least one attachment" in error.value.message
 
 
 def test_runs_nodes_after_all_dependencies_complete(tmp_path: Path) -> None:

@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from agent_service.agent_run_state import AgentRunState
 from agent_service.final_verifier import FinalVerifier
+from agent_service.execution_graph import ExecutionGraph, compile_execution_graph
 from agent_service.goal_spec import GoalSpec
 from agent_service.harness_errors import HarnessError, harness_error_payload
 from agent_service.model_client import (
@@ -359,10 +360,12 @@ class PlannedTaskExecutor:
         tool_gateway: UnifiedToolGateway | None = None,
         tool_executor: ToolExecutor | None = None,
         tool_registry: ToolRegistry | None = None,
+        execution_graph: ExecutionGraph | None = None,
     ) -> None:
         self.request = request
         self.run_state = run_state or AgentRunState.from_run_graph_request(request)
         self.nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
+        self.execution_graph = execution_graph or compile_execution_graph(request)
         self.model_client = model_client or LlamaCppModelClient()
         self.tool_registry = tool_registry or _default_tool_registry()
         self.tool_gateway = tool_gateway or _default_tool_gateway(
@@ -417,7 +420,13 @@ class PlannedTaskExecutor:
         node: GraphNode,
         inputs: dict[str, NodeOutput],
     ) -> NodeOutput:
-        tool_id = provider_tool_id(node.toolRef or "")
+        execution_node = self.execution_graph.node_by_id(node.nodeId)
+        if execution_node.tool_binding is None:
+            raise HarnessError(
+                "unsupported_binding",
+                f"fixed_tool node {node.nodeId} has no tool binding",
+            )
+        tool_id = execution_node.tool_binding.tool_id
 
         if tool_id == "document.receive_attachment":
             if not self.request.attachments:
@@ -528,10 +537,20 @@ class PlannedTaskExecutor:
             )
 
         if node.nodeType == "model":
-            if node.modelRef not in SUPPORTED_PLANNED_MODEL_REFS:
+            execution_node = self.execution_graph.node_by_id(node_id)
+            model_binding = execution_node.model_binding
+            if (
+                model_binding is None
+                or model_binding.model_ref not in SUPPORTED_PLANNED_MODEL_REFS
+            ):
+                runtime_ref = (
+                    model_binding.model_ref
+                    if model_binding is not None
+                    else "<missing>"
+                )
                 raise HarnessError(
                     "unsupported_runtime",
-                    f"model node {node_id} has no bound runtime: {node.modelRef or '<missing>'}",
+                    f"model node {node_id} has no bound runtime: {runtime_ref}",
                 )
             content = self.model_client.chat(
                 [
