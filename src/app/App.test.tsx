@@ -66,6 +66,16 @@ describe("App", () => {
     expect(markup).toContain("最近工程");
     expect(markup).not.toContain("消息内容");
   });
+
+  it("composes extracted feature controllers in the workbench shell", () => {
+    expect(appSource).toContain("useGraphRunController({");
+    expect(appSource).toContain("useArtifactPreviewController()");
+    expect(appSource).toContain("usePreferencesController()");
+    expect(appSource).toContain("useVoiceInputController({");
+    expect(appSource).not.toContain("const [voiceInput, setVoiceInput]");
+    expect(appSource).not.toContain("const [messages, setMessages]");
+  });
+
   it("refreshes ASR status when the speech-to-text assignment changes", () => {
     const withoutSpeechModel = preferencesViewWithSpeechModel(null);
     const withSpeechModel = preferencesViewWithSpeechModel("asr-1");

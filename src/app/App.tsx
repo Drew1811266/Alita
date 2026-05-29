@@ -75,7 +75,10 @@ import {
   type TemporaryScriptPermissionDecision,
   type TemporaryScriptPermissionPayload,
 } from "../features/task/useTaskEvents";
-import { reduceGraphRunControllerEvents } from "../features/task/useGraphRunController";
+import {
+  reduceGraphRunControllerEvents,
+  useGraphRunController,
+} from "../features/task/useGraphRunController";
 import { WorkbenchTopBar } from "../features/workbench/WorkbenchTopBar";
 import {
   toGraphOverwriteSubmitChoice,
@@ -132,6 +135,12 @@ function createMessage(
   };
 }
 
+function resolveLocalStateAction<T>(action: LocalStateAction<T>, current: T): T {
+  return typeof action === "function"
+    ? (action as (current: T) => T)(current)
+    : action;
+}
+
 export const createAgentSession = async (): Promise<string | null> => {
   try {
     return await prepareAgentModelSession();
@@ -150,6 +159,8 @@ type SubmitUserMessageWithStreamFallbackArgs = {
   submitFallback: (payload: SubmitMessagePayload) => Promise<BackendEvent[]>;
   onEvent: (event: BackendEvent) => void;
 };
+
+type LocalStateAction<T> = T | ((current: T) => T);
 
 async function submitUserMessageWithStreamFallback({
   payload,
@@ -191,7 +202,20 @@ export function App() {
   const [activeProject, setActiveProject] = useState<AlitaProject | null>(
     null,
   );
-  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  const graphRunController = useGraphRunController({
+    messages: initialMessages,
+  });
+  const {
+    messages,
+    graph,
+    runHistory,
+    artifacts,
+    pendingResearchChoice,
+    pendingGraphOverwriteChoice,
+    activeRunId,
+    dirty,
+  } = graphRunController.state;
+  const setGraphRunState = graphRunController.setState;
   const messagesRef = useRef<ChatMessage[]>(initialMessages);
   const [draft, setDraft] = useState("");
   const handleVoiceTranscript = useCallback(
@@ -221,33 +245,21 @@ export function App() {
   const [contextAttachments, setContextAttachments] = useState<
     ChatAttachment[]
   >([]);
-  const [graph, setGraph] = useState<NodeGraph | null>(null);
   const graphRef = useRef<NodeGraph | null>(null);
   const [projectWarnings, setProjectWarnings] = useState<ProjectOpenWarning[]>(
     [],
   );
   const [projectError, setProjectError] = useState<string | null>(null);
-  const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [graphRunning, setGraphRunning] = useState(false);
   const [graphCancelling, setGraphCancelling] = useState(false);
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
-  const [runHistory, setRunHistory] = useState<RunHistoryEntry[]>([]);
   const runHistoryRef = useRef<RunHistoryEntry[]>([]);
-  const [artifacts, setArtifacts] = useState<ArtifactRef[]>([]);
   const artifactsRef = useRef<ArtifactRef[]>([]);
-  const [pendingResearchChoice, setPendingResearchChoice] =
-    useState<PendingResearchChoice | null>(null);
   const pendingResearchChoiceRef = useRef<PendingResearchChoice | null>(null);
-  const [pendingGraphOverwriteChoice, setPendingGraphOverwriteChoice] =
-    useState<PendingGraphOverwriteChoice | null>(null);
   const pendingGraphOverwriteChoiceRef =
     useRef<PendingGraphOverwriteChoice | null>(null);
-  const [selectedCanvasNodeId, setSelectedCanvasNodeId] = useState<
-    string | null
-  >(null);
   const artifactPreviewController = useArtifactPreviewController();
   const {
     clearPreview,
@@ -273,6 +285,116 @@ export function App() {
     setPreferencesError,
   } = preferencesController;
   const [recentProjects, setRecentProjects] = useState<string[]>([]);
+
+  const setMessages = useCallback(
+    (action: LocalStateAction<ChatMessage[]>) => {
+      setGraphRunState((current) => {
+        const messages = resolveLocalStateAction(action, current.messages);
+        messagesRef.current = messages;
+        return { ...current, messages };
+      });
+    },
+    [setGraphRunState],
+  );
+
+  const setGraph = useCallback(
+    (action: LocalStateAction<NodeGraph | null>) => {
+      setGraphRunState((current) => {
+        const graph = resolveLocalStateAction(action, current.graph);
+        graphRef.current = graph;
+        return { ...current, graph };
+      });
+    },
+    [setGraphRunState],
+  );
+
+  const setRunHistory = useCallback(
+    (action: LocalStateAction<RunHistoryEntry[]>) => {
+      setGraphRunState((current) => {
+        const runHistory = resolveLocalStateAction(action, current.runHistory);
+        runHistoryRef.current = runHistory;
+        return { ...current, runHistory };
+      });
+    },
+    [setGraphRunState],
+  );
+
+  const setArtifacts = useCallback(
+    (action: LocalStateAction<ArtifactRef[]>) => {
+      setGraphRunState((current) => {
+        const artifacts = resolveLocalStateAction(action, current.artifacts);
+        artifactsRef.current = artifacts;
+        return { ...current, artifacts };
+      });
+    },
+    [setGraphRunState],
+  );
+
+  const setPendingResearchChoice = useCallback(
+    (action: LocalStateAction<PendingResearchChoice | null>) => {
+      setGraphRunState((current) => {
+        const pendingResearchChoice = resolveLocalStateAction(
+          action,
+          current.pendingResearchChoice,
+        );
+        pendingResearchChoiceRef.current = pendingResearchChoice;
+        return { ...current, pendingResearchChoice };
+      });
+    },
+    [setGraphRunState],
+  );
+
+  const setPendingGraphOverwriteChoice = useCallback(
+    (action: LocalStateAction<PendingGraphOverwriteChoice | null>) => {
+      setGraphRunState((current) => {
+        const pendingGraphOverwriteChoice = resolveLocalStateAction(
+          action,
+          current.pendingGraphOverwriteChoice,
+        );
+        pendingGraphOverwriteChoiceRef.current = pendingGraphOverwriteChoice;
+        return { ...current, pendingGraphOverwriteChoice };
+      });
+    },
+    [setGraphRunState],
+  );
+
+  const setActiveRunId = useCallback(
+    (action: LocalStateAction<string | null>) => {
+      setGraphRunState((current) => {
+        const activeRunId = resolveLocalStateAction(
+          action,
+          current.activeRunId,
+        );
+        activeRunIdRef.current = activeRunId;
+        return { ...current, activeRunId };
+      });
+    },
+    [setGraphRunState],
+  );
+
+  const setDirty = useCallback(
+    (action: LocalStateAction<boolean>) => {
+      setGraphRunState((current) => ({
+        ...current,
+        dirty: resolveLocalStateAction(action, current.dirty),
+      }));
+    },
+    [setGraphRunState],
+  );
+
+  const setSelectedCanvasNode = useCallback(
+    (node: AgentNode | null) => {
+      setGraphRunState((current) => ({
+        ...current,
+        selectedCanvasNode: node
+          ? current.graph?.nodes.find(
+              (candidate) => candidate.nodeId === node.nodeId,
+            ) ?? node
+          : null,
+      }));
+    },
+    [setGraphRunState],
+  );
 
   useEffect(() => {
     reloadPreferences()
@@ -310,8 +432,11 @@ export function App() {
 
   const selectedCanvasNode = useMemo<AgentNode | null>(
     () =>
-      graph?.nodes.find((node) => node.nodeId === selectedCanvasNodeId) ?? null,
-    [graph, selectedCanvasNodeId],
+      graph?.nodes.find(
+        (node) =>
+          node.nodeId === graphRunController.state.selectedCanvasNode?.nodeId,
+      ) ?? null,
+    [graph, graphRunController.state.selectedCanvasNode],
   );
 
   const selectedPreviewArtifact = useMemo(
@@ -379,7 +504,7 @@ export function App() {
     runHistoryRef.current = result.project.runHistory;
     setArtifacts([]);
     artifactsRef.current = [];
-    setSelectedCanvasNodeId(null);
+    setSelectedCanvasNode(null);
     setActiveRunId(null);
     activeRunIdRef.current = null;
     setPendingResearchChoice(null);
@@ -476,43 +601,32 @@ export function App() {
     event: BackendEvent,
     submittedPayload?: SubmitMessagePayload,
   ) => {
-    setMessages((current) => {
+    setGraphRunState((current) => {
       const result = reduceGraphRunControllerEvents(
-        {
-          messages: current,
-          graph: graphRef.current,
-          dirty: false,
-          pendingResearchChoice: pendingResearchChoiceRef.current,
-          pendingGraphOverwriteChoice: pendingGraphOverwriteChoiceRef.current,
-          activeRunId: activeRunIdRef.current,
-          runHistory: runHistoryRef.current,
-          artifacts: artifactsRef.current,
-          selectedCanvasNode,
-        },
+        current,
         [event],
         (eventContent) => createMessage("assistant", eventContent),
         submittedPayload,
       );
+      const selectedNodeId = current.selectedCanvasNode?.nodeId;
+      const next = {
+        ...result,
+        selectedCanvasNode: selectedNodeId
+          ? result.graph?.nodes.find((node) => node.nodeId === selectedNodeId) ??
+            null
+          : null,
+        dirty: current.dirty || result.dirty,
+      };
 
-      graphRef.current = result.graph;
-      setGraph(result.graph);
-      pendingResearchChoiceRef.current = result.pendingResearchChoice ?? null;
+      graphRef.current = next.graph;
+      pendingResearchChoiceRef.current = next.pendingResearchChoice ?? null;
       pendingGraphOverwriteChoiceRef.current =
-        result.pendingGraphOverwriteChoice ?? null;
-      activeRunIdRef.current = result.activeRunId ?? null;
-      runHistoryRef.current = result.runHistory ?? runHistoryRef.current;
-      artifactsRef.current = result.artifacts ?? artifactsRef.current;
-      setActiveRunId(activeRunIdRef.current);
-      setPendingResearchChoice(pendingResearchChoiceRef.current);
-      setPendingGraphOverwriteChoice(pendingGraphOverwriteChoiceRef.current);
-      setRunHistory(runHistoryRef.current);
-      setArtifacts(artifactsRef.current);
-      if (result.dirty) {
-        setDirty(true);
-      }
-
-      messagesRef.current = result.messages;
-      return result.messages;
+        next.pendingGraphOverwriteChoice ?? null;
+      activeRunIdRef.current = next.activeRunId ?? null;
+      runHistoryRef.current = next.runHistory;
+      artifactsRef.current = next.artifacts;
+      messagesRef.current = next.messages;
+      return next;
     });
   };
 
@@ -671,7 +785,7 @@ export function App() {
   };
 
   const handleNodeSelect = (node: AgentNode | null) => {
-    setSelectedCanvasNodeId(node?.nodeId ?? null);
+    setSelectedCanvasNode(node);
   };
 
   const submitAgentMessagePayload = async (payload: SubmitMessagePayload) => {
