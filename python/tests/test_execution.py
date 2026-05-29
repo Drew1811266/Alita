@@ -449,7 +449,8 @@ def test_low_risk_temporary_script_runs_through_planned_executor(
         run_id=request.run_id,
     ).read_node("temp-script")
     assert script_record["status"] == "completed"
-    assert script_record["values"]["scriptStatus"] == "preview_only"
+    assert script_record["values"]["scriptStatus"] == "executed"
+    assert script_record["values"]["answer"] == 42
     assert script_record["values"]["riskLevel"] == "low"
 
 
@@ -2322,7 +2323,11 @@ def script_review(*, risk_level: str, requires_approval: bool) -> dict:
         "permissions": ["read_project_files", "write_project_files"],
         "riskLevel": risk_level,
         "requiresApproval": requires_approval,
-        "codePreview": "print('planned script')\n",
+        "codePreview": (
+            "import json, sys\n"
+            "json.load(sys.stdin)\n"
+            "print(json.dumps({'values': {'answer': 42}}))\n"
+        ),
         "inputContract": {"targetPath": "project-relative path"},
         "outputContract": {"summary": "text"},
         "approvalFingerprint": None,

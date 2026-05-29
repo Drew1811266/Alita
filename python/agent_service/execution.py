@@ -42,6 +42,7 @@ from agent_service.schemas import (
     RunGraphRequest,
     ScriptReviewState,
 )
+from agent_service.sandbox import SandboxRequest, run_sandboxed_python
 from agent_service.script_review import script_review_fingerprint
 from agent_service.task_graph import build_document_task_graph
 from agent_service.tool_execution import (
@@ -530,6 +531,43 @@ class PlannedTaskExecutor:
                 raise HarnessError(
                     "permission_required",
                     f"temporary script requires approval before execution: {node_id}",
+                )
+            script = review.codePreview if review is not None else None
+            if script:
+                result = run_sandboxed_python(
+                    SandboxRequest(
+                        script=script,
+                        arguments={
+                            "inputs": {
+                                input_node_id: output.values
+                                for input_node_id, output in inputs.items()
+                            }
+                        },
+                        project_path=(
+                            self.run_state.project_path or self.request.project_path
+                        ),
+                        allowed_roots=[str(Path(self.request.project_path).parent)],
+                        artifact_dir=str(self.document_executor.artifact_dir),
+                        timeout_seconds=10.0,
+                    )
+                )
+                if not result.ok:
+                    raise HarnessError(
+                        result.error_code or "sandbox_failed",
+                        result.stderr or "temporary script sandbox failed",
+                    )
+                return NodeOutput(
+                    artifacts=result.artifacts,
+                    values={
+                        "mode": "planned_task",
+                        "nodeType": node.nodeType,
+                        "summary": node.summary,
+                        "scriptStatus": "executed",
+                        "riskLevel": (
+                            review.riskLevel if review is not None else "low"
+                        ),
+                        **result.values,
+                    },
                 )
             return NodeOutput(
                 values={
