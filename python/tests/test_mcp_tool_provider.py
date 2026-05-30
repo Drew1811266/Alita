@@ -1,5 +1,5 @@
 from agent_service.tool_protocol import UnifiedToolInvocation
-from agent_service.tool_providers.mcp import McpToolProvider, McpToolSpec
+from agent_service.tool_providers.mcp import McpProviderConfig, McpToolProvider, McpToolSpec
 
 
 class FakeMcpClient:
@@ -66,3 +66,17 @@ def test_mcp_provider_calls_tool_and_maps_result() -> None:
     assert result.ok is True
     assert result.structured_content == {"matches": 1}
     assert result.content[0].text == "result"
+
+
+def test_mcp_provider_config_carries_transport_details() -> None:
+    config = McpProviderConfig(
+        provider_id="mcp-docs",
+        display_name="Docs MCP",
+        transport="http",
+        url="https://mcp.example.test",
+    )
+
+    assert config.enabled is True
+    assert config.transport == "http"
+    assert config.command is None
+    assert config.url == "https://mcp.example.test"

@@ -36,3 +36,17 @@ def checkpoint_outputs(outputs: dict[str, NodeOutput]) -> dict[str, dict[str, An
         }
         for node_id, output in outputs.items()
     }
+
+
+def outputs_from_checkpoint_record(record: dict[str, Any]) -> dict[str, NodeOutput]:
+    restored: dict[str, NodeOutput] = {}
+    for node_id, payload in dict(record.get("completedOutputs") or {}).items():
+        restored[str(node_id)] = NodeOutput(
+            values=dict(payload.get("values") or {}),
+            artifacts=list(payload.get("artifactRefs") or []),
+        )
+    return restored
+
+
+def pending_node_ids_from_checkpoint_record(record: dict[str, Any]) -> list[str]:
+    return [str(value) for value in record.get("pendingNodeIds") or []]

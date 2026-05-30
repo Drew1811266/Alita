@@ -41,7 +41,7 @@ class AuthorityContext:
     @classmethod
     def from_invocation(cls, invocation: UnifiedToolInvocation) -> "AuthorityContext":
         return cls(
-            approved_permissions=list(invocation.requested_permissions),
+            approved_permissions=[],
             read_roots=list(invocation.allowed_roots),
             write_roots=[],
             runtime_budget_ms=None,
@@ -53,10 +53,28 @@ class AuthorityContext:
     ) -> "AuthorityContext":
         return AuthorityContext(
             approved_tool_ids=list(self.approved_tool_ids),
-            approved_permissions=_dedupe(
-                [*self.approved_permissions, *invocation.requested_permissions]
-            ),
+            approved_permissions=list(self.approved_permissions),
             read_roots=list(self.read_roots or invocation.allowed_roots),
+            write_roots=list(self.write_roots),
+            network_domains=list(self.network_domains),
+            runtime_budget_ms=self.runtime_budget_ms,
+        )
+
+
+@dataclass(frozen=True)
+class AuthorityGrant:
+    approved_tool_ids: list[str] = field(default_factory=list)
+    approved_permissions: list[str] = field(default_factory=list)
+    read_roots: list[str] = field(default_factory=list)
+    write_roots: list[str] = field(default_factory=list)
+    network_domains: list[str] = field(default_factory=list)
+    runtime_budget_ms: int | None = None
+
+    def to_context(self) -> AuthorityContext:
+        return AuthorityContext(
+            approved_tool_ids=list(self.approved_tool_ids),
+            approved_permissions=list(self.approved_permissions),
+            read_roots=list(self.read_roots),
             write_roots=list(self.write_roots),
             network_domains=list(self.network_domains),
             runtime_budget_ms=self.runtime_budget_ms,

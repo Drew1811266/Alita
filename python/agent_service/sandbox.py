@@ -24,6 +24,9 @@ FORBIDDEN_NETWORK_IMPORTS = (
     "subprocess",
 )
 
+SANDBOX_SECURITY_MODEL = "constrained_subprocess_runner"
+SANDBOX_SECURITY_BOUNDARY = "preflight_and_runtime_limits_not_os_isolation"
+
 
 class SandboxRequest(BaseModel):
     script: str
@@ -46,6 +49,8 @@ class SandboxResult(BaseModel):
     values: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[str] = Field(default_factory=list)
     error_code: str | None = None
+    security_model: str = SANDBOX_SECURITY_MODEL
+    security_boundary: str = SANDBOX_SECURITY_BOUNDARY
 
 
 class SandboxViolation(ValueError):
@@ -73,6 +78,7 @@ def run_sandboxed_python(request: SandboxRequest) -> SandboxResult:
             request.script,
             network_allowed=request.network_allowed,
             allowed_roots=request.allowed_roots,
+            artifact_dir=request.artifact_dir,
         )
         _validate_argument_paths(request.arguments, request.allowed_roots)
     except SandboxViolation as error:
@@ -189,6 +195,7 @@ def _reject_forbidden_script_apis(
     *,
     network_allowed: bool,
     allowed_roots: list[str],
+    artifact_dir: str,
 ) -> None:
     try:
         tree = ast.parse(script)
@@ -203,7 +210,8 @@ def _reject_forbidden_script_apis(
         elif isinstance(node, ast.Call):
             if not network_allowed:
                 _reject_dynamic_import_call(node)
-            _reject_direct_file_api_call(node, allowed_roots)
+                _reject_network_call(node)
+            _reject_direct_file_api_call(node, allowed_roots, artifact_dir)
             _reject_secret_env_call(node)
             _reject_process_launch_call(node)
         elif isinstance(node, ast.Subscript):
@@ -239,27 +247,37 @@ def _reject_literal_import_argument(node: ast.Call) -> None:
         _reject_module_name(first_arg.value)
 
 
-def _reject_direct_file_api_call(node: ast.Call, allowed_roots: list[str]) -> None:
-    literal_path = _literal_path_for_file_call(node)
+def _reject_direct_file_api_call(
+    node: ast.Call,
+    allowed_roots: list[str],
+    artifact_dir: str,
+) -> None:
+    literal = _literal_path_for_file_call(node)
+    if literal is None:
+        return
+    literal_path, path_use = literal
     if literal_path is None:
         return
     if not _looks_like_path(literal_path):
         return
+    roots = [artifact_dir] if path_use == "write" else allowed_roots
     try:
-        validate_sandbox_path(literal_path, allowed_roots)
+        validate_sandbox_path(literal_path, roots)
     except SandboxViolation as error:
         raise SandboxViolation("forbidden_file_api", str(error)) from error
 
 
-def _literal_path_for_file_call(node: ast.Call) -> str | None:
+def _literal_path_for_file_call(node: ast.Call) -> tuple[str, str] | None:
     if isinstance(node.func, ast.Name) and node.func.id == "open":
-        return _literal_string_arg(node)
+        return _literal_string_arg(node), "read"
     if not isinstance(node.func, ast.Attribute):
         return None
     if node.func.attr == "open":
-        return _path_constructor_literal(node.func.value)
+        return _path_constructor_literal(node.func.value), "read"
     if node.func.attr in {"read_text", "read_bytes"}:
-        return _path_constructor_literal(node.func.value)
+        return _path_constructor_literal(node.func.value), "read"
+    if node.func.attr in {"write_text", "write_bytes"}:
+        return _path_constructor_literal(node.func.value), "write"
     return None
 
 
@@ -327,6 +345,19 @@ def _reject_secret_env_name(name: str | None) -> None:
         raise SandboxViolation(
             "secret_env_denied",
             f"secret environment access is not allowed in sandbox: {name}",
+        )
+
+
+def _reject_network_call(node: ast.Call) -> None:
+    if (
+        isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "socket"
+        and node.func.attr == "socket"
+    ):
+        raise SandboxViolation(
+            "network_call_denied",
+            "network socket API is not allowed in sandbox: socket.socket",
         )
 
 

@@ -142,11 +142,19 @@ def test_model_tool_call_executes_through_gateway_provider() -> None:
     )
 
     assert results[0].ok is True
-    assert results[0].metadata == {
-        "tool": "internal:document.markitdown_convert",
-        "authority": "allowed",
+    assert results[0].metadata["tool"] == "internal:document.markitdown_convert"
+    assert results[0].metadata["authority"] == "allowed"
+    assert results[0].metadata["authorityCode"] == "allowed"
+    observation = results[0].metadata["observation"]
+    assert observation == {
+        "toolId": "internal:document.markitdown_convert",
+        "providerId": "internal",
+        "ok": True,
+        "durationMs": observation["durationMs"],
         "authorityCode": "allowed",
+        "errorCode": None,
     }
+    assert isinstance(observation["durationMs"], int)
 
 
 def test_safe_observation_payload_omits_secret_values_and_uses_artifact_names() -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_service.context_manager import build_context_bundle
+from agent_service.context_manager import ToolCapability, build_context_bundle
 from agent_service.goal_spec import GoalSpec, parse_goal_spec
 from agent_service.memory_store import MemoryRecord
 from agent_service.schemas import Attachment, UserMessage
@@ -137,3 +137,31 @@ def test_context_bundle_includes_selected_memory_summaries(tmp_path: Path) -> No
     )
 
     assert bundle.memory_summaries == ["Previous run summarized the PDF."]
+
+
+def test_context_bundle_can_include_external_mcp_tool_capabilities(
+    tmp_path: Path,
+) -> None:
+    message = UserMessage(task_id="task-mcp", content="search docs for alita")
+    goal_spec = parse_goal_spec(message)
+    registry = ToolRegistry([])
+    external_tool = ToolCapability(
+        tool_id="mcp:mcp-docs:search_docs",
+        name="search_docs",
+        source="mcp",
+        provider_id="mcp-docs",
+        capabilities=["external_mcp"],
+        operations=[],
+        permissions=["call_external_mcp_tool"],
+        runtime="mcp",
+    )
+
+    bundle = build_context_bundle(
+        message,
+        goal_spec,
+        str(tmp_path / "project.alita"),
+        registry,
+        external_tools=[external_tool],
+    )
+
+    assert bundle.available_tools == [external_tool]
