@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import socket
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -54,6 +55,7 @@ from agent_service.runtime_events import (
     recovery_action_event,
     runtime_span_recorded_event,
 )
+from agent_service.trace_store import TraceStore
 from agent_service.runtime_loop import (
     RuntimeCheckpoint,
     checkpoint_outputs,
@@ -1413,11 +1415,34 @@ def run_graph_events(
     run_registry = registry or DEFAULT_RUN_REGISTRY
     cancel_token = run_registry.start(request.run_id)
     journal = RunJournal(project_path=request.project_path, run_id=request.run_id)
+    trace_store = TraceStore(project_path=request.project_path, run_id=request.run_id)
     outputs: dict[str, NodeOutput] = {}
     outputs.update(_source_outputs_for_mode(request))
     recovery_counts: dict[str, int] = {}
     span_counter = 0
     trace_id = trace_id_for_run(request.run_id)
+    checkpoint_sequence = 0
+    last_checkpoint_id: str | None = None
+    graph_hash = _graph_hash(request)
+
+    def enrich_checkpoint(checkpoint: RuntimeCheckpoint) -> RuntimeCheckpoint:
+        nonlocal checkpoint_sequence, last_checkpoint_id
+        checkpoint_sequence += 1
+        enriched = checkpoint.model_copy(
+            update={
+                "thread_id": f"thread-{request.task_id}",
+                "sequence": checkpoint_sequence,
+                "parent_checkpoint_id": last_checkpoint_id,
+                "graph_hash": graph_hash,
+                "state_version": 2,
+                "runtime_state": {
+                    "nodeId": checkpoint.node_id,
+                    "status": checkpoint.status,
+                },
+            }
+        )
+        last_checkpoint_id = str(enriched.to_record()["checkpointId"])
+        return enriched
 
     started_at = _now_iso()
     disabled_tool_ids = _expanded_tool_ids(request.disabled_tool_ids)
@@ -1716,6 +1741,7 @@ def run_graph_events(
                     created_at=node_started_at,
                     recovery_count=recovery_count,
                 )
+                checkpoint = enrich_checkpoint(checkpoint)
                 journal.write_checkpoint(checkpoint)
                 yield checkpoint_recorded_event(checkpoint)
                 journal.write_node(
@@ -1772,43 +1798,43 @@ def run_graph_events(
                         pending_observability_events
                     )
                     verifier.verify(node.nodeId, output)
-                    yield runtime_span_recorded_event(
-                        RuntimeSpan(
-                            trace_id=trace_id,
-                            span_id=span_id,
-                            parent_span_id=None,
-                            run_id=request.run_id,
-                            node_id=node.nodeId,
-                            kind="node_execution",
-                            name=node.nodeId,
-                            status="ok",
-                            started_at=node_started_at,
-                            ended_at=_now_iso(),
-                            duration_ms=int((perf_counter() - node_perf_started) * 1000),
-                        )
+                    span = RuntimeSpan(
+                        trace_id=trace_id,
+                        span_id=span_id,
+                        parent_span_id=None,
+                        run_id=request.run_id,
+                        node_id=node.nodeId,
+                        kind="runtime.node",
+                        name=node.nodeId,
+                        status="ok",
+                        started_at=node_started_at,
+                        ended_at=_now_iso(),
+                        duration_ms=int((perf_counter() - node_perf_started) * 1000),
                     )
+                    trace_store.append_span(span)
+                    yield runtime_span_recorded_event(span)
                     break
                 except Exception as error:
                     yield from _drain_observability_events(
                         pending_observability_events
                     )
                     error_payload = harness_error_payload(error)
-                    yield runtime_span_recorded_event(
-                        RuntimeSpan(
-                            trace_id=trace_id,
-                            span_id=span_id,
-                            parent_span_id=None,
-                            run_id=request.run_id,
-                            node_id=node.nodeId,
-                            kind="node_execution",
-                            name=node.nodeId,
-                            status="error",
-                            started_at=node_started_at,
-                            ended_at=_now_iso(),
-                            duration_ms=int((perf_counter() - node_perf_started) * 1000),
-                            metadata={"errorCode": error_payload.get("errorCode")},
-                        )
+                    span = RuntimeSpan(
+                        trace_id=trace_id,
+                        span_id=span_id,
+                        parent_span_id=None,
+                        run_id=request.run_id,
+                        node_id=node.nodeId,
+                        kind="runtime.node",
+                        name=node.nodeId,
+                        status="error",
+                        started_at=node_started_at,
+                        ended_at=_now_iso(),
+                        duration_ms=int((perf_counter() - node_perf_started) * 1000),
+                        metadata={"errorCode": error_payload.get("errorCode")},
                     )
+                    trace_store.append_span(span)
+                    yield runtime_span_recorded_event(span)
                     suggestion = replanner.propose(
                         request=request,
                         failed_node=node,
@@ -1842,6 +1868,7 @@ def run_graph_events(
                             created_at=retry_at,
                             recovery_count=recovery_count + 1,
                         )
+                        checkpoint = enrich_checkpoint(checkpoint)
                         journal.write_checkpoint(checkpoint)
                         yield checkpoint_recorded_event(checkpoint)
                         yield recovery_action_event(
@@ -1902,6 +1929,7 @@ def run_graph_events(
                         created_at=completed_at,
                         recovery_count=recovery_count,
                     )
+                    checkpoint = enrich_checkpoint(checkpoint)
                     journal.write_checkpoint(checkpoint)
                     yield checkpoint_recorded_event(checkpoint)
                     journal.write_run(
@@ -1978,6 +2006,7 @@ def run_graph_events(
                 created_at=completed_at,
                 recovery_count=recovery_counts.get(node.nodeId, 0),
             )
+            checkpoint = enrich_checkpoint(checkpoint)
             journal.write_checkpoint(checkpoint)
             yield checkpoint_recorded_event(checkpoint)
             yield AgentEvent(
@@ -3213,3 +3242,9 @@ def _dedupe_issue_codes(issues: list[str]) -> list[str]:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _graph_hash(request: RunGraphRequest) -> str:
+    payload = request.graph.model_dump(mode="json")
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return "sha256:" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()

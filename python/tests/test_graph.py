@@ -1208,6 +1208,18 @@ def test_general_task_classification_creates_planner_graph_instead_of_answer() -
     ]
 
 
+def test_public_task_route_does_not_emit_runtime_engine_events_by_default() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="task-runtime-engine-compat",
+            content="Create a Python script that counts rows in a CSV file.",
+        )
+    )
+
+    assert [event.type for event in events] == ["node_graph.created"]
+    assert all(not event.type.startswith("runtime.") for event in events)
+
+
 def test_task_graph_records_deep_reasoning_policy_metadata() -> None:
     events = run_agent(
         UserMessage(

@@ -62,6 +62,21 @@ export type RuntimeCheckpointRecord = {
   recoveryCount: number;
 };
 
+export type RuntimeSpanRecord = {
+  traceId: string;
+  spanId: string;
+  parentSpanId?: string | null;
+  runId: string;
+  nodeId?: string | null;
+  kind: string;
+  name: string;
+  status: string;
+  startedAt: string;
+  endedAt?: string | null;
+  durationMs?: number | null;
+  metadata: Record<string, unknown>;
+};
+
 export type AuthorityDecisionRecord = {
   runId?: string;
   nodeId?: string;
@@ -93,6 +108,7 @@ export type RecoveryActionRecord = {
 
 export type RuntimeObservabilityState = {
   checkpoints: RuntimeCheckpointRecord[];
+  spans: RuntimeSpanRecord[];
   authorityDecisions: AuthorityDecisionRecord[];
   recoveryActions: RecoveryActionRecord[];
 };

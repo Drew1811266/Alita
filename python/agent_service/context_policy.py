@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -49,18 +50,16 @@ def budget_for_mode(mode: str) -> ContextBudget:
 def select_memory_for_context(
     records: list[MemoryRecord],
     budget: ContextBudget,
+    query: str = "",
 ) -> list[MemoryRecord]:
     allowed_kinds = set(budget.allowed_kinds)
+    query_terms = _terms(query)
     eligible = [
         record
         for record in records
         if not allowed_kinds or record.kind in allowed_kinds
     ]
-    ordered = sorted(
-        eligible,
-        key=lambda record: (record.created_at, record.memory_id),
-        reverse=True,
-    )
+    ordered = _sort_memory_records(eligible, query_terms=query_terms)
     selected = ordered[: budget.max_memory_records]
     selected_ids = {record.memory_id for record in selected}
 
@@ -74,12 +73,44 @@ def select_memory_for_context(
         if replace_index is not None:
             selected[replace_index] = preferences[0]
 
-    selected = sorted(
-        selected,
-        key=lambda record: (record.created_at, record.memory_id),
+    selected = _sort_memory_records(selected, query_terms=query_terms)
+    return _within_char_budget(selected, budget.max_chars)
+
+
+def _sort_memory_records(
+    records: list[MemoryRecord],
+    *,
+    query_terms: set[str],
+) -> list[MemoryRecord]:
+    return sorted(
+        records,
+        key=lambda record: (
+            _memory_score(record, query_terms=query_terms),
+            record.created_at,
+            record.memory_id,
+        ),
         reverse=True,
     )
-    return _within_char_budget(selected, budget.max_chars)
+
+
+def _memory_score(record: MemoryRecord, *, query_terms: set[str]) -> float:
+    record_terms = _terms(" ".join([record.summary, *record.tags]))
+    term_overlap = len(query_terms & record_terms)
+    preference_boost = 1.0 if query_terms and record.kind == "preference" else 0.0
+    return (
+        term_overlap * 3
+        + record.importance * 2
+        + record.confidence
+        + preference_boost
+    )
+
+
+def _terms(value: str) -> set[str]:
+    return {
+        token
+        for token in re.split(r"[^a-zA-Z0-9\u4e00-\u9fff]+", value.lower())
+        if len(token) >= 2
+    }
 
 
 def _oldest_non_preference_index(records: list[MemoryRecord]) -> int | None:

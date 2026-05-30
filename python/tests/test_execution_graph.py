@@ -100,6 +100,42 @@ def test_compile_execution_graph_maps_tool_and_model_bindings() -> None:
     assert output.model_binding is None
 
 
+def test_compile_execution_graph_attaches_runtime_action_graph_metadata() -> None:
+    request = _request(
+        [
+            _node(
+                "inspect",
+                "fixed_tool",
+                tool_ref="internal:document.markitdown_convert",
+                permissions=["read_attachment"],
+            ),
+            _node(
+                "reason",
+                "model",
+                dependencies=["inspect"],
+                model_ref="local-task-reasoner",
+            ),
+            _node("output", "output", dependencies=["reason"]),
+        ]
+    )
+
+    graph = compile_execution_graph(request)
+
+    assert graph.metadata["actionGraphVersion"] == "runtime_action_graph.v1"
+    action_graph = graph.metadata["actionGraph"]
+    assert action_graph["graph_id"] == "graph-execution"
+    assert [action["action_id"] for action in action_graph["actions"]] == [
+        "inspect",
+        "reason",
+        "output",
+    ]
+    assert [action["action_type"] for action in action_graph["actions"]] == [
+        "tool",
+        "model",
+        "control",
+    ]
+
+
 def test_compile_execution_graph_derives_manifest_tool_binding_contract() -> None:
     graph = compile_execution_graph(
         _request(

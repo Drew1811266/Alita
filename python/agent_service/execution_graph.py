@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from agent_service.action_graph import ACTION_GRAPH_VERSION, action_graph_from_run_graph
 from agent_service.harness_errors import HarnessError
 from agent_service.schemas import GraphNode, RunGraphRequest
 from agent_service.tool_execution import default_tool_packages_root
@@ -100,10 +101,16 @@ def compile_execution_graph(
         _compile_execution_node(node, tool_registry=registry)
         for node in request.graph.nodes
     ]
+    action_graph = action_graph_from_run_graph(request.graph)
+    metadata = {
+        **dict(request.graph.metadata),
+        "actionGraphVersion": ACTION_GRAPH_VERSION,
+        "actionGraph": action_graph.model_dump(),
+    }
     return ExecutionGraph(
         graph_id=request.graph.graphId,
         task_id=request.task_id,
-        metadata=dict(request.graph.metadata),
+        metadata=metadata,
         nodes=nodes,
         nodes_by_id={node.node_id: node for node in nodes},
     )

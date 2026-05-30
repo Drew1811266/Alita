@@ -64,6 +64,25 @@ describe("graph runtime controller helpers", () => {
           },
         },
         {
+          type: "runtime.span_recorded",
+          payload: {
+            span: {
+              traceId: "trace-run-1",
+              spanId: "span-000001",
+              parentSpanId: null,
+              runId: "run-1",
+              nodeId: "node-a",
+              kind: "runtime.node",
+              name: "node-a",
+              status: "ok",
+              startedAt: "2026-05-30T00:00:00.000Z",
+              endedAt: "2026-05-30T00:00:01.000Z",
+              durationMs: 1000,
+              metadata: {},
+            },
+          },
+        },
+        {
           type: "recovery.action_proposed",
           payload: {
             action: {
@@ -88,6 +107,7 @@ describe("graph runtime controller helpers", () => {
 
     expect(next.checkpoints).toHaveLength(1);
     expect(next.authorityDecisions[0].toolId).toBe("internal:read");
+    expect(next.spans[0].kind).toBe("runtime.node");
     expect(next.recoveryActions[0].action).toBe("proposed");
   });
 });

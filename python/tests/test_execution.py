@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from time import sleep
@@ -1419,6 +1420,25 @@ def test_execution_graph_does_not_change_run_event_shape(tmp_path: Path) -> None
     assert events[0].type == "run.started"
     assert set(events[0].payload.keys()) == {"runId", "taskId", "startedAt"}
     assert all("executionGraph" not in event.payload for event in events)
+
+
+def test_run_graph_events_persists_runtime_node_spans(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[build_node("task-output", "output", [])],
+    )
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    trace_path = tmp_path / "node-runs" / request.run_id / "trace.jsonl"
+    records = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    span_event = next(event for event in events if event.type == "runtime.span_recorded")
+    assert records[0]["kind"] == "runtime.node"
+    assert records[0]["spanId"] == span_event.payload["span"]["spanId"]
 
 
 def test_react_enabled_model_node_records_observations(tmp_path: Path) -> None:
