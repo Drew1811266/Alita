@@ -382,6 +382,9 @@ def _run_planner_case(case: EvalCase) -> EvalCaseResult:
         "strategy": result.strategy,
         "planner": result.planner,
         "nodeIds": node_ids,
+        "actionPolicyNodeCount": len(
+            dict(result.graph_payload.get("metadata", {}).get("actionPolicies") or {})
+        ),
     }
     return EvalCaseResult(
         case_id=case.case_id,

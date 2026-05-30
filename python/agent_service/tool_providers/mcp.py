@@ -26,6 +26,9 @@ class McpProviderConfig:
     provider_id: str
     display_name: str
     enabled: bool = True
+    transport: str = "stdio"
+    command: str | None = None
+    url: str | None = None
 
 
 class McpClient(Protocol):

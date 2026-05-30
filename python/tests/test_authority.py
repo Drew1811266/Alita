@@ -4,6 +4,7 @@ from pathlib import Path
 
 from agent_service.authority import (
     AuthorityContext,
+    AuthorityGrant,
     authorize_tool_invocation,
     extract_invocation_paths,
 )
@@ -134,6 +135,41 @@ def test_authority_from_invocation_does_not_create_write_roots_from_allowed_root
     assert context.write_roots == []
     assert decision.allowed is False
     assert decision.code == "path_denied"
+
+
+def test_authority_from_invocation_does_not_approve_requested_sensitive_permissions(
+    tmp_path: Path,
+) -> None:
+    tool = _tool_definition(permissions=["network"])
+    invocation = _invocation(
+        tmp_path,
+        arguments={"operation": "fetch"},
+        requested_permissions=["network"],
+    )
+
+    decision = authorize_tool_invocation(
+        invocation,
+        tool,
+        AuthorityContext.from_invocation(invocation),
+    )
+
+    assert decision.allowed is False
+    assert decision.code == "permission_denied"
+
+
+def test_authority_grant_can_approve_sensitive_permissions(tmp_path: Path) -> None:
+    tool = _tool_definition(permissions=["network"])
+    invocation = _invocation(
+        tmp_path,
+        arguments={"operation": "fetch"},
+        requested_permissions=["network"],
+    )
+    grant = AuthorityGrant(approved_permissions=["network"])
+
+    decision = authorize_tool_invocation(invocation, tool, grant.to_context())
+
+    assert decision.allowed is True
+    assert decision.code == "allowed"
 
 
 def test_authority_separates_read_and_write_roots(tmp_path: Path) -> None:

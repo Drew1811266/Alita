@@ -259,6 +259,13 @@ def _with_planner_chain_metadata(
     react_metadata = _react_metadata_for_request(request, strategy=strategy)
     if react_metadata is not None:
         metadata["react"] = react_metadata
+    action_policies = _action_policies_for_request(
+        graph_payload,
+        request=request,
+        strategy=strategy,
+    )
+    if action_policies:
+        metadata["actionPolicies"] = action_policies
     return {**graph_payload, "metadata": _scrub_payload(metadata)}
 
 
@@ -281,6 +288,33 @@ def _react_metadata_for_request(
         "allowedToolIds": tool_ids,
         "allowedPermissions": permissions,
     }
+
+
+def _action_policies_for_request(
+    graph_payload: dict[str, Any],
+    *,
+    request: PlannerChainRequest,
+    strategy: PlannerStrategy,
+) -> dict[str, Any]:
+    react_metadata = _react_metadata_for_request(request, strategy=strategy)
+    if react_metadata is None:
+        return {}
+    policies: dict[str, Any] = {}
+    for node in graph_payload.get("nodes", []):
+        if not isinstance(node, dict) or node.get("nodeType") != "model":
+            continue
+        node_id = str(node.get("nodeId") or "")
+        if not node_id:
+            continue
+        policies[node_id] = {
+            "reactEnabled": react_metadata["enabled"],
+            "nativeToolCalls": react_metadata["nativeToolCalls"],
+            "maxSteps": react_metadata["maxSteps"],
+            "maxToolCalls": react_metadata["maxToolCalls"],
+            "allowedToolIds": list(react_metadata["allowedToolIds"]),
+            "allowedPermissions": list(react_metadata["allowedPermissions"]),
+        }
+    return policies
 
 
 def _allowed_react_tool_ids(request: PlannerChainRequest) -> list[str]:

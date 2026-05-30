@@ -13,6 +13,7 @@ from agent_service.execution import (
     NodeOutput,
     PlannedTaskExecutor,
     ResearchFlowExecutor,
+    _react_policy_for_node,
     _runtime_notice_for_node,
     run_graph_events,
 )
@@ -1068,7 +1069,11 @@ def test_graph_tool_validation_uses_configured_tool_packages_root(
 
     events = list(run_graph_events(request, executor=FakeNodeExecutor()))
 
-    assert [event.type for event in events] == [
+    assert [
+        event.type
+        for event in events
+        if event.type != "runtime.checkpoint_recorded"
+    ] == [
         "run.started",
         "node.running",
         "node.completed",
@@ -1130,7 +1135,11 @@ def test_graph_tool_validation_uses_injected_tool_registry_catalog(
         )
     )
 
-    assert [event.type for event in events] == [
+    assert [
+        event.type
+        for event in events
+        if event.type != "runtime.checkpoint_recorded"
+    ] == [
         "run.started",
         "node.running",
         "node.completed",
@@ -1988,6 +1997,32 @@ def test_run_completion_auto_writes_memory_records(tmp_path: Path) -> None:
     assert "sk-secret" not in records[0].summary
 
 
+def test_run_completion_writes_memory_by_default(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[build_node("task-output", "output", [])],
+    )
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert events[-1].type == "task.completed"
+    records = MemoryStore(request.project_path).list()
+    assert [record.kind for record in records] == ["graph_summary"]
+
+
+def test_run_completion_can_disable_memory_auto_write(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[build_node("task-output", "output", [])],
+        graph_metadata={"memory": {"autoWrite": False}},
+    )
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert events[-1].type == "task.completed"
+    assert MemoryStore(request.project_path).list() == []
+
+
 def test_planned_output_node_fails_when_non_planning_dependency_output_is_missing(
     tmp_path: Path,
 ) -> None:
@@ -2320,6 +2355,7 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
         registry=None,
         internal_executor=None,
         authority_context=None,
+        authority_event_sink=None,
     ):
         factory_calls.append(
             {
@@ -2335,6 +2371,7 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
                 registry=registry,
                 internal_executor=internal_executor,
                 authority_context=authority_context,
+                authority_event_sink=authority_event_sink,
             )
         )
         spy_gateways.append(spy_gateway)
@@ -2549,7 +2586,146 @@ def test_runtime_auto_continues_once_for_low_risk_retry(tmp_path: Path) -> None:
 
     assert events[-1].type == "task.completed"
     assert "recovery.continued" in [event.type for event in events]
+    assert "recovery.action_applied" in [event.type for event in events]
     assert any(event["type"] == "recovery.continue" for event in audit_events)
+
+
+def test_run_graph_events_emits_checkpoint_recorded_events(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[build_node("task-output", "output", [])],
+    )
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    checkpoints = [
+        event.payload["checkpoint"]
+        for event in events
+        if event.type == "runtime.checkpoint_recorded"
+    ]
+    assert [checkpoint["status"] for checkpoint in checkpoints] == [
+        "before_node",
+        "after_node",
+    ]
+    assert checkpoints[0]["nodeId"] == "task-output"
+    assert checkpoints[1]["pendingNodeIds"] == []
+
+
+def test_run_graph_events_emits_authority_decision_events_for_tool_calls(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("正文", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source)
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=FakeModelClient(),
+            tool_executor=FakeToolExecutor(),
+        )
+    )
+
+    authority_events = [
+        event.payload["decision"]
+        for event in events
+        if event.type == "authority.decision_recorded"
+    ]
+    assert authority_events
+    assert authority_events[0]["allowed"] is True
+    assert authority_events[0]["code"] == "allowed"
+    assert authority_events[0]["toolId"].startswith("internal:document.")
+    document_input_record = RunJournal(
+        project_path=request.project_path,
+        run_id=request.run_id,
+    ).read_node("document-input")
+    assert document_input_record["values"]["observation"]["ok"] is True
+
+
+def test_resume_checkpoint_runs_only_pending_nodes(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node("first", "model", []),
+            build_node("task-output", "output", ["first"]),
+        ],
+    )
+    request.run_id = "run-resume-checkpoint"
+
+    class FailingExecutor:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+            self.calls.append(node_id)
+            if node_id == "task-output":
+                raise HarnessError("test_failure", "task output failed")
+            return NodeOutput(values={"text": "first result"})
+
+    failing_executor = FailingExecutor()
+    failed_events = list(run_graph_events(request, executor=failing_executor))
+    assert failed_events[-1].type == "task.failed"
+    assert failing_executor.calls == ["first", "task-output"]
+
+    class ResumeExecutor:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+            self.calls.append(node_id)
+            assert "first" in inputs
+            return NodeOutput(values={"text": "final result"})
+
+    request.mode.type = "resume_checkpoint"
+    resume_executor = ResumeExecutor()
+    resumed_events = list(run_graph_events(request, executor=resume_executor))
+
+    assert "runtime.resume_started" in [event.type for event in resumed_events]
+    assert resume_executor.calls == ["task-output"]
+    assert resumed_events[-1].type == "task.completed"
+
+
+def test_resume_checkpoint_fails_when_checkpoint_is_missing(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[build_node("task-output", "output", [])],
+    )
+    request.run_id = "run-missing-checkpoint"
+    request.mode.type = "resume_checkpoint"
+
+    events = list(run_graph_events(request, executor=FakeNodeExecutor()))
+
+    assert events[-1].type == "task.failed"
+    assert events[-1].payload["errorCode"] == "missing_checkpoint"
+
+
+def test_react_policy_prefers_node_level_action_policy() -> None:
+    policy = _react_policy_for_node(
+        {
+            "react": {
+                "enabled": False,
+                "allowedToolIds": [],
+                "allowedPermissions": [],
+            },
+            "actionPolicies": {
+                "model-a": {
+                    "reactEnabled": True,
+                    "nativeToolCalls": True,
+                    "maxSteps": 2,
+                    "maxToolCalls": 1,
+                    "allowedToolIds": ["internal:test.echo_values"],
+                    "allowedPermissions": ["read_project_files"],
+                }
+            },
+        },
+        "model-a",
+    )
+
+    assert policy.enabled is True
+    assert policy.use_native_tool_calls is True
+    assert policy.max_steps == 2
+    assert policy.max_tool_calls == 1
+    assert policy.allowed_tool_ids == ["internal:test.echo_values"]
 
 
 def test_failed_only_reruns_failed_node_and_downstream(tmp_path: Path) -> None:

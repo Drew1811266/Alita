@@ -132,6 +132,7 @@ def test_run_eval_cases_handles_planner_case() -> None:
 
     assert summary.failed == 0
     assert summary.results[0].passed is True
+    assert "actionPolicyNodeCount" in summary.results[0].details
 
 
 def test_run_eval_cases_handles_tool_case() -> None:

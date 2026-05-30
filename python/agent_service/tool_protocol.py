@@ -99,7 +99,7 @@ class UnifiedToolResult:
     content: list[ToolResultContent]
     structured_content: JsonObject | None
     artifacts: list[str]
-    metadata: dict[str, str]
+    metadata: dict[str, Any]
     error: UnifiedToolError | None = None
 
 
