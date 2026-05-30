@@ -21,6 +21,13 @@ class McpToolSpec:
     output_schema: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class McpProviderConfig:
+    provider_id: str
+    display_name: str
+    enabled: bool = True
+
+
 class McpClient(Protocol):
     def list_tools(self) -> list[McpToolSpec]:
         raise NotImplementedError

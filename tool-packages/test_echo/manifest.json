@@ -5,8 +5,8 @@
   "version": "0.1.0",
   "source_type": "test",
   "license": "internal",
-  "runtime": "python_sidecar",
-  "entrypoint": null,
+  "runtime": "python_function",
+  "entrypoint": "tools.test_echo_tool:echo_values",
   "capabilities": ["test.echo"],
   "operations": [
     {

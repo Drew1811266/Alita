@@ -11,14 +11,20 @@ import type {
   ArtifactRef,
   ChatMessage,
   NodeGraph,
+  RuntimeObservabilityState,
   RunHistoryEntry,
 } from "../../shared/types";
+import {
+  createRuntimeObservabilityState,
+  reduceRuntimeObservabilityEvents,
+} from "./useGraphRuntimeController";
 
 export type GraphRunControllerState = {
   messages: ChatMessage[];
   graph: NodeGraph | null;
   runHistory: RunHistoryEntry[];
   artifacts: ArtifactRef[];
+  runtimeObservability: RuntimeObservabilityState;
   pendingResearchChoice: PendingResearchChoice | null;
   pendingGraphOverwriteChoice: PendingGraphOverwriteChoice | null;
   activeRunId: string | null;
@@ -32,6 +38,7 @@ export function createGraphRunControllerState(): GraphRunControllerState {
     graph: null,
     runHistory: [],
     artifacts: [],
+    runtimeObservability: createRuntimeObservabilityState(),
     pendingResearchChoice: null,
     pendingGraphOverwriteChoice: null,
     activeRunId: null,
@@ -61,6 +68,14 @@ export function reduceGraphRunControllerEvents(
     createAssistantMessage,
     submittedPayload,
   );
+  const currentObservability =
+    state.runtimeObservability ?? createRuntimeObservabilityState();
+  const runtimeObservability = reduceRuntimeObservabilityEvents(
+    currentObservability,
+    events,
+  );
+  const runtimeObservabilityChanged =
+    runtimeObservability !== currentObservability;
 
   return {
     ...state,
@@ -68,10 +83,11 @@ export function reduceGraphRunControllerEvents(
     graph: reduced.graph,
     runHistory: reduced.runHistory ?? state.runHistory,
     artifacts: reduced.artifacts ?? state.artifacts,
+    runtimeObservability,
     pendingResearchChoice: reduced.pendingResearchChoice ?? null,
     pendingGraphOverwriteChoice: reduced.pendingGraphOverwriteChoice ?? null,
     activeRunId: reduced.activeRunId ?? null,
-    dirty: state.dirty || reduced.dirty,
+    dirty: state.dirty || reduced.dirty || runtimeObservabilityChanged,
   };
 }
 

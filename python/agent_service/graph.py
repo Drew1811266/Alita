@@ -16,6 +16,7 @@ from agent_service.intent import (
     RouteDecision,
     classify_route,
 )
+from agent_service.memory_store import MemoryStore
 from agent_service.model_client import (
     ChatMessage as ModelChatMessage,
     LlamaCppModelClient,
@@ -265,11 +266,17 @@ def _graph_payload_for_task(
     spec = goal_spec or parse_goal_spec(message)
     tool_registry = ToolRegistry.from_packages_root(default_tool_packages_root())
     route_payload = _structured_route_payload_for_planning(message, run_state)
+    project_path = (
+        run_state.project_path
+        if run_state is not None and run_state.project_path
+        else "project.alita"
+    )
     context = build_context_bundle(
         message=message,
         goal_spec=spec,
-        project_path="project.alita",
+        project_path=project_path,
         tool_registry=tool_registry,
+        memory_records=MemoryStore(project_path).list(),
     )
     result = PlannerChain(tool_registry=tool_registry).plan(
         PlannerChainRequest(

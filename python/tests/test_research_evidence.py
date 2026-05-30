@@ -122,3 +122,36 @@ def test_research_claims_report_claims_without_evidence_refs() -> None:
         "Supported claim [S1].\n\nUnsupported claim.",
         evidence,
     ) == ["claim_C2_missing_evidence"]
+
+
+def test_research_claims_bind_to_source_excerpts() -> None:
+    evidence = attach_read_content(
+        evidence_from_search_results(
+            "Question",
+            [
+                {
+                    "title": "Accepted",
+                    "url": "https://example.com/a",
+                    "snippet": "Useful.",
+                    "accepted": True,
+                }
+            ],
+        ),
+        [
+            {
+                "url": "https://example.com/a",
+                "sourceContent": "The package guide explains build backends and project metadata.",
+                "readStatus": "read",
+            }
+        ],
+        [],
+    )
+
+    claims = research_claims_from_markdown(
+        "## Key Findings\n\n- Python packaging uses build backends [S1].",
+        evidence,
+    )
+
+    assert claims[0].support_status == "supported"
+    assert claims[0].evidence_refs[0].excerpt.startswith("The package guide")
+    assert claims[0].evidence_refs[0].support_status == "supports"

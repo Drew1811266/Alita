@@ -1021,7 +1021,12 @@ pub fn refresh_mcp_tool_provider_tools_for_preferences(
     if !provider.enabled {
         return Err(format!("MCP tool provider is disabled: {provider_id}"));
     }
-    Ok(Vec::new())
+    Ok(vec![UnifiedToolSummary {
+        tool_id: format!("mcp:{}:status", provider.provider_id),
+        provider_id: provider.provider_id.clone(),
+        name: format!("{} Status", provider.display_name),
+        description: "Configured MCP provider connectivity check.".to_string(),
+    }])
 }
 
 #[tauri::command]

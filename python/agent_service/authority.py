@@ -43,8 +43,23 @@ class AuthorityContext:
         return cls(
             approved_permissions=list(invocation.requested_permissions),
             read_roots=list(invocation.allowed_roots),
-            write_roots=list(invocation.allowed_roots),
+            write_roots=[],
             runtime_budget_ms=None,
+        )
+
+    def with_invocation_scope(
+        self,
+        invocation: UnifiedToolInvocation,
+    ) -> "AuthorityContext":
+        return AuthorityContext(
+            approved_tool_ids=list(self.approved_tool_ids),
+            approved_permissions=_dedupe(
+                [*self.approved_permissions, *invocation.requested_permissions]
+            ),
+            read_roots=list(self.read_roots or invocation.allowed_roots),
+            write_roots=list(self.write_roots),
+            network_domains=list(self.network_domains),
+            runtime_budget_ms=self.runtime_budget_ms,
         )
 
 
@@ -204,4 +219,6 @@ def _dedupe(values: list[str]) -> list[str]:
     return result
 
 
-SENSITIVE_PERMISSIONS = frozenset({"network", "run_local_cli", "run_python_plugin"})
+SENSITIVE_PERMISSIONS = frozenset(
+    {"network", "run_local_cli", "run_python_plugin", "call_external_mcp_tool"}
+)

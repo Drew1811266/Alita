@@ -19,6 +19,14 @@ from tests.test_execution import (
 )
 
 
+DOCUMENT_RUNTIME_APPROVALS = ["write_project_outputs", "run_python_plugin"]
+
+
+def _approve_document_runtime(request: RunGraphRequest) -> RunGraphRequest:
+    request.approved_permissions = list(DOCUMENT_RUNTIME_APPROVALS)
+    return request
+
+
 def test_document_flow_parse_calls_unified_tool_gateway(tmp_path: Path) -> None:
     source = tmp_path / "input.pdf"
     source.write_bytes(b"%PDF-1.4\n")
@@ -60,7 +68,7 @@ def test_document_flow_receive_attachment_calls_unified_tool_gateway(
 ) -> None:
     source = tmp_path / "input.docx"
     source.write_bytes(b"fake docx")
-    request = build_document_flow_request(tmp_path, source)
+    request = _approve_document_runtime(build_document_flow_request(tmp_path, source))
     gateway = RecordingGateway()
 
     events = list(
@@ -92,8 +100,7 @@ def test_document_flow_malformed_parse_binding_fails_before_gateway_call(
     source = tmp_path / "input.docx"
     source.write_bytes(b"fake docx")
     request = build_document_flow_request(tmp_path, source)
-    request.graph.nodes[1].toolRef = "document.receive_attachment"
-    request.disabled_tool_ids = ["document.markitdown_convert"]
+    request.graph.nodes[1].toolRef = None
     gateway = RecordingGateway()
 
     events = list(
@@ -108,9 +115,9 @@ def test_document_flow_malformed_parse_binding_fails_before_gateway_call(
     assert "node.running" not in [event.type for event in events]
     assert gateway.calls == []
     assert events[-1].type == "task.failed"
-    assert events[-1].payload["errorCode"] == "unsupported_tool"
+    assert events[-1].payload["errorCode"] == "unsupported_binding"
     assert "document-parse" in events[-1].payload["error"]
-    assert "document.markitdown_convert" in events[-1].payload["error"]
+    assert "fixed_tool" in events[-1].payload["error"]
 
 
 def test_document_flow_executor_rejects_malformed_parse_binding_before_gateway_call(
@@ -176,7 +183,7 @@ def test_planned_fixed_tool_node_executes_through_unified_gateway(
 ) -> None:
     source = tmp_path / "input.docx"
     source.write_bytes(b"fake docx")
-    request = RunGraphRequest(
+    request = _approve_document_runtime(RunGraphRequest(
         task_id="task-planned-tool",
         run_id="run-planned-tool",
         project_path=str(tmp_path / "project.alita"),
@@ -213,7 +220,7 @@ def test_planned_fixed_tool_node_executes_through_unified_gateway(
             ],
             "edges": [],
         },
-    )
+    ))
     gateway = RecordingGateway()
 
     events = list(
@@ -241,7 +248,7 @@ def test_graph_tool_validation_uses_gateway_catalog_for_prefixed_internal_tools(
 ) -> None:
     source = tmp_path / "input.docx"
     source.write_bytes(b"fake docx")
-    request = RunGraphRequest(
+    request = _approve_document_runtime(RunGraphRequest(
         task_id="task-prefixed-tool",
         run_id="run-prefixed-tool",
         project_path=str(tmp_path / "project.alita"),
@@ -273,7 +280,7 @@ def test_graph_tool_validation_uses_gateway_catalog_for_prefixed_internal_tools(
             ],
             "edges": [],
         },
-    )
+    ))
 
     events = list(
         run_graph_events(
@@ -612,7 +619,7 @@ def test_planned_fixed_tool_gateway_error_becomes_node_failure(
 ) -> None:
     source = tmp_path / "input.docx"
     source.write_bytes(b"fake docx")
-    request = RunGraphRequest(
+    request = _approve_document_runtime(RunGraphRequest(
         task_id="task-planned-tool-error",
         run_id="run-planned-tool-error",
         project_path=str(tmp_path / "project.alita"),
@@ -644,7 +651,7 @@ def test_planned_fixed_tool_gateway_error_becomes_node_failure(
             ],
             "edges": [],
         },
-    )
+    ))
 
     events = list(
         run_graph_events(

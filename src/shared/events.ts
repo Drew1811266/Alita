@@ -1,9 +1,12 @@
 import type {
   AgentNode,
+  AuthorityDecisionRecord,
   ChatMessage,
   MessageSourceMetadata,
   NodeGraph,
   NodeRunRecord,
+  RecoveryActionRecord,
+  RuntimeCheckpointRecord,
   RuntimeNotice,
   ScriptReviewState,
   WebSourceReference,
@@ -177,6 +180,30 @@ export type BackendEvent =
       payload: {
         nodeId: string;
         notice: RuntimeNotice;
+      };
+    }
+  | {
+      type: "runtime.checkpoint_recorded";
+      payload: {
+        checkpoint: RuntimeCheckpointRecord;
+      };
+    }
+  | {
+      type: "authority.decision_recorded";
+      payload: {
+        decision: AuthorityDecisionRecord;
+      };
+    }
+  | {
+      type: "recovery.action_proposed";
+      payload: {
+        action: RecoveryActionRecord;
+      };
+    }
+  | {
+      type: "recovery.action_applied";
+      payload: {
+        action: RecoveryActionRecord;
       };
     }
   | {

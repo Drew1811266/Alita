@@ -48,7 +48,12 @@ fn refresh_mcp_tool_provider_tools_accepts_enabled_mcp_provider() {
         refresh_mcp_tool_provider_tools_for_preferences(&preferences, &provider.provider_id)
             .unwrap();
 
-    assert!(tools.is_empty());
+    assert_eq!(tools.len(), 1);
+    assert_eq!(
+        tools[0].tool_id,
+        format!("mcp:{}:status", provider.provider_id)
+    );
+    assert_eq!(tools[0].provider_id, provider.provider_id);
 }
 
 #[test]

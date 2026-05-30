@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from agent_service.agent_run_state import AgentRunState
+from agent_service.authority import AuthorityContext
 from agent_service.final_verifier import FinalVerifier
 from agent_service.execution_graph import (
     ExecutionGraph,
@@ -34,7 +35,7 @@ from agent_service.model_runtime import ModelRuntime
 from agent_service.node_output import NodeOutput
 from agent_service.permission_gate import PermissionGate
 from agent_service.privacy import sanitize_for_web_search
-from agent_service.replan import FailureReplanner
+from agent_service.replan import FailureReplanner, ReplanSuggestion
 from agent_service.react_controller import ReActController, ReActPolicy
 from agent_service.research_evidence import (
     ResearchEvidenceSet,
@@ -42,10 +43,12 @@ from agent_service.research_evidence import (
     claim_level_citation_diagnostics,
     evidence_from_search_results,
     normalize_source_url,
+    research_claims_from_markdown,
     validate_citation_coverage,
 )
 from agent_service.result_verifier import ResultVerifier
 from agent_service.run_journal import RunJournal
+from agent_service.runtime_loop import RuntimeCheckpoint, checkpoint_outputs
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY, RunRegistry
 from agent_service.schemas import (
     AgentEvent,
@@ -121,12 +124,6 @@ DOCUMENT_FLOW_NODE_IDS = {
     "file-export",
 }
 
-DOCUMENT_FLOW_RUNTIME_TOOL_BINDINGS = {
-    "document-input": "document.receive_attachment",
-    "document-parse": "document.markitdown_convert",
-    "typst-export": "document.typst_compile",
-}
-
 DATA_DEPENDENT_NODE_IDS = {
     *DOCUMENT_FLOW_NODE_IDS.difference({"document-input"}),
     "research-privacy-guard",
@@ -189,13 +186,14 @@ class DocumentFlowExecutor:
         self.model_client = model_client or LlamaCppModelClient()
         self.model_runtime = model_runtime or ModelRuntime(model_client=self.model_client)
         self.tool_registry = tool_registry or _default_tool_registry()
-        self.tool_gateway = tool_gateway or _default_tool_gateway(
-            tool_executor=tool_executor,
-            tool_registry=self.tool_registry,
-        )
         self.nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
         self.project_dir = Path(request.project_path).parent
         self.artifact_dir = self.project_dir / "artifacts"
+        self.tool_gateway = tool_gateway or _default_tool_gateway(
+            tool_executor=tool_executor,
+            tool_registry=self.tool_registry,
+            authority_context=_runtime_authority_context(request),
+        )
         self.task_graph = build_document_task_graph(
             request.task_id,
             GoalSpec(
@@ -349,9 +347,7 @@ class DocumentFlowExecutor:
         return _node_output_from_unified_result(result)
 
     def _allowed_roots(self) -> list[str]:
-        roots = {str(self.project_dir)}
-        roots.update(str(Path(attachment.path).parent) for attachment in self.request.attachments)
-        return sorted(roots)
+        return _request_read_roots(self.request)
 
     def _converted_output_path(self, index: int, input_path: Path) -> Path:
         unsafe_chars = '<>:"/\\|?*'
@@ -389,6 +385,7 @@ class PlannedTaskExecutor:
         self.tool_gateway = tool_gateway or _default_tool_gateway(
             tool_executor=tool_executor,
             tool_registry=self.tool_registry,
+            authority_context=_runtime_authority_context(request),
         )
         self.document_executor = DocumentFlowExecutor(
             request,
@@ -1155,10 +1152,16 @@ class ResearchFlowExecutor:
                 self._section_order(),
                 evidence_set=evidence_set,
             )
+            claims = (
+                research_claims_from_markdown(markdown, evidence_set)
+                if evidence_set is not None
+                else []
+            )
             return NodeOutput(
                 values={
                     "markdown": markdown,
                     "summary": summary,
+                    "claims": [claim.model_dump() for claim in claims],
                     "acceptedSources": accepted_sources,
                     "rejectedSources": rejected_sources,
                     "evidenceSet": evidence_set.model_dump() if evidence_set else {},
@@ -1189,6 +1192,7 @@ class ResearchFlowExecutor:
                 values={
                     "markdown": markdown,
                     "summary": _input_value(inputs, "summary") or "",
+                    "claims": _input_value(inputs, "claims") or [],
                     "acceptedSources": accepted_sources,
                     "rejectedSources": rejected_sources,
                     "evidenceSet": evidence_set.model_dump() if evidence_set else {},
@@ -1210,6 +1214,7 @@ class ResearchFlowExecutor:
                     "artifact": exported,
                     "markdown": markdown,
                     "summary": _input_value(inputs, "summary") or "",
+                    "claims": _input_value(inputs, "claims") or [],
                     "acceptedSources": _input_value(inputs, "acceptedSources") or [],
                     "rejectedSources": _input_value(inputs, "rejectedSources") or [],
                     "evidenceSet": _input_value(inputs, "evidenceSet") or {},
@@ -1306,14 +1311,14 @@ def run_graph_events(
         # runtime binding semantics.
         if (
             executor is None
-            and _is_planned_task_graph(request)
-            and not _is_research_graph(request)
+            and _uses_execution_graph_runtime(request)
         ):
             validate_execution_graph_bindings(execution_graph)
         effective_tool_registry = tool_registry or _default_tool_registry()
         effective_tool_gateway = tool_gateway or _default_tool_gateway(
             tool_executor=tool_executor,
             tool_registry=effective_tool_registry,
+            authority_context=_runtime_authority_context(request),
         )
         _validate_graph_tools(request, effective_tool_gateway.list_tools())
     except (ValueError, HarnessError) as error:
@@ -1340,7 +1345,7 @@ def run_graph_events(
         return
 
     selected_nodes = _selected_nodes_for_mode(request, ordered_nodes)
-    if _is_planned_task_graph(request) and not _is_research_graph(request):
+    if _uses_execution_graph_runtime(request):
         selected_nodes = [
             node for node in selected_nodes if node.nodeType != "planning"
         ]
@@ -1352,7 +1357,7 @@ def run_graph_events(
             search_provider=search_provider,
             source_fetcher=source_fetcher,
         )
-    elif _is_planned_task_graph(request):
+    elif _uses_execution_graph_runtime(request):
         node_executor = PlannedTaskExecutor(
             request,
             run_state=run_state,
@@ -1378,6 +1383,7 @@ def run_graph_events(
     journal = RunJournal(project_path=request.project_path, run_id=request.run_id)
     outputs: dict[str, NodeOutput] = {}
     outputs.update(_source_outputs_for_mode(request))
+    recovery_counts: dict[str, int] = {}
 
     started_at = _now_iso()
     disabled_tool_ids = _expanded_tool_ids(request.disabled_tool_ids)
@@ -1462,7 +1468,7 @@ def run_graph_events(
             )
             return
 
-        if _is_planned_task_graph(request) and not _is_research_graph(request):
+        if _uses_execution_graph_runtime(request):
             selected_nodes = [
                 node for node in selected_nodes if is_executable_node(node)
             ]
@@ -1608,123 +1614,196 @@ def run_graph_events(
                 )
                 return
 
-            node_started_at = _now_iso()
-            node_run_id = f"{request.run_id}-{node.nodeId}"
-            journal.write_node(
-                node.nodeId,
-                {
-                    "nodeRunId": node_run_id,
-                    "runId": request.run_id,
-                    "nodeId": node.nodeId,
-                    "status": "running",
-                    "startedAt": node_started_at,
-                    "artifactRefs": [],
-                    "values": {},
-                },
-            )
-            yield AgentEvent(type="node.running", payload={"nodeId": node.nodeId})
-            node_perf_started = perf_counter()
-            try:
-                missing_dependencies = _missing_required_dependency_outputs(
-                    node,
-                    request.graph.nodes,
-                    outputs,
-                )
-                if missing_dependencies:
-                    raise HarnessError(
-                        "missing_dependency_output",
-                        (
-                            f"node {node.nodeId} is missing dependency output(s): "
-                            + ", ".join(missing_dependencies)
-                        ),
+            while True:
+                recovery_count = recovery_counts.get(node.nodeId, 0)
+                node_started_at = _now_iso()
+                node_run_id = f"{request.run_id}-{node.nodeId}"
+                journal.write_checkpoint(
+                    RuntimeCheckpoint(
+                        run_id=request.run_id,
+                        node_id=node.nodeId,
+                        status="before_node",
+                        completed_outputs=checkpoint_outputs(outputs),
+                        pending_node_ids=_pending_node_ids(selected_nodes, node.nodeId),
+                        created_at=node_started_at,
+                        recovery_count=recovery_count,
                     )
-                dependency_outputs = {
-                    dependency: outputs[dependency]
-                    for dependency in node.dependencies
-                    if dependency in outputs
-                }
-                if node.nodeId in outputs:
-                    dependency_outputs[node.nodeId] = outputs[node.nodeId]
-                unsatisfied_ports = _unsatisfied_input_ports(node, dependency_outputs)
-                if unsatisfied_ports:
-                    raise HarnessError(
-                        "input_contract_unsatisfied",
-                        (
-                            f"node {node.nodeId} input port(s) are not satisfied: "
-                            + ", ".join(unsatisfied_ports)
-                        ),
-                    )
-                output = node_executor.run(node.nodeId, dependency_outputs)
-                verifier.verify(node.nodeId, output)
-            except Exception as error:
-                completed_at = _now_iso()
-                payload = harness_error_payload(error)
-                partial_output = (
-                    error.output
-                    if isinstance(error, PartialNodeOutputError)
-                    else NodeOutput()
                 )
-                record = {
-                    "nodeRunId": node_run_id,
-                    "runId": request.run_id,
-                    "nodeId": node.nodeId,
-                    "status": "failed",
-                    "startedAt": node_started_at,
-                    "completedAt": completed_at,
-                    "artifactRefs": partial_output.artifacts,
-                    "error": str(error),
-                    "errorCode": payload.get("errorCode"),
-                    "values": partial_output.values,
-                }
-                verifier_diagnostics = _verifier_diagnostics(
-                    node_id=node.nodeId,
-                    error=error,
-                )
-                if verifier_diagnostics:
-                    record["verifierDiagnostics"] = verifier_diagnostics
-                journal.write_node(node.nodeId, record)
-                journal.write_run(
+                journal.write_node(
+                    node.nodeId,
                     {
+                        "nodeRunId": node_run_id,
                         "runId": request.run_id,
-                        "taskId": request.task_id,
-                        "status": "failed",
-                        "startedAt": started_at,
-                        "completedAt": completed_at,
-                        "mode": request.mode.model_dump(),
-                    }
-                )
-                yield AgentEvent(
-                    type="node.failed",
-                    payload={
                         "nodeId": node.nodeId,
-                        "taskId": request.task_id,
-                        "runId": request.run_id,
-                        **payload,
+                        "status": "running",
+                        "startedAt": node_started_at,
+                        "artifactRefs": [],
+                        "values": {},
                     },
                 )
-                yield AgentEvent(
-                    type="node.run_recorded",
-                    payload={"record": _event_record(record)},
-                )
-                suggestion = replanner.propose(
-                    request=request,
-                    failed_node=node,
-                    error=error,
-                )
-                if suggestion is not None:
-                    yield AgentEvent(
-                        type="graph.patch_suggested",
-                        payload=suggestion.model_dump(),
+                yield AgentEvent(type="node.running", payload={"nodeId": node.nodeId})
+                node_perf_started = perf_counter()
+                try:
+                    missing_dependencies = _missing_required_dependency_outputs(
+                        node,
+                        request.graph.nodes,
+                        outputs,
                     )
-                yield AgentEvent(
-                    type="task.failed",
-                    payload={
-                        "taskId": request.task_id,
+                    if missing_dependencies:
+                        raise HarnessError(
+                            "missing_dependency_output",
+                            (
+                                f"node {node.nodeId} is missing dependency output(s): "
+                                + ", ".join(missing_dependencies)
+                            ),
+                        )
+                    dependency_outputs = {
+                        dependency: outputs[dependency]
+                        for dependency in node.dependencies
+                        if dependency in outputs
+                    }
+                    if node.nodeId in outputs:
+                        dependency_outputs[node.nodeId] = outputs[node.nodeId]
+                    unsatisfied_ports = _unsatisfied_input_ports(
+                        node,
+                        dependency_outputs,
+                    )
+                    if unsatisfied_ports:
+                        raise HarnessError(
+                            "input_contract_unsatisfied",
+                            (
+                                f"node {node.nodeId} input port(s) are not satisfied: "
+                                + ", ".join(unsatisfied_ports)
+                            ),
+                        )
+                    output = node_executor.run(node.nodeId, dependency_outputs)
+                    verifier.verify(node.nodeId, output)
+                    break
+                except Exception as error:
+                    suggestion = replanner.propose(
+                        request=request,
+                        failed_node=node,
+                        error=error,
+                    )
+                    if _can_auto_continue(suggestion, recovery_count):
+                        recovery_counts[node.nodeId] = recovery_count + 1
+                        retry_at = _now_iso()
+                        retry_payload = {
+                            "type": "recovery.continue",
+                            "runId": request.run_id,
+                            "taskId": request.task_id,
+                            "nodeId": node.nodeId,
+                            "reason": str(error),
+                            "recoveryCount": recovery_count + 1,
+                            "suggestion": suggestion.model_dump()
+                            if suggestion is not None
+                            else None,
+                            "createdAt": retry_at,
+                        }
+                        journal.write_audit_event(retry_payload)
+                        journal.write_checkpoint(
+                            RuntimeCheckpoint(
+                                run_id=request.run_id,
+                                node_id=node.nodeId,
+                                status="retrying",
+                                completed_outputs=checkpoint_outputs(outputs),
+                                pending_node_ids=_pending_node_ids(
+                                    selected_nodes,
+                                    node.nodeId,
+                                ),
+                                created_at=retry_at,
+                                recovery_count=recovery_count + 1,
+                            )
+                        )
+                        yield AgentEvent(
+                            type="recovery.continued",
+                            payload=retry_payload,
+                        )
+                        continue
+
+                    completed_at = _now_iso()
+                    payload = harness_error_payload(error)
+                    partial_output = (
+                        error.output
+                        if isinstance(error, PartialNodeOutputError)
+                        else NodeOutput()
+                    )
+                    record = {
+                        "nodeRunId": node_run_id,
                         "runId": request.run_id,
-                        **payload,
-                    },
-                )
-                return
+                        "nodeId": node.nodeId,
+                        "status": "failed",
+                        "startedAt": node_started_at,
+                        "completedAt": completed_at,
+                        "artifactRefs": partial_output.artifacts,
+                        "error": str(error),
+                        "errorCode": payload.get("errorCode"),
+                        "values": partial_output.values,
+                    }
+                    verifier_diagnostics = _verifier_diagnostics(
+                        node_id=node.nodeId,
+                        error=error,
+                    )
+                    if verifier_diagnostics:
+                        record["verifierDiagnostics"] = verifier_diagnostics
+                    journal.write_node(node.nodeId, record)
+                    _auto_write_tool_failure_memory(
+                        request=request,
+                        node=node,
+                        error=error,
+                        completed_at=completed_at,
+                    )
+                    journal.write_checkpoint(
+                        RuntimeCheckpoint(
+                            run_id=request.run_id,
+                            node_id=node.nodeId,
+                            status="failed",
+                            completed_outputs=checkpoint_outputs(outputs),
+                            pending_node_ids=_pending_node_ids(
+                                selected_nodes,
+                                node.nodeId,
+                            ),
+                            created_at=completed_at,
+                            recovery_count=recovery_count,
+                        )
+                    )
+                    journal.write_run(
+                        {
+                            "runId": request.run_id,
+                            "taskId": request.task_id,
+                            "status": "failed",
+                            "startedAt": started_at,
+                            "completedAt": completed_at,
+                            "mode": request.mode.model_dump(),
+                        }
+                    )
+                    yield AgentEvent(
+                        type="node.failed",
+                        payload={
+                            "nodeId": node.nodeId,
+                            "taskId": request.task_id,
+                            "runId": request.run_id,
+                            **payload,
+                        },
+                    )
+                    yield AgentEvent(
+                        type="node.run_recorded",
+                        payload={"record": _event_record(record)},
+                    )
+                    if suggestion is not None:
+                        yield AgentEvent(
+                            type="graph.patch_suggested",
+                            payload=suggestion.model_dump(),
+                        )
+                    yield AgentEvent(
+                        type="task.failed",
+                        payload={
+                            "taskId": request.task_id,
+                            "runId": request.run_id,
+                            **payload,
+                        },
+                    )
+                    return
 
             completed_at = _now_iso()
             actual_duration_ms = int((perf_counter() - node_perf_started) * 1000)
@@ -1743,6 +1822,20 @@ def run_graph_events(
             if runtime_notice is not None:
                 record["runtimeNotice"] = runtime_notice
             journal.write_node(node.nodeId, record)
+            journal.write_checkpoint(
+                RuntimeCheckpoint(
+                    run_id=request.run_id,
+                    node_id=node.nodeId,
+                    status="after_node",
+                    completed_outputs=checkpoint_outputs(outputs),
+                    pending_node_ids=_pending_node_ids_after(
+                        selected_nodes,
+                        node.nodeId,
+                    ),
+                    created_at=completed_at,
+                    recovery_count=recovery_counts.get(node.nodeId, 0),
+                )
+            )
             yield AgentEvent(
                 type="node.completed",
                 payload={"nodeId": node.nodeId, "artifactRefs": output.artifacts},
@@ -1935,8 +2028,7 @@ def _auto_write_memory_records(
     outputs: dict[str, NodeOutput],
     completed_at: str,
 ) -> None:
-    memory_config = request.graph.metadata.get("memory")
-    if not isinstance(memory_config, dict) or memory_config.get("autoWrite") is not True:
+    if not _memory_auto_write_enabled(request):
         return
 
     store = MemoryStore(request.project_path)
@@ -1957,6 +2049,22 @@ def _auto_write_memory_records(
     )
 
     for node_id, output in outputs.items():
+        node = _node_by_id(request.graph.nodes, node_id)
+        if node is not None and node.nodeType == "fixed_tool":
+            source_ref = f"{request.run_id}:{node_id}:success"
+            store.append(
+                MemoryRecord(
+                    memory_id=memory_id_for_source("tool_outcome", source_ref),
+                    kind="tool_outcome",
+                    summary=(
+                        f"Tool node {node_id} completed during run {request.run_id}."
+                    ),
+                    source_ref=source_ref,
+                    source_refs=[request.run_id, node_id, "success"],
+                    created_at=completed_at,
+                    tags=["tool_outcome", "success", node_id],
+                )
+            )
         for artifact_path in output.artifacts:
             artifact_name = Path(artifact_path).name
             source_ref = f"{request.run_id}:{node_id}:{artifact_name}"
@@ -1974,6 +2082,37 @@ def _auto_write_memory_records(
                     tags=["artifact", node_id],
                 )
             )
+
+
+def _auto_write_tool_failure_memory(
+    *,
+    request: RunGraphRequest,
+    node: GraphNode,
+    error: Exception,
+    completed_at: str,
+) -> None:
+    if not _memory_auto_write_enabled(request) or node.nodeType != "fixed_tool":
+        return
+    source_ref = f"{request.run_id}:{node.nodeId}:failure"
+    MemoryStore(request.project_path).append(
+        MemoryRecord(
+            memory_id=memory_id_for_source("tool_outcome", source_ref),
+            kind="tool_outcome",
+            summary=(
+                f"Tool node {node.nodeId} failed during run {request.run_id}: "
+                f"{error}"
+            ),
+            source_ref=source_ref,
+            source_refs=[request.run_id, node.nodeId, "failure"],
+            created_at=completed_at,
+            tags=["tool_outcome", "failure", node.nodeId],
+        )
+    )
+
+
+def _memory_auto_write_enabled(request: RunGraphRequest) -> bool:
+    memory_config = request.graph.metadata.get("memory")
+    return isinstance(memory_config, dict) and memory_config.get("autoWrite") is True
 
 
 def is_executable_node(node: GraphNode) -> bool:
@@ -2108,11 +2247,32 @@ def _default_tool_gateway(
     *,
     tool_executor: ToolExecutor | None = None,
     tool_registry: ToolRegistry | None = None,
+    authority_context: AuthorityContext | None = None,
 ) -> UnifiedToolGateway:
     return default_unified_tool_gateway(
         registry=tool_registry,
         internal_executor=tool_executor,
+        authority_context=authority_context,
     )
+
+
+def _runtime_authority_context(request: RunGraphRequest) -> AuthorityContext:
+    return AuthorityContext(
+        approved_permissions=list(request.approved_permissions),
+        read_roots=_request_read_roots(request),
+        write_roots=_request_write_roots(request),
+    )
+
+
+def _request_read_roots(request: RunGraphRequest) -> list[str]:
+    project_dir = Path(request.project_path).parent
+    roots = {str(project_dir)}
+    roots.update(str(Path(attachment.path).parent) for attachment in request.attachments)
+    return sorted(roots)
+
+
+def _request_write_roots(request: RunGraphRequest) -> list[str]:
+    return [str(Path(request.project_path).parent / "artifacts")]
 
 
 def _node_output_from_unified_result(result) -> NodeOutput:
@@ -2157,18 +2317,6 @@ def _validate_graph_tools(
     request: RunGraphRequest,
     available_tools: list[UnifiedToolDefinition],
 ) -> None:
-    if not _is_planned_task_graph(request) and not _is_research_graph(request):
-        nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
-        for node_id, runtime_tool_id in DOCUMENT_FLOW_RUNTIME_TOOL_BINDINGS.items():
-            node = nodes_by_id.get(node_id)
-            if node is None:
-                continue
-            _ensure_document_flow_runtime_tool_binding(
-                node,
-                node_id=node_id,
-                runtime_tool_id=runtime_tool_id,
-            )
-
     available_tool_ids: set[str] = set()
     for tool in available_tools:
         if not tool.enabled:
@@ -2261,6 +2409,17 @@ def _is_planned_task_graph(request: RunGraphRequest) -> bool:
     ):
         return True
     return any(node.nodeType == "planning" for node in request.graph.nodes)
+
+
+def _uses_execution_graph_runtime(request: RunGraphRequest) -> bool:
+    if _is_research_graph(request):
+        return False
+    if _is_planned_task_graph(request):
+        return True
+    return any(
+        node.nodeType == "fixed_tool" and node.toolRef
+        for node in request.graph.nodes
+    )
 
 
 def _react_policy_from_graph_metadata(metadata: dict) -> ReActPolicy:
@@ -2542,6 +2701,35 @@ def _event_record(record: dict) -> dict:
             else {}
         ),
     }
+
+
+def _pending_node_ids(nodes: list[GraphNode], current_node_id: str) -> list[str]:
+    return [node.nodeId for node in nodes[_node_index(nodes, current_node_id) :]]
+
+
+def _pending_node_ids_after(nodes: list[GraphNode], current_node_id: str) -> list[str]:
+    return [node.nodeId for node in nodes[_node_index(nodes, current_node_id) + 1 :]]
+
+
+def _node_index(nodes: list[GraphNode], node_id: str) -> int:
+    for index, node in enumerate(nodes):
+        if node.nodeId == node_id:
+            return index
+    return len(nodes)
+
+
+def _can_auto_continue(
+    suggestion: ReplanSuggestion | None,
+    recovery_count: int,
+) -> bool:
+    if suggestion is None or suggestion.requires_user_approval:
+        return False
+    if recovery_count >= 1:
+        return False
+    return any(
+        action.automatic and action.patch_operation == "retry_node"
+        for action in suggestion.actions
+    )
 
 
 def _runtime_notice_for_node(node: GraphNode, actual_duration_ms: int) -> dict | None:

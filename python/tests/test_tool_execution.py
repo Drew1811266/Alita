@@ -238,6 +238,112 @@ def test_tool_executor_rejects_known_tool_without_adapter(tmp_path):
     assert "send_message" in exc_info.value.message
 
 
+def test_tool_executor_loads_python_function_entrypoint_from_manifest(
+    monkeypatch,
+    tmp_path,
+):
+    package_root = tmp_path / "tool-packages"
+    tool_root = package_root / "custom"
+    tool_root.mkdir(parents=True)
+    runtime_module = tmp_path / "echo_runtime.py"
+    runtime_module.write_text(
+        """
+from agent_service.tool_execution import ToolResult
+
+
+def run(invocation):
+    return ToolResult(
+        values={"echo": str(invocation.arguments["message"])},
+        metadata={"runtime": "python_function"},
+    )
+""",
+        encoding="utf-8",
+    )
+    (tool_root / "manifest.json").write_text(
+        """
+{
+  "tool_id": "custom.echo",
+  "name": "Custom Echo",
+  "description": "Test-only manifest entrypoint tool.",
+  "version": "0.1.0",
+  "source_type": "external_python_package",
+  "license": "internal",
+  "runtime": "python_function",
+  "entrypoint": "echo_runtime:run",
+  "capabilities": [],
+  "operations": [
+    {
+      "name": "send_message",
+      "description": "Send input."
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": ["operation", "message"],
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["send_message"]
+      },
+      "message": {
+        "type": "string"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object"
+  },
+  "permissions": [],
+  "error_codes": [],
+  "timeout_policy": {},
+  "artifact_policy": {},
+  "security_policy": {},
+  "examples": [],
+  "node_templates": []
+}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    executor = ToolExecutor(registry=ToolRegistry.from_packages_root(package_root))
+
+    result = executor.run(
+        ToolInvocation(
+            tool_id="custom.echo",
+            operation="send_message",
+            arguments={"message": "hello"},
+            project_path=str(tmp_path),
+        )
+    )
+
+    assert result.values == {"echo": "hello"}
+    assert result.metadata == {"runtime": "python_function"}
+
+
+def test_tool_executor_runs_test_echo_package_from_manifest_entrypoint():
+    result = ToolExecutor(
+        registry=ToolRegistry.from_packages_root(TOOL_PACKAGES_ROOT),
+    ).run(
+        ToolInvocation(
+            tool_id="test.echo_values",
+            operation="echo_values",
+            arguments={
+                "message": "hello",
+                "source_text": "upstream",
+                "metadata_value": "phase2",
+            },
+            project_path=".",
+        )
+    )
+
+    assert result.values == {
+        "echo": "hello",
+        "source_text": "upstream",
+        "metadata_value": "phase2",
+    }
+    assert result.metadata == {"runtime": "python_function"}
+
+
 def test_tool_executor_default_registry_finds_tools_from_python_cwd(monkeypatch):
     monkeypatch.chdir(PYTHON_ROOT)
 

@@ -28,6 +28,8 @@ from agent_service.run_journal import RunJournal
 from agent_service.run_registry import RunRegistry
 from agent_service.schemas import (
     Attachment,
+    GraphArgumentTemplate,
+    GraphToolBinding,
     RunGraph,
     RunGraphRequest,
     ScriptReviewState,
@@ -92,6 +94,17 @@ class FakeModelClient:
         ):
             return "outline result"
         return "report result"
+
+
+DOCUMENT_FLOW_APPROVED_PERMISSIONS = [
+    "write_project_outputs",
+    "run_python_plugin",
+]
+
+DOCUMENT_FLOW_TYPST_APPROVED_PERMISSIONS = [
+    *DOCUMENT_FLOW_APPROVED_PERMISSIONS,
+    "run_local_cli",
+]
 
 
 class FakeToolExecutor:
@@ -1305,6 +1318,43 @@ def test_planned_fixed_tool_executes_from_runtime_binding_without_tool_id_branch
     }
 
 
+def test_document_fixed_tools_execute_from_bindings_without_document_executor_branch(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.docx"
+    source.write_bytes(b"fake docx")
+    request = build_document_flow_request(tmp_path, source)
+    request.approved_permissions = ["write_project_outputs", "run_python_plugin"]
+    bound_output = tmp_path / "artifacts" / "bound" / "custom-output.md"
+    request.graph.nodes[1].toolBinding = GraphToolBinding(
+        operation="convert_local_file",
+        argumentsTemplate=GraphArgumentTemplate(
+            values={
+                "operation": "convert_local_file",
+                "input_path": str(source),
+                "output_path": str(bound_output),
+            },
+            required=["operation", "input_path", "output_path"],
+        ),
+    )
+    gateway = RecordingGateway()
+
+    events = list(
+        run_graph_events(
+            request,
+            run_state=AgentRunState.from_run_graph_request(request),
+            model_client=FakeModelClient(),
+            tool_gateway=gateway,
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+    parse_call = next(
+        call for call in gateway.calls if call.node_id == "document-parse"
+    )
+    assert parse_call.arguments["output_path"] == str(bound_output)
+
+
 def test_missing_fixed_tool_binding_fails_before_run_started(tmp_path: Path) -> None:
     request = RunGraphRequest(
         task_id="task-missing-binding",
@@ -1618,6 +1668,7 @@ def test_runs_nodes_after_all_dependencies_complete(tmp_path: Path) -> None:
             build_node("file-export", "output", ["content-organize", "report-generate"]),
         ],
     )
+    request.approved_permissions = list(DOCUMENT_FLOW_APPROVED_PERMISSIONS)
 
     events = list(run_graph_events(request, executor=FakeNodeExecutor()))
 
@@ -2153,6 +2204,7 @@ def test_generated_markdown_conversion_graph_exports_converted_artifact(
     request = RunGraphRequest(
         task_id="task-markdown-convert",
         project_path=str(tmp_path / "project.alita"),
+        approved_permissions=list(DOCUMENT_FLOW_APPROVED_PERMISSIONS),
         attachments=[attachment.model_dump()],
         graph=graph_event.payload["graph"],
     )
@@ -2267,12 +2319,14 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
         packages_root=None,
         registry=None,
         internal_executor=None,
+        authority_context=None,
     ):
         factory_calls.append(
             {
                 "packages_root": packages_root,
                 "registry": registry,
                 "internal_executor": internal_executor,
+                "authority_context": authority_context,
             }
         )
         spy_gateway = SpyGateway(
@@ -2280,6 +2334,7 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
                 packages_root=packages_root,
                 registry=registry,
                 internal_executor=internal_executor,
+                authority_context=authority_context,
             )
         )
         spy_gateways.append(spy_gateway)
@@ -2435,6 +2490,66 @@ def test_run_emits_started_and_cancelled_between_nodes(tmp_path: Path) -> None:
     assert events[0].payload["runId"] == "run-cancel"
     assert "run.cancelled" in [event.type for event in events]
     assert "task.completed" not in [event.type for event in events]
+
+
+def test_run_records_runtime_checkpoints_for_completed_nodes(tmp_path: Path) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("正文", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source, run_id="run-checkpoint")
+
+    events = list(
+        run_graph_events(
+            request,
+            executor=FakeNodeExecutor(),
+        )
+    )
+
+    latest = RunJournal(
+        project_path=request.project_path,
+        run_id=request.run_id,
+    ).read_latest_checkpoint()
+
+    assert events[-1].type == "task.completed"
+    assert latest is not None
+    assert latest["nodeId"] == "file-export"
+    assert latest["status"] == "after_node"
+    assert latest["pendingNodeIds"] == []
+    assert "file-export" in latest["completedOutputs"]
+
+
+def test_runtime_auto_continues_once_for_low_risk_retry(tmp_path: Path) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("正文", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source, run_id="run-auto-continue")
+
+    class FlakyExecutor(FakeNodeExecutor):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failures = 0
+
+        def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+            if node_id == "content-organize" and self.failures == 0:
+                self.failures += 1
+                raise HarnessError(
+                    "empty_node_output",
+                    "node content-organize returned empty value",
+                )
+            return super().run(node_id, inputs)
+
+    events = list(
+        run_graph_events(
+            request,
+            executor=FlakyExecutor(),
+        )
+    )
+    audit_events = RunJournal(
+        project_path=request.project_path,
+        run_id=request.run_id,
+    ).read_audit_events()
+
+    assert events[-1].type == "task.completed"
+    assert "recovery.continued" in [event.type for event in events]
+    assert any(event["type"] == "recovery.continue" for event in audit_events)
 
 
 def test_failed_only_reruns_failed_node_and_downstream(tmp_path: Path) -> None:
@@ -2714,6 +2829,7 @@ def build_document_flow_request(
         task_id="task-document-flow",
         project_path=str(tmp_path / "project.alita"),
         run_id=run_id,
+        approved_permissions=list(DOCUMENT_FLOW_APPROVED_PERMISSIONS),
         attachments=[
             {
                 "attachment_id": f"a{index + 1}",
@@ -2808,6 +2924,7 @@ def build_document_flow_request_with_typst(
         task_id="task-document-flow",
         project_path=str(tmp_path / "project.alita"),
         run_id=run_id,
+        approved_permissions=list(DOCUMENT_FLOW_TYPST_APPROVED_PERMISSIONS),
         attachments=[
             {
                 "attachment_id": "a1",

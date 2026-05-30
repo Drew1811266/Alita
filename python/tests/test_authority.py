@@ -114,6 +114,69 @@ def test_authority_allows_approved_read_and_artifact_write_roots(
     assert decision.code == "allowed"
 
 
+def test_authority_from_invocation_does_not_create_write_roots_from_allowed_roots(
+    tmp_path: Path,
+) -> None:
+    tool = _tool_definition(permissions=["write_project_outputs"])
+    invocation = _invocation(
+        tmp_path,
+        arguments={
+            "operation": "write",
+            "output_path": str(tmp_path / "artifacts" / "output.md"),
+        },
+        requested_permissions=["write_project_outputs"],
+    )
+    context = AuthorityContext.from_invocation(invocation)
+
+    decision = authorize_tool_invocation(invocation, tool, context)
+
+    assert context.read_roots == [str(tmp_path)]
+    assert context.write_roots == []
+    assert decision.allowed is False
+    assert decision.code == "path_denied"
+
+
+def test_authority_separates_read_and_write_roots(tmp_path: Path) -> None:
+    read_dir = tmp_path / "inputs"
+    write_dir = tmp_path / "artifacts"
+    tool = _tool_definition(permissions=["read_project_files", "write_project_outputs"])
+
+    read_from_write_root = _invocation(
+        tmp_path,
+        arguments={"operation": "read", "input_path": str(write_dir / "source.md")},
+        requested_permissions=["read_project_files"],
+    )
+    read_decision = authorize_tool_invocation(
+        read_from_write_root,
+        tool,
+        AuthorityContext(
+            approved_permissions=["read_project_files"],
+            read_roots=[str(read_dir)],
+            write_roots=[str(write_dir)],
+        ),
+    )
+
+    write_to_read_root = _invocation(
+        tmp_path,
+        arguments={"operation": "write", "output_path": str(read_dir / "out.md")},
+        requested_permissions=["write_project_outputs"],
+    )
+    write_decision = authorize_tool_invocation(
+        write_to_read_root,
+        tool,
+        AuthorityContext(
+            approved_permissions=["write_project_outputs"],
+            read_roots=[str(read_dir)],
+            write_roots=[str(write_dir)],
+        ),
+    )
+
+    assert read_decision.allowed is False
+    assert read_decision.code == "path_denied"
+    assert write_decision.allowed is False
+    assert write_decision.code == "path_denied"
+
+
 def _invocation(
     tmp_path: Path,
     *,

@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable, Mapping
 from agent_service.harness_errors import HarnessError
 from agent_service.schema_validation import validate_json_schema_subset
 from agent_service.tool_registry import ToolRegistry
+from agent_service.tool_runtime import ToolRuntimeLoader
 from tools.markitdown_tool import convert_local_file as convert_markitdown_local_file
 from tools.typst_tool import compile_report_pdf as compile_typst_report_pdf
 
@@ -131,6 +132,7 @@ class ToolExecutor:
             ("document.typst_compile", "compile_report_pdf"): _run_typst,
         }
         self.adapters.update(adapters or {})
+        self.runtime_loader = ToolRuntimeLoader(adapters=self.adapters)
 
     def run(self, invocation: ToolInvocation) -> ToolResult:
         try:
@@ -152,13 +154,4 @@ class ToolExecutor:
         except ValueError as exc:
             raise HarnessError("invalid_tool_input", str(exc)) from exc
 
-        adapter_key = (invocation.tool_id, invocation.operation)
-        try:
-            adapter = self.adapters[adapter_key]
-        except KeyError as exc:
-            raise HarnessError(
-                "unsupported_tool",
-                f"unsupported tool operation: {invocation.tool_id} {invocation.operation}",
-            ) from exc
-
-        return adapter(invocation)
+        return self.runtime_loader.run(manifest, invocation)
