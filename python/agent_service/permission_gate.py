@@ -12,10 +12,7 @@ DEFAULT_ALLOWED_PERMISSIONS = frozenset(
     {
         "read_attachment",
         "read_project_files",
-        "run_local_cli",
-        "run_python_plugin",
         "write_project_artifact",
-        "write_project_outputs",
     }
 )
 

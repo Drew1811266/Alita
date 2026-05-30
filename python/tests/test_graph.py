@@ -19,6 +19,7 @@ from agent_service.graph import (
 from agent_service.graph_compiler import compile_task_graph_to_node_graph
 from agent_service.goal_spec import parse_goal_spec
 from agent_service.intent import IntentKind, classify_route
+from agent_service.memory_store import MemoryRecord, MemoryStore
 from agent_service.model_client import ChatMessage
 from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
 from agent_service.router_v2 import STRUCTURED_ROUTER_ENV
@@ -1078,6 +1079,50 @@ def test_attachment_document_task_graph_uses_planner_chain_shape(monkeypatch) ->
     assert nodes_by_id["typst-export"]["permissionsRequired"] == [
         "write_project_artifact"
     ]
+
+
+def test_task_planning_loads_project_memory_by_default(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    project_path = tmp_path / "project.alita"
+    MemoryStore(str(project_path)).append(
+        MemoryRecord(
+            memory_id="preference-1",
+            kind="preference",
+            summary="Prefer concise implementation notes.",
+            source_ref="user",
+            created_at="2026-05-30T00:00:00Z",
+            tags=["planning"],
+        )
+    )
+    captured: dict[str, object] = {}
+    real_build_context_bundle = graph_module.build_context_bundle
+
+    def recording_build_context_bundle(*args, **kwargs):
+        captured["project_path"] = kwargs.get("project_path")
+        captured["memory_records"] = list(kwargs.get("memory_records") or [])
+        return real_build_context_bundle(*args, **kwargs)
+
+    monkeypatch.setattr(
+        graph_module,
+        "build_context_bundle",
+        recording_build_context_bundle,
+    )
+    message = UserMessage(
+        task_id="task-memory-plan",
+        content="Create a Python script that counts rows in a CSV file.",
+    )
+    run_state = AgentRunState.from_user_message(message).model_copy(
+        update={"project_path": str(project_path)}
+    )
+
+    graph_module._graph_payload_for_task(message, run_state=run_state)
+
+    assert captured["project_path"] == str(project_path)
+    memory_records = captured["memory_records"]
+    assert len(memory_records) == 1
+    assert memory_records[0].summary == "Prefer concise implementation notes."
 
 
 def test_attachment_with_latest_keyword_still_generates_node_graph() -> None:

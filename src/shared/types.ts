@@ -46,6 +46,57 @@ export type RuntimeNotice = {
   actualDurationMs?: number | null;
 };
 
+export type RuntimeCheckpointRecord = {
+  runId: string;
+  nodeId: string;
+  status: string;
+  completedOutputs: Record<
+    string,
+    {
+      values?: Record<string, unknown>;
+      artifactRefs?: string[];
+    }
+  >;
+  pendingNodeIds: string[];
+  createdAt: string;
+  recoveryCount: number;
+};
+
+export type AuthorityDecisionRecord = {
+  runId?: string;
+  nodeId?: string;
+  toolId: string;
+  providerId?: string;
+  allowed: boolean;
+  code: string;
+  message?: string;
+  permissions: string[];
+  createdAt: string;
+};
+
+export type RecoveryOperationRecord = {
+  op: "retry_node" | "rerun_node" | "rerun_from_node" | "request_tool_enablement";
+  node_id: string;
+  reason: string;
+};
+
+export type RecoveryActionRecord = {
+  runId?: string;
+  nodeId?: string;
+  action: "proposed" | "applied";
+  reason: string;
+  operations: RecoveryOperationRecord[];
+  requiresUserApproval: boolean;
+  createdAt: string;
+  recoveryCount?: number;
+};
+
+export type RuntimeObservabilityState = {
+  checkpoints: RuntimeCheckpointRecord[];
+  authorityDecisions: AuthorityDecisionRecord[];
+  recoveryActions: RecoveryActionRecord[];
+};
+
 export type RiskLevel =
   | "read_only"
   | "local_write"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field
@@ -45,12 +45,15 @@ class EvidenceRef(BaseModel):
     source_id: str
     title: str
     url: str
+    excerpt: str = ""
+    support_status: Literal["supports", "cited"] = "cited"
 
 
 class ResearchClaim(BaseModel):
     claim_id: str
     text: str
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    support_status: Literal["supported", "unsupported"] = "unsupported"
     diagnostics: list[str] = Field(default_factory=list)
 
 
@@ -209,16 +212,20 @@ def research_claims_from_markdown(
                 source_id=source.source_id,
                 title=source.title,
                 url=source.url,
+                excerpt=source.content_excerpt or source.snippet,
+                support_status="supports" if source.content_excerpt else "cited",
             )
             for source_id, source in sorted(accepted_sources.items())
             if source_id in cited_ids
         ]
         diagnostics = [] if refs else ["missing_evidence"]
+        support_status = "supported" if refs else "unsupported"
         claims.append(
             ResearchClaim(
                 claim_id=f"C{len(claims) + 1}",
                 text=text,
                 evidence_refs=refs,
+                support_status=support_status,
                 diagnostics=diagnostics,
             )
         )

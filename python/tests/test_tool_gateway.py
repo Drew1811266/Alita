@@ -4,6 +4,8 @@ from agent_service.tool_execution import ToolResult
 from agent_service.tool_providers.internal import InternalToolProvider
 from agent_service.authority import AuthorityContext
 from agent_service.tool_registry import ToolManifestSpec, ToolOperationSpec, ToolRegistry
+from agent_service.tool_providers.mcp import McpProviderConfig
+from tests.test_mcp_tool_provider import FakeMcpClient
 
 
 def _packages_root() -> Path:
@@ -137,7 +139,18 @@ def test_gateway_calls_internal_tool_adapter_and_normalizes_result() -> None:
         adapters={("document.markitdown_convert", "convert_local_file"): adapter},
     )
     provider = InternalToolProvider(registry=registry, executor=executor)
-    gateway = UnifiedToolGateway(providers=[provider])
+    gateway = UnifiedToolGateway(
+        providers=[provider],
+        authority_context=AuthorityContext(
+            approved_permissions=[
+                "read_project_files",
+                "write_project_outputs",
+                "run_python_plugin",
+            ],
+            read_roots=["D:\\Project"],
+            write_roots=["D:\\Project\\outputs"],
+        ),
+    )
 
     result = gateway.call_tool(
         UnifiedToolInvocation(
@@ -301,6 +314,26 @@ def test_default_unified_tool_gateway_uses_injected_registry_catalog() -> None:
     assert "internal:document.markitdown_convert" not in tool_ids
 
 
+def test_default_gateway_loads_enabled_mcp_providers_from_config() -> None:
+    from agent_service.tool_gateway import default_unified_tool_gateway
+
+    gateway = default_unified_tool_gateway(
+        registry=_custom_registry(),
+        mcp_provider_configs=[
+            McpProviderConfig(
+                provider_id="mcp-docs",
+                display_name="Docs MCP",
+                enabled=True,
+            )
+        ],
+        mcp_client_factory=lambda config: FakeMcpClient(),
+    )
+
+    tool_ids = {tool.id for tool in gateway.list_tools()}
+    assert "internal:document.injected_custom" in tool_ids
+    assert "mcp:mcp-docs:search_docs" in tool_ids
+
+
 def test_default_unified_tool_gateway_uses_injected_internal_executor() -> None:
     from agent_service.tool_gateway import default_unified_tool_gateway
     from agent_service.tool_protocol import UnifiedToolInvocation
@@ -321,6 +354,15 @@ def test_default_unified_tool_gateway_uses_injected_internal_executor() -> None:
     gateway = default_unified_tool_gateway(
         packages_root=_packages_root(),
         internal_executor=executor,
+        authority_context=AuthorityContext(
+            approved_permissions=[
+                "read_project_files",
+                "write_project_outputs",
+                "run_python_plugin",
+            ],
+            read_roots=["D:\\Project"],
+            write_roots=["D:\\Project\\artifacts"],
+        ),
     )
 
     result = gateway.call_tool(
@@ -345,3 +387,52 @@ def test_default_unified_tool_gateway_uses_injected_internal_executor() -> None:
     assert executor.calls
     assert executor.calls[0].tool_id == "document.markitdown_convert"
     assert executor.calls[0].operation == "convert_local_file"
+
+
+def test_gateway_denies_sensitive_tool_permission_without_explicit_authority(
+    tmp_path: Path,
+) -> None:
+    from agent_service.tool_execution import ToolExecutor
+    from agent_service.tool_gateway import UnifiedToolGateway
+    from agent_service.tool_protocol import UnifiedToolInvocation
+
+    calls = []
+
+    def adapter(invocation):
+        calls.append(invocation)
+        return ToolResult(values={"text": "should not run"})
+
+    registry = ToolRegistry.from_packages_root(_packages_root())
+    provider = InternalToolProvider(
+        registry=registry,
+        executor=ToolExecutor(
+            registry=registry,
+            adapters={("document.markitdown_convert", "convert_local_file"): adapter},
+        ),
+    )
+    gateway = UnifiedToolGateway(providers=[provider])
+
+    result = gateway.call_tool(
+        UnifiedToolInvocation(
+            invocation_id="inv-no-authority",
+            run_id="run-no-authority",
+            task_id="task-no-authority",
+            tool_id="internal:document.markitdown_convert",
+            arguments={
+                "operation": "convert_local_file",
+                "input_path": str(tmp_path / "source.docx"),
+                "output_path": str(tmp_path / "artifacts" / "source.md"),
+            },
+            project_path=str(tmp_path / "project.alita"),
+            allowed_roots=[str(tmp_path)],
+            requested_permissions=["read_project_files"],
+        )
+    )
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "authority_denied"
+    assert result.error.safe_details is not None
+    assert result.error.safe_details["authorityCode"] == "permission_denied"
+    assert "run_python_plugin" in result.error.message
+    assert calls == []

@@ -1,4 +1,6 @@
 import { useCallback, useRef } from "react";
+import type { BackendEvent } from "../../shared/events";
+import type { AuthorityDecisionRecord } from "../../shared/types";
 
 export type PendingPermissionChoiceSnapshot<
   TResearchChoice = unknown,
@@ -33,6 +35,40 @@ export function clearPendingPermissionChoices<
   >();
 }
 
+export type AuthorityDecisionSnapshot = {
+  authorityDecisions: AuthorityDecisionRecord[];
+  latestDeniedAuthorityDecision: AuthorityDecisionRecord | null;
+};
+
+export function createAuthorityDecisionSnapshot(): AuthorityDecisionSnapshot {
+  return {
+    authorityDecisions: [],
+    latestDeniedAuthorityDecision: null,
+  };
+}
+
+export function reduceAuthorityDecisionSnapshotEvents(
+  snapshot: AuthorityDecisionSnapshot,
+  events: BackendEvent[],
+): AuthorityDecisionSnapshot {
+  return events.reduce<AuthorityDecisionSnapshot>((current, event) => {
+    if (event.type !== "authority.decision_recorded") {
+      return current;
+    }
+
+    const authorityDecisions = [
+      ...current.authorityDecisions,
+      event.payload.decision,
+    ];
+    return {
+      authorityDecisions,
+      latestDeniedAuthorityDecision: event.payload.decision.allowed
+        ? current.latestDeniedAuthorityDecision
+        : event.payload.decision,
+    };
+  }, snapshot);
+}
+
 export function usePermissionController<
   TResearchChoice = unknown,
   TGraphOverwriteChoice = unknown,
@@ -40,6 +76,9 @@ export function usePermissionController<
   const pendingResearchChoiceRef = useRef<TResearchChoice | null>(null);
   const pendingGraphOverwriteChoiceRef =
     useRef<TGraphOverwriteChoice | null>(null);
+  const authorityDecisionSnapshotRef = useRef<AuthorityDecisionSnapshot>(
+    createAuthorityDecisionSnapshot(),
+  );
 
   const syncPendingPermissionChoices = useCallback(
     (
@@ -64,10 +103,27 @@ export function usePermissionController<
     );
   }, [syncPendingPermissionChoices]);
 
+  const syncAuthorityDecisionSnapshot = useCallback(
+    (snapshot: AuthorityDecisionSnapshot) => {
+      authorityDecisionSnapshotRef.current = snapshot;
+    },
+    [],
+  );
+
+  const applyAuthorityDecisionEvents = useCallback((events: BackendEvent[]) => {
+    authorityDecisionSnapshotRef.current = reduceAuthorityDecisionSnapshotEvents(
+      authorityDecisionSnapshotRef.current,
+      events,
+    );
+  }, []);
+
   return {
     pendingResearchChoiceRef,
     pendingGraphOverwriteChoiceRef,
+    authorityDecisionSnapshotRef,
     syncPendingPermissionChoices,
+    syncAuthorityDecisionSnapshot,
+    applyAuthorityDecisionEvents,
     clearPendingPermissionChoices: clearPendingPermissionChoiceRefs,
   };
 }

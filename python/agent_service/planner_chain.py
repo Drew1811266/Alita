@@ -22,6 +22,7 @@ from agent_service.task_planner import (
     resolve_tool_gaps,
     select_tools,
 )
+from agent_service.tool_protocol import normalize_tool_id, provider_tool_id
 from agent_service.tool_registry import ToolRegistry
 
 try:
@@ -32,6 +33,7 @@ except ImportError:
 
 PlannerStrategy = Literal["document_template", "tool_catalog", "legacy_task_planner"]
 PLANNER_CHAIN_VERSION = "planner_chain.v1"
+LOW_RISK_REACT_PERMISSIONS = {"read_attachment", "read_project_files"}
 LOCAL_PATH_PATTERN = re.compile(
     r"(?ix)"
     r"(?:"
@@ -254,7 +256,66 @@ def _with_planner_chain_metadata(
         "toolCandidates": _scrub_payload(list(request.route.tool_candidates)),
         "requiredPermissions": _scrub_payload(list(request.route.required_permissions)),
     }
+    react_metadata = _react_metadata_for_request(request, strategy=strategy)
+    if react_metadata is not None:
+        metadata["react"] = react_metadata
     return {**graph_payload, "metadata": _scrub_payload(metadata)}
+
+
+def _react_metadata_for_request(
+    request: PlannerChainRequest,
+    *,
+    strategy: PlannerStrategy,
+) -> dict[str, Any] | None:
+    if strategy != "legacy_task_planner":
+        return None
+    tool_ids = _allowed_react_tool_ids(request)
+    if not tool_ids:
+        return None
+    permissions = _allowed_react_permissions(request, tool_ids)
+    return {
+        "enabled": True,
+        "nativeToolCalls": False,
+        "maxSteps": 4,
+        "maxToolCalls": min(3, max(1, len(tool_ids))),
+        "allowedToolIds": tool_ids,
+        "allowedPermissions": permissions,
+    }
+
+
+def _allowed_react_tool_ids(request: PlannerChainRequest) -> list[str]:
+    available = {
+        normalize_tool_id(tool.tool_id) for tool in request.context.available_tools
+    }
+    available.update(
+        provider_tool_id(tool.tool_id) for tool in request.context.available_tools
+    )
+    selected: list[str] = []
+    for tool_id in request.route.tool_candidates:
+        normalized = normalize_tool_id(str(tool_id))
+        unprefixed = provider_tool_id(normalized)
+        if available and normalized not in available and unprefixed not in available:
+            continue
+        if normalized not in selected:
+            selected.append(normalized)
+    return selected
+
+
+def _allowed_react_permissions(
+    request: PlannerChainRequest,
+    tool_ids: list[str],
+) -> list[str]:
+    allowed: list[str] = []
+    for permission in request.route.required_permissions:
+        if permission in LOW_RISK_REACT_PERMISSIONS and permission not in allowed:
+            allowed.append(permission)
+    for tool in request.context.available_tools:
+        if tool.tool_id not in tool_ids:
+            continue
+        for permission in tool.permissions:
+            if permission in LOW_RISK_REACT_PERMISSIONS and permission not in allowed:
+                allowed.append(permission)
+    return allowed
 
 
 def _validate_graph_payload(graph_payload: dict[str, Any]) -> None:

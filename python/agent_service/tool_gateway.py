@@ -1,12 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from agent_service.authority import (
-    AuthorityContext,
-    authorize_tool_invocation,
-)
+from agent_service.authority import AuthorityContext, authorize_tool_invocation
 from agent_service.schema_validation import validate_json_schema_subset
 from agent_service.tool_execution import ToolExecutor, default_tool_packages_root
 from agent_service.tool_protocol import (
@@ -16,6 +14,7 @@ from agent_service.tool_protocol import (
     UnifiedToolResult,
 )
 from agent_service.tool_providers.internal import InternalToolProvider
+from agent_service.tool_providers.mcp import McpClient, McpProviderConfig, McpToolProvider
 from agent_service.tool_registry import ToolRegistry
 
 
@@ -50,9 +49,9 @@ class UnifiedToolGateway:
         except ValueError as error:
             return _error("invalid_tool_input", str(error), recoverable=True)
 
-        authority_context = self.authority_context or _legacy_authority_context(
+        authority_context = _authority_context_for_invocation(
+            self.authority_context,
             invocation,
-            tool,
         )
         decision = authorize_tool_invocation(invocation, tool, authority_context)
         if not decision.allowed:
@@ -82,20 +81,13 @@ class UnifiedToolGateway:
         )
 
 
-def _legacy_authority_context(
+def _authority_context_for_invocation(
+    authority_context: AuthorityContext | None,
     invocation: UnifiedToolInvocation,
-    tool,
 ) -> AuthorityContext:
-    context = AuthorityContext.from_invocation(invocation)
-    return AuthorityContext(
-        approved_permissions=[
-            *context.approved_permissions,
-            *tool.permissions,
-        ],
-        read_roots=list(context.read_roots),
-        write_roots=list(context.write_roots),
-        runtime_budget_ms=context.runtime_budget_ms,
-    )
+    if authority_context is None:
+        return AuthorityContext.from_invocation(invocation)
+    return authority_context.with_invocation_scope(invocation)
 
 
 def default_unified_tool_gateway(
@@ -103,18 +95,51 @@ def default_unified_tool_gateway(
     packages_root: Path | None = None,
     registry: ToolRegistry | None = None,
     internal_executor: ToolExecutor | None = None,
+    authority_context: AuthorityContext | None = None,
+    mcp_provider_configs: list[McpProviderConfig] | None = None,
+    mcp_client_factory: Callable[[McpProviderConfig], McpClient] | None = None,
 ) -> UnifiedToolGateway:
     effective_registry = registry or ToolRegistry.from_packages_root(
         packages_root or default_tool_packages_root()
     )
-    return UnifiedToolGateway(
-        providers=[
-            InternalToolProvider(
-                registry=effective_registry,
-                executor=internal_executor,
-            )
-        ]
+    providers = [
+        InternalToolProvider(
+            registry=effective_registry,
+            executor=internal_executor,
+        )
+    ]
+    providers.extend(
+        _mcp_providers_from_config(
+            configs=mcp_provider_configs or [],
+            client_factory=mcp_client_factory,
+        )
     )
+    return UnifiedToolGateway(
+        providers=providers,
+        authority_context=authority_context,
+    )
+
+
+def _mcp_providers_from_config(
+    *,
+    configs: list[McpProviderConfig],
+    client_factory: Callable[[McpProviderConfig], McpClient] | None,
+) -> list[McpToolProvider]:
+    if client_factory is None:
+        return []
+    providers: list[McpToolProvider] = []
+    for config in configs:
+        if not config.enabled:
+            continue
+        providers.append(
+            McpToolProvider(
+                provider_id=config.provider_id,
+                display_name=config.display_name,
+                client=client_factory(config),
+                enabled=True,
+            )
+        )
+    return providers
 
 
 def _error(

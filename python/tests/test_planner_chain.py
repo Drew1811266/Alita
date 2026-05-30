@@ -260,6 +260,31 @@ def test_planner_chain_uses_legacy_task_planner_for_code_task() -> None:
     ]
 
 
+def test_planner_chain_emits_bounded_react_policy_for_tool_exploration() -> None:
+    message = UserMessage(
+        task_id="task-react-plan",
+        content="Draft a concise implementation note.",
+    )
+    request = _request_for(
+        message,
+        _route_payload(
+            taskType="content_creation",
+            toolCandidates=["internal:test.echo_values"],
+            requiredPermissions=["read_project_files", "run_local_cli"],
+        ),
+    )
+
+    result = PlannerChain(tool_registry=_tool_registry()).plan(request)
+
+    react = result.graph_payload["metadata"]["react"]
+    assert react["enabled"] is True
+    assert react["maxSteps"] <= 4
+    assert react["maxToolCalls"] <= 3
+    assert react["allowedToolIds"] == ["internal:test.echo_values"]
+    assert react["allowedPermissions"] == ["read_project_files"]
+    assert any(node.get("modelRef") == "local-task-reasoner" for node in result.graph_payload["nodes"])
+
+
 def test_planner_chain_uses_tool_catalog_planner_before_legacy() -> None:
     message = UserMessage(
         task_id="task-tool-catalog-chain",

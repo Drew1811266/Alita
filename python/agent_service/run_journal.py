@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from agent_service.runtime_loop import RuntimeCheckpoint
+
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -31,7 +33,7 @@ class RunJournal:
         return [
             json.loads(path.read_text(encoding="utf-8"))
             for path in self.base_dir.glob("*.json")
-            if path.name != "run.json"
+            if path.name not in {"run.json", "audit.json", "checkpoints.json"}
         ]
 
     def write_audit_event(self, payload: dict[str, Any]) -> None:
@@ -45,6 +47,24 @@ class RunJournal:
             return []
         payload = json.loads(path.read_text(encoding="utf-8"))
         return list(payload.get("events", []))
+
+    def write_checkpoint(self, checkpoint: RuntimeCheckpoint) -> None:
+        checkpoints = self.read_checkpoints()
+        checkpoints.append(checkpoint.to_record())
+        self._write_json(self.base_dir / "checkpoints.json", {"checkpoints": checkpoints})
+
+    def read_checkpoints(self) -> list[dict[str, Any]]:
+        path = self.base_dir / "checkpoints.json"
+        if not path.exists():
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return list(payload.get("checkpoints", []))
+
+    def read_latest_checkpoint(self) -> dict[str, Any] | None:
+        checkpoints = self.read_checkpoints()
+        if not checkpoints:
+            return None
+        return checkpoints[-1]
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.write_text(

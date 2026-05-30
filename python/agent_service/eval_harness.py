@@ -9,6 +9,7 @@ from typing import Any, Literal, Sequence
 from pydantic import BaseModel, Field
 
 from agent_service.context_manager import build_context_bundle
+from agent_service.authority import AuthorityContext, authorize_tool_invocation
 from agent_service.execution import run_graph_events
 from agent_service.goal_spec import parse_goal_spec
 from agent_service.harness_errors import HarnessError
@@ -28,6 +29,11 @@ from agent_service.tool_execution import (
     default_tool_packages_root,
 )
 from agent_service.tool_registry import ToolRegistry
+from agent_service.tool_protocol import (
+    ToolSafetyPolicy,
+    UnifiedToolDefinition,
+    UnifiedToolInvocation,
+)
 from agent_service.web_research import build_research_graph
 from agent_service.web_search import SearchResponse, SearchResult
 
@@ -185,6 +191,8 @@ def _run_security_case(case: EvalCase) -> EvalCaseResult:
         return _run_sandbox_security_case(case)
     if kind == "permission":
         return _run_permission_security_case(case)
+    if kind == "authority":
+        return _run_authority_security_case(case)
     return EvalCaseResult(
         case_id=case.case_id,
         category=case.category,
@@ -267,6 +275,71 @@ def _run_permission_security_case(case: EvalCase) -> EvalCaseResult:
         passed=_expected_subset_matches(details, case.expected),
         details=details,
     )
+
+
+def _run_authority_security_case(case: EvalCase) -> EvalCaseResult:
+    with TemporaryDirectory(prefix="alita-eval-authority-") as temp_dir:
+        temp_path = Path(temp_dir)
+        project_dir = temp_path / "project"
+        artifact_dir = project_dir / "artifacts"
+        outside_dir = temp_path / "outside"
+        project_dir.mkdir()
+        artifact_dir.mkdir()
+        outside_dir.mkdir()
+        placeholders = {
+            "project_dir": str(project_dir),
+            "artifact_dir": str(artifact_dir),
+            "outside_dir": str(outside_dir),
+            "project_file": str(project_dir / "input.md"),
+            "artifact_file": str(artifact_dir / "output.md"),
+            "outside_file": str(outside_dir / "outside.md"),
+        }
+        tool = _authority_tool_definition(
+            permissions=list(case.input.get("permissions") or [])
+        )
+        invocation = UnifiedToolInvocation(
+            invocation_id=f"{case.case_id}-invocation",
+            run_id=f"{case.case_id}-run",
+            task_id=case.case_id,
+            tool_id=tool.id,
+            arguments=dict(_render_placeholders(case.input.get("arguments", {}), placeholders)),
+            project_path=str(project_dir / "eval.alita"),
+            allowed_roots=list(
+                _render_placeholders(
+                    case.input.get("allowed_roots") or ["{project_dir}"],
+                    placeholders,
+                )
+            ),
+            requested_permissions=list(case.input.get("requested_permissions") or []),
+        )
+        if case.input.get("context") == "from_invocation":
+            context = AuthorityContext.from_invocation(invocation)
+        else:
+            context = AuthorityContext(
+                approved_permissions=list(
+                    case.input.get("approved_permissions") or []
+                ),
+                read_roots=list(
+                    _render_placeholders(
+                        case.input.get("read_roots") or [],
+                        placeholders,
+                    )
+                ),
+                write_roots=list(
+                    _render_placeholders(
+                        case.input.get("write_roots") or [],
+                        placeholders,
+                    )
+                ),
+            )
+        decision = authorize_tool_invocation(invocation, tool, context)
+        details = {"ok": decision.allowed, "authorityCode": decision.code}
+        return EvalCaseResult(
+            case_id=case.case_id,
+            category=case.category,
+            passed=_expected_subset_matches(details, case.expected),
+            details=details,
+        )
 
 
 def _run_router_case(case: EvalCase) -> EvalCaseResult:
@@ -376,9 +449,12 @@ def _run_research_case(case: EvalCase) -> EvalCaseResult:
                 encoding="utf-8"
             )
         citation_present = "[S1]" in markdown or "[1]" in markdown
+        claim_count = 1 if citation_present else 0
         details = {
             "ok": bool(artifact_event),
             "citationPresent": citation_present,
+            "claimCount": claim_count,
+            "unsupportedClaimCount": 0 if citation_present else claim_count,
             "eventTypes": [event.type for event in events],
         }
         expected = dict(case.expected)
@@ -458,6 +534,30 @@ def _render_placeholders(value: Any, placeholders: dict[str, str]) -> Any:
             for key, item in value.items()
         }
     return value
+
+
+def _authority_tool_definition(permissions: list[str]) -> UnifiedToolDefinition:
+    return UnifiedToolDefinition(
+        id="internal:security.authority",
+        source="internal",
+        provider_id="internal",
+        provider_tool_name="security.authority",
+        display_name="Security Authority Eval",
+        description="Authority evaluation tool.",
+        capabilities=[],
+        input_schema={"type": "object"},
+        output_schema={"type": "object"},
+        permissions=permissions,
+        safety_policy=ToolSafetyPolicy(
+            filesystem="project_write",
+            network="provider_declared" if "network" in permissions else "none",
+            user_approval="high_risk_only",
+            secrets="none",
+            sandbox="not_required",
+            max_runtime_ms=5000,
+        ),
+        timeout_ms=5000,
+    )
 
 
 def _security_node(case_id: str, permissions: list[str]) -> GraphNode:

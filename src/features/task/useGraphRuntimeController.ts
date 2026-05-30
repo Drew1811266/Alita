@@ -1,14 +1,18 @@
 import { useCallback, useRef, useState } from "react";
+import type { BackendEvent } from "../../shared/events";
+import type { RuntimeObservabilityState } from "../../shared/types";
 
 export type GraphRuntimeControllerState = {
   running: boolean;
   cancelling: boolean;
+  observability: RuntimeObservabilityState;
 };
 
 export function createGraphRuntimeControllerState(): GraphRuntimeControllerState {
   return {
     running: false,
     cancelling: false,
+    observability: createRuntimeObservabilityState(),
   };
 }
 
@@ -19,6 +23,7 @@ export function graphRunStarted(
     running: true,
     cancelling: false,
     activeRunId: runId,
+    observability: createRuntimeObservabilityState(),
   };
 }
 
@@ -26,6 +31,57 @@ export function graphRunSettled(): GraphRuntimeControllerState {
   return {
     running: false,
     cancelling: false,
+    observability: createRuntimeObservabilityState(),
+  };
+}
+
+export function createRuntimeObservabilityState(): RuntimeObservabilityState {
+  return {
+    checkpoints: [],
+    authorityDecisions: [],
+    recoveryActions: [],
+  };
+}
+
+export function reduceRuntimeObservabilityEvents(
+  state: RuntimeObservabilityState,
+  events: BackendEvent[],
+): RuntimeObservabilityState {
+  let checkpoints = state.checkpoints;
+  let authorityDecisions = state.authorityDecisions;
+  let recoveryActions = state.recoveryActions;
+
+  for (const event of events) {
+    if (event.type === "runtime.checkpoint_recorded") {
+      checkpoints = [...checkpoints, event.payload.checkpoint];
+      continue;
+    }
+
+    if (event.type === "authority.decision_recorded") {
+      authorityDecisions = [...authorityDecisions, event.payload.decision];
+      continue;
+    }
+
+    if (
+      event.type === "recovery.action_proposed" ||
+      event.type === "recovery.action_applied"
+    ) {
+      recoveryActions = [...recoveryActions, event.payload.action];
+    }
+  }
+
+  if (
+    checkpoints === state.checkpoints &&
+    authorityDecisions === state.authorityDecisions &&
+    recoveryActions === state.recoveryActions
+  ) {
+    return state;
+  }
+
+  return {
+    checkpoints,
+    authorityDecisions,
+    recoveryActions,
   };
 }
 
@@ -41,6 +97,16 @@ export function useGraphRuntimeController() {
     setState((current) => ({ ...current, cancelling }));
   }, []);
 
+  const applyObservabilityEvents = useCallback((events: BackendEvent[]) => {
+    setState((current) => ({
+      ...current,
+      observability: reduceRuntimeObservabilityEvents(
+        current.observability,
+        events,
+      ),
+    }));
+  }, []);
+
   const setActiveRunIdRef = useCallback((runId: string | null) => {
     activeRunIdRef.current = runId;
   }, []);
@@ -50,6 +116,7 @@ export function useGraphRuntimeController() {
     activeRunIdRef,
     setRunning,
     setCancelling,
+    applyObservabilityEvents,
     setActiveRunIdRef,
   };
 }

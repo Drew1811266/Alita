@@ -8,14 +8,30 @@ from agent_service.schemas import GraphNode
 from agent_service.tool_registry import ToolManifestSpec, ToolOperationSpec, ToolRegistry
 
 
-def test_allows_default_document_permissions() -> None:
+def test_allows_document_write_permissions_after_approval() -> None:
     node = _node(
         "typst-export",
         tool_ref="document.typst_compile",
         permissions=["write_project_artifact"],
     )
 
-    PermissionGate().ensure_node_allowed(node, tool_registry=_registry())
+    PermissionGate(
+        approved_permissions=["write_project_outputs"],
+    ).ensure_node_allowed(node, tool_registry=_registry())
+
+
+def test_default_gate_requires_approval_for_project_write_and_cli() -> None:
+    node = _node(
+        "typst-export",
+        tool_ref="document.typst_compile",
+        permissions=["write_project_artifact"],
+    )
+
+    with pytest.raises(HarnessError) as exc_info:
+        PermissionGate().ensure_node_allowed(node, tool_registry=_registry())
+
+    assert exc_info.value.code == "permission_required"
+    assert "write_project_outputs" in exc_info.value.message
 
 
 def test_explicit_empty_default_allowlist_blocks_document_permissions() -> None:
