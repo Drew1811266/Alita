@@ -76,6 +76,17 @@ def test_polite_chinese_weather_prompt_extracts_city_only() -> None:
     assert route.arguments == {"location": "上海"}
 
 
+def test_chinese_weather_prompt_with_intent_prefix_extracts_city_only() -> None:
+    route = route_tool_for_message(
+        UserMessage(task_id="weather", content="我想知道今天北京市的天气。")
+    )
+
+    assert route is not None
+    assert route.tool_name == "weather.current"
+    assert route.status == "ready"
+    assert route.arguments == {"location": "北京"}
+
+
 def test_chinese_will_it_rain_prompt_extracts_city_only() -> None:
     route = route_tool_for_message(
         UserMessage(task_id="weather", content="今天上海会不会下雨？")
