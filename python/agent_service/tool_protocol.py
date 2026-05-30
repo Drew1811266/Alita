@@ -126,6 +126,15 @@ def provider_tool_id(tool_id: str) -> str:
     return tool_id
 
 
+def provider_id_for_tool_id(tool_id: str) -> str:
+    normalized = normalize_tool_id(tool_id)
+    if normalized.startswith("internal:"):
+        return "internal"
+    if normalized.startswith("mcp:"):
+        return "mcp"
+    return "unknown"
+
+
 def equivalent_tool_ids(tool_id: str) -> set[str]:
     normalized = normalize_tool_id(tool_id)
     if normalized.startswith("internal:"):

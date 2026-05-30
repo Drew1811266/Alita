@@ -19,9 +19,14 @@ import { useArtifactPreviewController } from "../features/artifacts/useArtifactP
 import { pickChatAttachments } from "../features/chat/attachmentApi";
 import { ChatPanel } from "../features/chat/ChatPanel";
 import {
-  insertTranscriptIntoDraft,
-  type DraftSelection,
-} from "../features/voice/draftInsertion";
+  collectProjectAttachments,
+  createId,
+  createMessage,
+  initialMessages,
+  selectAgentAttachments,
+  useChatSessionController,
+} from "../features/chat/useChatSessionController";
+import { usePermissionController } from "../features/permissions/usePermissionController";
 import { useVoiceInputController } from "../features/voice/useVoiceInputController";
 import {
   addModelFile,
@@ -63,6 +68,10 @@ import {
 } from "../features/project/projectApi";
 import { ProjectHome } from "../features/project/ProjectHome";
 import {
+  rememberRecentProject,
+  useProjectController,
+} from "../features/project/useProjectController";
+import {
   cancelNodeGraphRun,
   createTemporaryScriptPermissionPayload,
   runNodeGraphStream,
@@ -79,6 +88,7 @@ import {
   reduceGraphRunControllerEvents,
   useGraphRunController,
 } from "../features/task/useGraphRunController";
+import { useGraphRuntimeController } from "../features/task/useGraphRuntimeController";
 import { WorkbenchTopBar } from "../features/workbench/WorkbenchTopBar";
 import {
   toGraphOverwriteSubmitChoice,
@@ -89,51 +99,13 @@ import type {
   AlitaProject,
   AgentNode,
   ArtifactRef,
-  ChatAttachment,
   ChatMessage,
   NodeGraph,
-  ProjectAttachmentRef,
   ProjectOpenResult,
-  ProjectOpenWarning,
   RunHistoryEntry,
 } from "../shared/types";
 import type { BackendEvent } from "../shared/events";
 import type { ResearchChoiceId } from "../shared/events";
-
-const initialMessages: ChatMessage[] = [
-  {
-    messageId: "system-initial",
-    role: "system",
-    content: "开发版对话已启动。请描述你的文档处理目标。",
-    attachments: [],
-    createdAt: "2026-05-09T00:00:00.000Z",
-  },
-  {
-    messageId: "assistant-initial",
-    role: "assistant",
-    content: "你可以先添加一个文档文件，再说明需要摘要、改写或提取信息。",
-    attachments: [],
-    createdAt: "2026-05-09T00:00:01.000Z",
-  },
-];
-
-function createId(prefix: string): string {
-  return `${prefix}-${crypto.randomUUID()}`;
-}
-
-function createMessage(
-  role: ChatMessage["role"],
-  content: string,
-  attachments: ChatAttachment[] = [],
-): ChatMessage {
-  return {
-    messageId: createId(role),
-    role,
-    content,
-    attachments,
-    createdAt: new Date().toISOString(),
-  };
-}
 
 function resolveLocalStateAction<T>(action: LocalStateAction<T>, current: T): T {
   return typeof action === "function"
@@ -199,9 +171,54 @@ export const submitUserMessageWithStreamFallbackForTest =
   submitUserMessageWithStreamFallback;
 
 export function App() {
-  const [activeProject, setActiveProject] = useState<AlitaProject | null>(
-    null,
-  );
+  const projectController = useProjectController();
+  const {
+    activeProject,
+    projectWarnings,
+    projectError,
+    saving,
+    recentProjects,
+  } = projectController.state;
+  const {
+    setActiveProject,
+    setProjectWarnings,
+    setProjectError,
+    setSaving,
+    setRecentProjects,
+  } = projectController;
+
+  const chatSessionController = useChatSessionController();
+  const { draft, pendingAttachments, contextAttachments } =
+    chatSessionController.state;
+  const {
+    setDraft,
+    applyVoiceTranscript,
+    setPendingAttachments,
+    setContextAttachments,
+    addPendingAttachments,
+  } = chatSessionController;
+
+  const graphRuntimeController = useGraphRuntimeController();
+  const { running: graphRunning, cancelling: graphCancelling } =
+    graphRuntimeController.state;
+  const {
+    activeRunIdRef,
+    setRunning: setGraphRunning,
+    setCancelling: setGraphCancelling,
+    setActiveRunIdRef,
+  } = graphRuntimeController;
+
+  const permissionController = usePermissionController<
+    PendingResearchChoice,
+    PendingGraphOverwriteChoice
+  >();
+  const {
+    pendingResearchChoiceRef,
+    pendingGraphOverwriteChoiceRef,
+    syncPendingPermissionChoices,
+    clearPendingPermissionChoices,
+  } = permissionController;
+
   const graphRunController = useGraphRunController({
     messages: initialMessages,
   });
@@ -217,21 +234,8 @@ export function App() {
   } = graphRunController.state;
   const setGraphRunState = graphRunController.setState;
   const messagesRef = useRef<ChatMessage[]>(initialMessages);
-  const [draft, setDraft] = useState("");
-  const handleVoiceTranscript = useCallback(
-    (transcript: string, selection: DraftSelection | null) => {
-      setDraft((currentDraft) =>
-        insertTranscriptIntoDraft({
-          currentDraft,
-          transcript,
-          selection,
-        }),
-      );
-    },
-    [],
-  );
   const voiceInputController = useVoiceInputController({
-    onTranscript: handleVoiceTranscript,
+    onTranscript: applyVoiceTranscript,
   });
   const { voiceInput } = voiceInputController.state;
   const {
@@ -239,27 +243,10 @@ export function App() {
     handleVoiceToggle,
     refreshVoiceInputAvailability,
   } = voiceInputController;
-  const [pendingAttachments, setPendingAttachments] = useState<
-    ChatAttachment[]
-  >([]);
-  const [contextAttachments, setContextAttachments] = useState<
-    ChatAttachment[]
-  >([]);
   const graphRef = useRef<NodeGraph | null>(null);
-  const [projectWarnings, setProjectWarnings] = useState<ProjectOpenWarning[]>(
-    [],
-  );
-  const [projectError, setProjectError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
-  const [graphRunning, setGraphRunning] = useState(false);
-  const [graphCancelling, setGraphCancelling] = useState(false);
-  const activeRunIdRef = useRef<string | null>(null);
   const runHistoryRef = useRef<RunHistoryEntry[]>([]);
   const artifactsRef = useRef<ArtifactRef[]>([]);
-  const pendingResearchChoiceRef = useRef<PendingResearchChoice | null>(null);
-  const pendingGraphOverwriteChoiceRef =
-    useRef<PendingGraphOverwriteChoice | null>(null);
   const artifactPreviewController = useArtifactPreviewController();
   const {
     clearPreview,
@@ -284,7 +271,6 @@ export function App() {
     setPreferences,
     setPreferencesError,
   } = preferencesController;
-  const [recentProjects, setRecentProjects] = useState<string[]>([]);
 
   const setMessages = useCallback(
     (action: LocalStateAction<ChatMessage[]>) => {
@@ -365,11 +351,11 @@ export function App() {
           action,
           current.activeRunId,
         );
-        activeRunIdRef.current = activeRunId;
+        setActiveRunIdRef(activeRunId);
         return { ...current, activeRunId };
       });
     },
-    [setGraphRunState],
+    [setActiveRunIdRef, setGraphRunState],
   );
 
   const setDirty = useCallback(
@@ -411,16 +397,19 @@ export function App() {
   }, [messages]);
 
   useEffect(() => {
-    pendingResearchChoiceRef.current = pendingResearchChoice;
-  }, [pendingResearchChoice]);
+    syncPendingPermissionChoices({
+      pendingResearchChoice,
+      pendingGraphOverwriteChoice,
+    });
+  }, [
+    pendingGraphOverwriteChoice,
+    pendingResearchChoice,
+    syncPendingPermissionChoices,
+  ]);
 
   useEffect(() => {
-    pendingGraphOverwriteChoiceRef.current = pendingGraphOverwriteChoice;
-  }, [pendingGraphOverwriteChoice]);
-
-  useEffect(() => {
-    activeRunIdRef.current = activeRunId;
-  }, [activeRunId]);
+    setActiveRunIdRef(activeRunId);
+  }, [activeRunId, setActiveRunIdRef]);
 
   useEffect(() => {
     runHistoryRef.current = runHistory;
@@ -495,7 +484,9 @@ export function App() {
 
   const applyProjectOpenResult = (result: ProjectOpenResult) => {
     const projectMessages =
-      result.project.messages.length > 0 ? result.project.messages : initialMessages;
+      result.project.messages.length > 0
+        ? result.project.messages
+        : initialMessages;
     setActiveProject({ ...result.project, messages: projectMessages });
     setMessages(projectMessages);
     messagesRef.current = projectMessages;
@@ -506,11 +497,10 @@ export function App() {
     artifactsRef.current = [];
     setSelectedCanvasNode(null);
     setActiveRunId(null);
-    activeRunIdRef.current = null;
+    setActiveRunIdRef(null);
     setPendingResearchChoice(null);
-    pendingResearchChoiceRef.current = null;
     setPendingGraphOverwriteChoice(null);
-    pendingGraphOverwriteChoiceRef.current = null;
+    clearPendingPermissionChoices();
     setGraphRunning(false);
     setGraphCancelling(false);
     setContextAttachments(
@@ -525,10 +515,7 @@ export function App() {
     setProjectWarnings(result.warnings);
     setDirty(false);
     setRecentProjects((current) =>
-      [
-        result.project.path,
-        ...current.filter((path) => path !== result.project.path),
-      ].slice(0, 8),
+      rememberRecentProject(current, result.project.path),
     );
   };
 
@@ -540,17 +527,7 @@ export function App() {
         return;
       }
 
-      setPendingAttachments((current) => {
-        const existingPaths = new Set(
-          current.map((attachment) => attachment.path),
-        );
-        return [
-          ...current,
-          ...selectedAttachments.filter(
-            (attachment) => !existingPaths.has(attachment.path),
-          ),
-        ];
-      });
+      addPendingAttachments(selectedAttachments);
     } catch (error) {
       setProjectError(String(error));
     }
@@ -1279,95 +1256,6 @@ export function App() {
       {preferencesDialog}
     </main>
   );
-}
-
-function collectProjectAttachments(
-  existing: ProjectAttachmentRef[],
-  contextAttachments: ChatAttachment[],
-  messages: ChatMessage[],
-): ProjectAttachmentRef[] {
-  const byPath = new Map<string, ProjectAttachmentRef>();
-
-  for (const attachment of existing) {
-    byPath.set(attachment.path, attachment);
-  }
-
-  for (const attachment of [
-    ...contextAttachments,
-    ...messages.flatMap((message) => message.attachments),
-  ]) {
-    if (!byPath.has(attachment.path)) {
-      byPath.set(attachment.path, {
-        ...attachment,
-        originalPath: attachment.path,
-        fileExists: true,
-      });
-    }
-  }
-
-  return [...byPath.values()];
-}
-
-export function selectAgentAttachments({
-  content,
-  sentAttachments,
-  contextAttachments,
-}: {
-  content: string;
-  sentAttachments: ChatAttachment[];
-  contextAttachments: ChatAttachment[];
-}): ChatAttachment[] {
-  if (sentAttachments.length > 0) {
-    return sentAttachments;
-  }
-  if (contextAttachments.length === 0) {
-    return [];
-  }
-  if (referencesContextAttachment(content, contextAttachments)) {
-    return contextAttachments;
-  }
-  return [];
-}
-
-function referencesContextAttachment(
-  content: string,
-  contextAttachments: ChatAttachment[],
-): boolean {
-  const normalized = content.trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-
-  const explicitReferences = [
-    "attached",
-    "attachment",
-    "uploaded",
-    "this file",
-    "the file",
-    "this document",
-    "the document",
-    "\u9644\u4ef6",
-    "\u4e0a\u4f20",
-    "\u8fd9\u4e2a\u6587\u4ef6",
-    "\u8fd9\u4efd\u6587\u4ef6",
-    "\u8fd9\u4e2a\u6587\u6863",
-    "\u8fd9\u4efd\u6587\u6863",
-    "\u521a\u624d\u7684\u6587\u4ef6",
-    "\u521a\u624d\u7684\u6587\u6863",
-  ];
-
-  if (explicitReferences.some((reference) => normalized.includes(reference))) {
-    return true;
-  }
-
-  return contextAttachments.some((attachment) => {
-    const name = attachment.name.toLowerCase();
-    const pathName = attachment.path.split(/[\\/]/).pop()?.toLowerCase() ?? "";
-    return Boolean(
-      (name && normalized.includes(name)) ||
-        (pathName && normalized.includes(pathName)),
-    );
-  });
 }
 
 function lastRunHistoryEntry(

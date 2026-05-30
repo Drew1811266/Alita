@@ -6,8 +6,9 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from collections.abc import Iterable, Iterator
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
+from agent_service.model_tool_adapter import ModelToolCall
 from agent_service.model_policy import ModelCallPolicy, apply_policy_defaults
 
 
@@ -20,6 +21,12 @@ DEFAULT_MAX_TOKENS = 1024
 class ChatMessage:
     role: ChatRole
     content: str
+
+
+@dataclass(frozen=True)
+class ChatWithToolsResponse:
+    content: str
+    tool_calls: list[ModelToolCall]
 
 
 @dataclass(frozen=True)
@@ -325,6 +332,40 @@ class OpenAICompatibleModelClient:
 
         raise ModelRuntimeRequestFailed("OpenAI-compatible API returned an empty chat response")
 
+    def chat_with_tools(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] = "auto",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
+    ) -> ChatWithToolsResponse:
+        self._ensure_enabled()
+        payload = self._payload(
+            messages,
+            temperature,
+            max_tokens,
+            stream=False,
+            policy=policy,
+        )
+        payload["tools"] = list(tools)
+        payload["tool_choice"] = tool_choice
+        response = self._transport(
+            self._chat_url(),
+            payload,
+            self.config.timeout_seconds,
+            self._headers(),
+        )
+        parsed = _extract_api_chat_with_tools_response(response)
+        if parsed.content.strip() or parsed.tool_calls:
+            return parsed
+
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an empty chat response"
+        )
+
     def stream_chat(
         self,
         messages: list[ChatMessage],
@@ -607,6 +648,74 @@ def _extract_api_chat_content(response: dict) -> str:
             "OpenAI-compatible API returned an unexpected chat response shape"
         )
     return content
+
+
+def _extract_api_chat_with_tools_response(response: dict) -> ChatWithToolsResponse:
+    try:
+        message = response["choices"][0]["message"]
+    except (KeyError, IndexError, TypeError) as error:
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an unexpected chat response shape"
+        ) from error
+
+    if not isinstance(message, dict):
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an unexpected chat response shape"
+        )
+
+    content = message.get("content") or ""
+    if not isinstance(content, str):
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an unexpected chat response shape"
+        )
+
+    raw_tool_calls = message.get("tool_calls") or []
+    if not isinstance(raw_tool_calls, list):
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an unexpected tool call response shape"
+        )
+
+    return ChatWithToolsResponse(
+        content=content,
+        tool_calls=[_extract_api_tool_call(raw) for raw in raw_tool_calls],
+    )
+
+
+def _extract_api_tool_call(raw: Any) -> ModelToolCall:
+    if not isinstance(raw, dict):
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an unexpected tool call response shape"
+        )
+    function = raw.get("function")
+    if not isinstance(function, dict):
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an unexpected tool call response shape"
+        )
+    call_id = raw.get("id")
+    name = function.get("name")
+    if not isinstance(call_id, str) or not isinstance(name, str):
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an unexpected tool call response shape"
+        )
+    arguments = function.get("arguments", {})
+    if isinstance(arguments, str):
+        try:
+            parsed_arguments = json.loads(arguments or "{}")
+        except json.JSONDecodeError as error:
+            raise ModelRuntimeRequestFailed(
+                "OpenAI-compatible API returned malformed tool call arguments"
+            ) from error
+    elif isinstance(arguments, dict):
+        parsed_arguments = dict(arguments)
+    else:
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned an unexpected tool call response shape"
+        )
+    if not isinstance(parsed_arguments, dict):
+        raise ModelRuntimeRequestFailed(
+            "OpenAI-compatible API returned malformed tool call arguments"
+        )
+    return ModelToolCall(id=call_id, name=name, arguments=parsed_arguments)
 
 
 def _extract_api_stream_delta(response: dict) -> str:

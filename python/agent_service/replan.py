@@ -14,6 +14,7 @@ GraphPatchOpName = Literal[
     "rerun_from_node",
     "request_tool_enablement",
 ]
+RecoveryActionKind = Literal["retry", "replace_tool", "fix_arguments", "ask_user"]
 
 
 class GraphPatchOperation(BaseModel):
@@ -22,9 +23,18 @@ class GraphPatchOperation(BaseModel):
     reason: str
 
 
+class RecoveryAction(BaseModel):
+    kind: RecoveryActionKind
+    node_id: str
+    reason: str
+    automatic: bool = False
+    patch_operation: GraphPatchOpName | None = None
+
+
 class ReplanSuggestion(BaseModel):
     reason: str
     operations: list[GraphPatchOperation] = Field(default_factory=list)
+    actions: list[RecoveryAction] = Field(default_factory=list)
     requires_user_approval: bool = False
 
 
@@ -61,6 +71,15 @@ class FailureReplanner:
                         reason=reason,
                     )
                 ],
+                actions=[
+                    RecoveryAction(
+                        kind="ask_user",
+                        node_id=failed_node.nodeId,
+                        reason=reason,
+                        automatic=False,
+                        patch_operation="request_tool_enablement",
+                    )
+                ],
                 requires_user_approval=True,
             )
 
@@ -72,6 +91,9 @@ def _suggestion(
     op: GraphPatchOpName,
     node_id: str,
 ) -> ReplanSuggestion:
+    action_kind: RecoveryActionKind = "retry"
+    if op == "request_tool_enablement":
+        action_kind = "ask_user"
     return ReplanSuggestion(
         reason=reason,
         operations=[
@@ -79,6 +101,15 @@ def _suggestion(
                 op=op,
                 node_id=node_id,
                 reason=reason,
+            )
+        ],
+        actions=[
+            RecoveryAction(
+                kind=action_kind,
+                node_id=node_id,
+                reason=reason,
+                automatic=action_kind == "retry",
+                patch_operation=op,
             )
         ],
     )

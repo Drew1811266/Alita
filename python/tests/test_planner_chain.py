@@ -260,6 +260,30 @@ def test_planner_chain_uses_legacy_task_planner_for_code_task() -> None:
     ]
 
 
+def test_planner_chain_uses_tool_catalog_planner_before_legacy() -> None:
+    message = UserMessage(
+        task_id="task-tool-catalog-chain",
+        content="Use the echo values tool to echo this request.",
+    )
+    request = _request_for(
+        message,
+        _route_payload(taskType="code_task", toolCandidates=["internal:test.echo_values"]),
+    )
+
+    result = PlannerChain(tool_registry=_tool_registry()).plan(request)
+
+    assert result.planner == "tool_catalog.planner.v1"
+    assert result.strategy == "tool_catalog"
+    assert [node["nodeId"] for node in result.graph_payload["nodes"]] == [
+        "tool-test-echo-values",
+        "task-output",
+    ]
+    assert (
+        result.graph_payload["nodes"][0]["toolBinding"]["operation"]
+        == "echo_values"
+    )
+
+
 def test_planner_chain_metadata_does_not_include_raw_route_paths() -> None:
     local_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
     message = UserMessage(

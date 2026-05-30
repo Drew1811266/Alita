@@ -10,6 +10,10 @@ from agent_service.graph_compiler import compile_task_graph_to_node_graph
 from agent_service.goal_spec import GoalSpec, TaskType
 from agent_service.model_runtime import SupportedModelRegistry
 from agent_service.planner_v2 import PlannerV2, PlannerV2Error
+from agent_service.tool_catalog_planner import (
+    ToolCatalogPlanner,
+    ToolCatalogPlanningRequest,
+)
 from agent_service.router_v2 import AgentRouteIntent, RouteSource
 from agent_service.schemas import RunGraph, UserMessage
 from agent_service.task_planner import (
@@ -26,7 +30,7 @@ except ImportError:
     DEFAULT_SUPPORTED_MODEL_REGISTRY = SupportedModelRegistry.default()
 
 
-PlannerStrategy = Literal["document_template", "legacy_task_planner"]
+PlannerStrategy = Literal["document_template", "tool_catalog", "legacy_task_planner"]
 PLANNER_CHAIN_VERSION = "planner_chain.v1"
 LOCAL_PATH_PATTERN = re.compile(
     r"(?ix)"
@@ -106,6 +110,10 @@ class PlannerChain:
             request.message.content
         ):
             return self._plan_document_template(request)
+        if request.route.task_type != "document_processing":
+            catalog_result = self._plan_tool_catalog(request)
+            if catalog_result is not None:
+                return catalog_result
         return self._plan_legacy_task(request)
 
     def _validate_request(self, request: PlannerChainRequest) -> None:
@@ -148,6 +156,35 @@ class PlannerChain:
             strategy="document_template",
             graph_payload=graph_payload,
             validation_warnings=list(plan.validation_warnings),
+        )
+
+    def _plan_tool_catalog(
+        self,
+        request: PlannerChainRequest,
+    ) -> PlannerChainResult | None:
+        result = ToolCatalogPlanner(tool_registry=self.tool_registry).plan(
+            ToolCatalogPlanningRequest(
+                task_id=request.task_id,
+                message=request.message,
+                goal_spec=request.goal_spec,
+                context=request.context,
+            )
+        )
+        if not result.planned or result.graph_payload is None:
+            return None
+
+        graph_payload = _with_planner_chain_metadata(
+            result.graph_payload,
+            request=request,
+            planner=result.planner,
+            strategy="tool_catalog",
+        )
+        _validate_graph_payload(graph_payload)
+        return PlannerChainResult(
+            planner=result.planner,
+            strategy="tool_catalog",
+            graph_payload=graph_payload,
+            validation_warnings=list(result.diagnostics),
         )
 
     def _plan_legacy_task(self, request: PlannerChainRequest) -> PlannerChainResult:

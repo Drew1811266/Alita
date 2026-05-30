@@ -8,8 +8,12 @@ from pydantic import BaseModel, Field, ValidationError
 
 from agent_service.model_client import ChatMessage
 from agent_service.model_tool_adapter import (
+    ModelToolCall,
+    ModelToolNameMap,
     build_model_tool_invocation,
+    execute_model_tool_calls,
     safe_observation_payload,
+    to_openai_tool_schema,
 )
 from agent_service.model_policy import ModelCallPolicy
 from agent_service.tool_gateway import UnifiedToolGateway
@@ -31,9 +35,22 @@ class ReActModelClient(Protocol):
     ) -> str:
         raise NotImplementedError
 
+    def chat_with_tools(
+        self,
+        messages: list[ChatMessage],
+        *,
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] = "auto",
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
+    ) -> Any:
+        raise NotImplementedError
+
 
 class ReActPolicy(BaseModel):
     enabled: bool = False
+    use_native_tool_calls: bool = False
     max_steps: int = 4
     max_tool_calls: int = 3
     max_runtime_ms: int = 30000
@@ -97,6 +114,7 @@ class ReActController:
         observations: list[ReActObservation] = []
         current_messages = list(messages)
         tools_by_id = {tool.id: tool for tool in tools}
+        name_map = ModelToolNameMap.from_tools(tools)
 
         for step_index in range(max(policy.max_steps, 0)):
             if _elapsed_ms(started_at) > policy.max_runtime_ms:
@@ -105,6 +123,81 @@ class ReActController:
                     tool_call_count=tool_call_count,
                     observations=observations,
                 )
+
+            if policy.use_native_tool_calls and hasattr(
+                self.model_client,
+                "chat_with_tools",
+            ):
+                native_result = self.model_client.chat_with_tools(
+                    current_messages,
+                    tools=[to_openai_tool_schema(tool) for tool in tools],
+                    tool_choice="auto",
+                    policy=model_policy,
+                )
+                if not native_result.tool_calls:
+                    if str(native_result.content or "").strip():
+                        return ReActResult(
+                            ok=True,
+                            text=str(native_result.content),
+                            tool_call_count=tool_call_count,
+                            observations=_dump_observations(observations),
+                        )
+                    return _failed_result(
+                        "malformed_action",
+                        tool_call_count=tool_call_count,
+                        observations=observations,
+                    )
+
+                current_messages.append(
+                    ChatMessage(
+                        role="assistant",
+                        content=str(
+                            native_result.content
+                            or _native_tool_call_summary(native_result.tool_calls)
+                        ),
+                    )
+                )
+                for call in native_result.tool_calls:
+                    if tool_call_count >= policy.max_tool_calls:
+                        return _failed_result(
+                            "tool_budget_exceeded",
+                            tool_call_count=tool_call_count,
+                            observations=observations,
+                        )
+                    try:
+                        tool_id = name_map.tool_id_for_model_name(call.name)
+                    except KeyError:
+                        return _failed_result(
+                            "tool_not_allowed",
+                            tool_call_count=tool_call_count,
+                            observations=observations,
+                        )
+                    tool = tools_by_id.get(tool_id)
+                    policy_error = _tool_policy_error(tool_id, tool, policy)
+                    if policy_error is not None:
+                        return _failed_result(
+                            policy_error,
+                            tool_call_count=tool_call_count,
+                            observations=observations,
+                        )
+                    assert tool is not None
+                    result = execute_model_tool_calls(
+                        [call],
+                        name_map=name_map,
+                        gateway=self.gateway,
+                        base_invocation=base_invocation,
+                    )[0]
+                    tool_call_count += 1
+                    invocation = build_model_tool_invocation(
+                        base_invocation=base_invocation,
+                        tool=tool,
+                        invocation_id=call.id,
+                        arguments=call.arguments,
+                    )
+                    observation = _safe_observation(invocation, result)
+                    observations.append(observation)
+                    current_messages.append(_observation_message(observation))
+                continue
 
             raw_action = self.model_client.chat(
                 current_messages,
@@ -135,20 +228,14 @@ class ReActController:
 
             tool_id = action.tool_id or ""
             tool = tools_by_id.get(tool_id)
-            if tool is None or tool_id not in set(policy.allowed_tool_ids):
+            policy_error = _tool_policy_error(tool_id, tool, policy)
+            if policy_error is not None:
                 return _failed_result(
-                    "tool_not_allowed",
+                    policy_error,
                     tool_call_count=tool_call_count,
                     observations=observations,
                 )
-            if policy.allowed_permissions and not set(tool.permissions).issubset(
-                set(policy.allowed_permissions)
-            ):
-                return _failed_result(
-                    "permission_not_allowed",
-                    tool_call_count=tool_call_count,
-                    observations=observations,
-                )
+            assert tool is not None
 
             invocation = _tool_invocation(
                 base_invocation=base_invocation,
@@ -163,17 +250,7 @@ class ReActController:
             current_messages.extend(
                 [
                     ChatMessage(role="assistant", content=raw_action),
-                    ChatMessage(
-                        role="user",
-                        content=(
-                            "Observation: "
-                            + json.dumps(
-                                observation.model_dump(mode="json"),
-                                ensure_ascii=False,
-                                sort_keys=True,
-                            )
-                        ),
-                    ),
+                    _observation_message(observation),
                 ]
             )
             if policy.stop_on_first_success and result.ok:
@@ -197,7 +274,36 @@ def _parse_action(raw: str) -> ReActAction | None:
     try:
         return ReActAction.model_validate_json(raw)
     except ValidationError:
+        pass
+
+    candidates = _json_object_candidates(raw)
+    if len(candidates) != 1:
         return None
+    try:
+        return ReActAction.model_validate(candidates[0])
+    except ValidationError:
+        return None
+
+
+def _json_object_candidates(raw: str) -> list[dict[str, Any]]:
+    decoder = json.JSONDecoder()
+    candidates: list[dict[str, Any]] = []
+    index = 0
+    while index < len(raw):
+        start = raw.find("{", index)
+        if start == -1:
+            break
+        try:
+            value, offset = decoder.raw_decode(raw[start:])
+        except json.JSONDecodeError:
+            index = start + 1
+            continue
+        if isinstance(value, dict):
+            candidates.append(value)
+            index = start + offset
+        else:
+            index = start + 1
+    return candidates
 
 
 def _valid_action_shape(action: ReActAction) -> bool:
@@ -221,6 +327,20 @@ def _tool_invocation(
     )
 
 
+def _tool_policy_error(
+    tool_id: str,
+    tool: UnifiedToolDefinition | None,
+    policy: ReActPolicy,
+) -> str | None:
+    if tool is None or tool_id not in set(policy.allowed_tool_ids):
+        return "tool_not_allowed"
+    if policy.allowed_permissions and not set(tool.permissions).issubset(
+        set(policy.allowed_permissions)
+    ):
+        return "permission_not_allowed"
+    return None
+
+
 def _safe_observation(
     invocation: UnifiedToolInvocation,
     result: UnifiedToolResult,
@@ -237,6 +357,25 @@ def _safe_observation(
             else None
         ),
     )
+
+
+def _observation_message(observation: ReActObservation) -> ChatMessage:
+    return ChatMessage(
+        role="user",
+        content=(
+            "Observation: "
+            + json.dumps(
+                observation.model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        ),
+    )
+
+
+def _native_tool_call_summary(tool_calls: list[ModelToolCall]) -> str:
+    names = ", ".join(call.name for call in tool_calls)
+    return f"Tool calls: {names}"
 
 
 def _elapsed_ms(started_at: float) -> int:

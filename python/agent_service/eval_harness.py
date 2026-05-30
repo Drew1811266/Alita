@@ -11,14 +11,17 @@ from pydantic import BaseModel, Field
 from agent_service.context_manager import build_context_bundle
 from agent_service.execution import run_graph_events
 from agent_service.goal_spec import parse_goal_spec
+from agent_service.harness_errors import HarnessError
 from agent_service.intent import classify_route
+from agent_service.permission_gate import PermissionGate
 from agent_service.planner_chain import (
     PlannerChain,
     PlannerChainRequest,
     route_context_from_payload,
 )
 from agent_service.router_v2 import deterministic_route
-from agent_service.schemas import RunGraphRequest, UserMessage
+from agent_service.sandbox import SandboxRequest, run_sandboxed_python
+from agent_service.schemas import GraphNode, RunGraphRequest, UserMessage
 from agent_service.tool_execution import (
     ToolExecutor,
     ToolInvocation,
@@ -31,7 +34,7 @@ from agent_service.web_search import SearchResponse, SearchResult
 
 class EvalCase(BaseModel):
     case_id: str
-    category: Literal["router", "planner", "tool", "research", "recovery"]
+    category: Literal["router", "planner", "tool", "research", "recovery", "security"]
     input: dict[str, Any]
     expected: dict[str, Any]
     tags: list[str] = Field(default_factory=list)
@@ -44,10 +47,17 @@ class EvalCaseResult(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class EvalCategorySummary(BaseModel):
+    total: int
+    passed: int
+    failed: int
+
+
 class EvalRunSummary(BaseModel):
     total: int
     passed: int
     failed: int
+    categories: dict[str, EvalCategorySummary] = Field(default_factory=dict)
     results: list[EvalCaseResult] = Field(default_factory=list)
 
 
@@ -71,6 +81,14 @@ def load_eval_cases(path: str | Path) -> list[EvalCase]:
     return cases
 
 
+def load_eval_cases_from_dir(path: str | Path) -> list[EvalCase]:
+    cases_dir = Path(path)
+    cases: list[EvalCase] = []
+    for case_path in sorted(cases_dir.glob("*.jsonl")):
+        cases.extend(load_eval_cases(case_path))
+    return cases
+
+
 def run_eval_cases(
     cases: list[EvalCase],
     output_dir: str | Path | None = None,
@@ -80,6 +98,7 @@ def run_eval_cases(
         total=len(results),
         passed=sum(1 for result in results if result.passed),
         failed=sum(1 for result in results if not result.passed),
+        categories=_category_summaries(results),
         results=results,
     )
     if output_dir is not None:
@@ -107,7 +126,12 @@ def write_eval_summary(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run deterministic Alita eval cases.")
-    parser.add_argument("--cases", required=True, help="Path to a JSONL eval case file.")
+    cases_group = parser.add_mutually_exclusive_group(required=True)
+    cases_group.add_argument("--cases", help="Path to a JSONL eval case file.")
+    cases_group.add_argument(
+        "--cases-dir",
+        help="Directory containing JSONL eval case files.",
+    )
     parser.add_argument(
         "--output",
         required=True,
@@ -115,7 +139,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    summary = run_eval_cases(load_eval_cases(args.cases), output_dir=args.output)
+    cases = (
+        load_eval_cases_from_dir(args.cases_dir)
+        if args.cases_dir
+        else load_eval_cases(args.cases)
+    )
+    summary = run_eval_cases(cases, output_dir=args.output)
     print(
         f"Agent eval summary: {summary.passed}/{summary.total} passed, "
         f"{summary.failed} failed."
@@ -133,6 +162,8 @@ def _run_eval_case(case: EvalCase) -> EvalCaseResult:
             return _run_tool_case(case)
         if case.category == "research":
             return _run_research_case(case)
+        if case.category == "security":
+            return _run_security_case(case)
         return EvalCaseResult(
             case_id=case.case_id,
             category=case.category,
@@ -146,6 +177,96 @@ def _run_eval_case(case: EvalCase) -> EvalCaseResult:
             passed=False,
             details={"error": str(error)},
         )
+
+
+def _run_security_case(case: EvalCase) -> EvalCaseResult:
+    kind = str(case.input.get("kind") or "")
+    if kind == "sandbox":
+        return _run_sandbox_security_case(case)
+    if kind == "permission":
+        return _run_permission_security_case(case)
+    return EvalCaseResult(
+        case_id=case.case_id,
+        category=case.category,
+        passed=False,
+        details={"error": f"unsupported security eval kind: {kind}"},
+    )
+
+
+def _run_sandbox_security_case(case: EvalCase) -> EvalCaseResult:
+    with TemporaryDirectory(prefix="alita-eval-security-") as temp_dir:
+        temp_path = Path(temp_dir)
+        project_dir = temp_path / "project"
+        artifact_dir = temp_path / "artifacts"
+        project_dir.mkdir()
+        artifact_dir.mkdir()
+        inside_file = project_dir / "inside.txt"
+        outside_file = temp_path / "outside.txt"
+        inside_file.write_text("inside", encoding="utf-8")
+        outside_file.write_text("outside", encoding="utf-8")
+        placeholders = {
+            "project_dir": str(project_dir),
+            "artifact_dir": str(artifact_dir),
+            "inside_file": str(inside_file),
+            "outside_file": str(outside_file),
+            "outside_artifact": str(temp_path / "outside-artifact.txt"),
+        }
+        request = SandboxRequest(
+            script=str(_render_placeholders(case.input.get("script", ""), placeholders)),
+            arguments=dict(
+                _render_placeholders(case.input.get("arguments", {}), placeholders)
+            ),
+            project_path=str(project_dir / "eval.alita"),
+            allowed_roots=[str(project_dir)],
+            artifact_dir=str(artifact_dir),
+            timeout_seconds=float(case.input.get("timeout_seconds", 1.0)),
+            network_allowed=bool(case.input.get("network_allowed", False)),
+            max_script_bytes=int(case.input.get("max_script_bytes", 64 * 1024)),
+            max_output_bytes=int(case.input.get("max_output_bytes", 256 * 1024)),
+            max_artifacts=int(case.input.get("max_artifacts", 16)),
+            max_artifact_bytes=int(
+                case.input.get("max_artifact_bytes", 10 * 1024 * 1024)
+            ),
+        )
+        result = run_sandboxed_python(request)
+        details = {
+            "ok": result.ok,
+            "errorCode": result.error_code,
+            "artifacts": [Path(path).name for path in result.artifacts],
+            "values": dict(result.values),
+        }
+        return EvalCaseResult(
+            case_id=case.case_id,
+            category=case.category,
+            passed=_expected_subset_matches(details, case.expected),
+            details=details,
+        )
+
+
+def _run_permission_security_case(case: EvalCase) -> EvalCaseResult:
+    default_allowed = case.input.get("default_allowed_permissions", None)
+    try:
+        PermissionGate(
+            approved_permissions=list(case.input.get("approved_permissions") or []),
+            default_allowed_permissions=(
+                None if default_allowed is None else list(default_allowed)
+            ),
+        ).ensure_node_allowed(
+            _security_node(
+                case_id=case.case_id,
+                permissions=list(case.input.get("permissions") or []),
+            ),
+            tool_registry=ToolRegistry([]),
+        )
+        details = {"ok": True, "errorCode": None}
+    except HarnessError as error:
+        details = {"ok": False, "errorCode": error.code}
+    return EvalCaseResult(
+        case_id=case.case_id,
+        category=case.category,
+        passed=_expected_subset_matches(details, case.expected),
+        details=details,
+    )
 
 
 def _run_router_case(case: EvalCase) -> EvalCaseResult:
@@ -306,6 +427,52 @@ def _default_operation_for_tool(tool_id: str) -> str | None:
     }.get(tool_id)
 
 
+def _category_summaries(
+    results: list[EvalCaseResult],
+) -> dict[str, EvalCategorySummary]:
+    categories: dict[str, EvalCategorySummary] = {}
+    for result in results:
+        current = categories.get(
+            result.category,
+            EvalCategorySummary(total=0, passed=0, failed=0),
+        )
+        categories[result.category] = EvalCategorySummary(
+            total=current.total + 1,
+            passed=current.passed + (1 if result.passed else 0),
+            failed=current.failed + (0 if result.passed else 1),
+        )
+    return categories
+
+
+def _render_placeholders(value: Any, placeholders: dict[str, str]) -> Any:
+    if isinstance(value, str):
+        rendered = value
+        for key, replacement in placeholders.items():
+            rendered = rendered.replace(f"{{{key}}}", replacement)
+        return rendered
+    if isinstance(value, list):
+        return [_render_placeholders(item, placeholders) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _render_placeholders(item, placeholders)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _security_node(case_id: str, permissions: list[str]) -> GraphNode:
+    return GraphNode(
+        nodeId=case_id,
+        nodeType="model",
+        displayName=case_id,
+        status="waiting",
+        summary="security eval node",
+        createdBy="agent",
+        position={"x": 0, "y": 0},
+        permissionsRequired=permissions,
+    )
+
+
 class _OfflineEvalSearchProvider:
     def __init__(self, question: str) -> None:
         self.question = question
@@ -345,9 +512,21 @@ def _summary_markdown(summary: EvalRunSummary) -> str:
         f"- Passed: {summary.passed}",
         f"- Failed: {summary.failed}",
         "",
-        "| Case | Category | Status |",
-        "| --- | --- | --- |",
+        "| Category | Total | Passed | Failed |",
+        "| --- | ---: | ---: | ---: |",
     ]
+    for category, category_summary in sorted(summary.categories.items()):
+        lines.append(
+            f"| {category} | {category_summary.total} | "
+            f"{category_summary.passed} | {category_summary.failed} |"
+        )
+    lines.extend(
+        [
+            "",
+            "| Case | Category | Status |",
+            "| --- | --- | --- |",
+        ]
+    )
     for result in summary.results:
         status = "PASS" if result.passed else "FAIL"
         lines.append(f"| {result.case_id} | {result.category} | {status} |")

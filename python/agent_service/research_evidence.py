@@ -41,6 +41,19 @@ class ResearchEvidenceSet(BaseModel):
     failed_reads: list[dict[str, str]] = Field(default_factory=list)
 
 
+class EvidenceRef(BaseModel):
+    source_id: str
+    title: str
+    url: str
+
+
+class ResearchClaim(BaseModel):
+    claim_id: str
+    text: str
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    diagnostics: list[str] = Field(default_factory=list)
+
+
 def normalize_source_url(url: str) -> str:
     parts = urlsplit(url.strip())
     query = [
@@ -160,6 +173,66 @@ def validate_citation_coverage(
     cited_ids = citation_ids_in_markdown(markdown)
     if accepted_ids and not (accepted_ids & cited_ids):
         diagnostics.append("missing_citations")
+    return diagnostics
+
+
+def research_claims_from_markdown(
+    markdown: str,
+    evidence_set: ResearchEvidenceSet,
+) -> list[ResearchClaim]:
+    accepted_sources = {
+        source.source_id: source
+        for source in evidence_set.accepted_sources
+    }
+    claims: list[ResearchClaim] = []
+    active_section: str | None = None
+    has_sections = any(line.strip().startswith("## ") for line in markdown.splitlines())
+    for line in markdown.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if text.startswith("## "):
+            active_section = text.removeprefix("## ").strip().lower()
+            continue
+        if text.startswith("#"):
+            continue
+        if has_sections and active_section not in {"key findings", "project summaries"}:
+            continue
+        text = text.removeprefix("- ").strip()
+        if not text or text.lower().startswith("question:"):
+            continue
+        if text.lower().startswith(("source:", "references", "s1:", "s2:", "s3:")):
+            continue
+        cited_ids = citation_ids_in_markdown(text)
+        refs = [
+            EvidenceRef(
+                source_id=source.source_id,
+                title=source.title,
+                url=source.url,
+            )
+            for source_id, source in sorted(accepted_sources.items())
+            if source_id in cited_ids
+        ]
+        diagnostics = [] if refs else ["missing_evidence"]
+        claims.append(
+            ResearchClaim(
+                claim_id=f"C{len(claims) + 1}",
+                text=text,
+                evidence_refs=refs,
+                diagnostics=diagnostics,
+            )
+        )
+    return claims
+
+
+def claim_level_citation_diagnostics(
+    markdown: str,
+    evidence_set: ResearchEvidenceSet,
+) -> list[str]:
+    diagnostics: list[str] = []
+    for claim in research_claims_from_markdown(markdown, evidence_set):
+        if "missing_evidence" in claim.diagnostics:
+            diagnostics.append(f"claim_{claim.claim_id}_missing_evidence")
     return diagnostics
 
 

@@ -1,0 +1,92 @@
+{
+  "tool_id": "test.echo_values",
+  "name": "Test Echo Values",
+  "description": "Test-only manifest used to verify generic fixed-tool execution.",
+  "version": "0.1.0",
+  "source_type": "test",
+  "license": "internal",
+  "runtime": "python_sidecar",
+  "entrypoint": null,
+  "capabilities": ["test.echo"],
+  "operations": [
+    {
+      "name": "echo_values",
+      "description": "Echo rendered arguments for runtime binding tests."
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": ["operation", "message", "source_text", "metadata_value"],
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["echo_values"]
+      },
+      "message": {
+        "type": "string"
+      },
+      "source_text": {
+        "type": "string"
+      },
+      "metadata_value": {
+        "type": "string"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["echo", "source_text", "metadata_value"],
+    "properties": {
+      "echo": {
+        "type": "string"
+      },
+      "source_text": {
+        "type": "string"
+      },
+      "metadata_value": {
+        "type": "string"
+      }
+    }
+  },
+  "permissions": [],
+  "examples": [
+    {
+      "title": "Echo values",
+      "input": {
+        "operation": "echo_values",
+        "message": "hello",
+        "source_text": "upstream",
+        "metadata_value": "phase3"
+      }
+    }
+  ],
+  "error_codes": ["echo_failed"],
+  "timeout_policy": {
+    "seconds": 5
+  },
+  "artifact_policy": {},
+  "security_policy": {
+    "network": false,
+    "plugins": false
+  },
+  "node_templates": [
+    {
+      "nodeType": "fixed_tool",
+      "displayName": "Echo Values",
+      "inputPorts": [
+        {
+          "id": "text-input",
+          "label": "Text",
+          "dataType": "text"
+        }
+      ],
+      "outputPorts": [
+        {
+          "id": "json-output",
+          "label": "Echo",
+          "dataType": "json"
+        }
+      ]
+    }
+  ]
+}

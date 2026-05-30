@@ -21,6 +21,8 @@ def test_replanner_suggests_retry_for_empty_node_output(tmp_path) -> None:
     assert suggestion.reason == "node content-organize returned empty value"
     assert suggestion.operations[0].op == "retry_node"
     assert suggestion.operations[0].node_id == "content-organize"
+    assert suggestion.actions[0].kind == "retry"
+    assert suggestion.actions[0].automatic is True
 
 
 def test_replanner_suggests_rerun_missing_artifact_node(tmp_path) -> None:
@@ -38,6 +40,7 @@ def test_replanner_suggests_rerun_missing_artifact_node(tmp_path) -> None:
     assert suggestion is not None
     assert suggestion.operations[0].op == "rerun_node"
     assert suggestion.operations[0].node_id == "file-export"
+    assert suggestion.actions[0].kind == "retry"
 
 
 def test_replanner_returns_none_for_permission_required(tmp_path) -> None:
@@ -52,6 +55,23 @@ def test_replanner_returns_none_for_permission_required(tmp_path) -> None:
     )
 
     assert suggestion is None
+
+
+def test_replanner_uses_ask_user_action_for_tool_enablement(tmp_path) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("content", encoding="utf-8")
+    request = _request(tmp_path)
+
+    suggestion = FailureReplanner().propose(
+        request=request,
+        failed_node=request.graph.nodes[0],
+        error=HarnessError("unsupported_tool", "tool unavailable"),
+    )
+
+    assert suggestion is not None
+    assert suggestion.requires_user_approval is True
+    assert suggestion.actions[0].kind == "ask_user"
+    assert suggestion.actions[0].node_id == "document-input"
 
 
 def _request(tmp_path) -> RunGraphRequest:

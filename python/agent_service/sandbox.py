@@ -33,6 +33,10 @@ class SandboxRequest(BaseModel):
     network_allowed: bool = False
     timeout_seconds: float = 10.0
     artifact_dir: str
+    max_script_bytes: int = 64 * 1024
+    max_output_bytes: int = 256 * 1024
+    max_artifacts: int = 16
+    max_artifact_bytes: int = 10 * 1024 * 1024
 
 
 class SandboxResult(BaseModel):
@@ -61,9 +65,15 @@ def validate_sandbox_path(path: str, allowed_roots: list[str]) -> Path:
 def run_sandboxed_python(request: SandboxRequest) -> SandboxResult:
     if not request.script.strip():
         return SandboxResult(ok=False, error_code="empty_script")
+    if _byte_len(request.script) > request.max_script_bytes:
+        return SandboxResult(ok=False, error_code="script_too_large")
 
     try:
-        _reject_forbidden_imports(request.script, request.network_allowed)
+        _reject_forbidden_script_apis(
+            request.script,
+            network_allowed=request.network_allowed,
+            allowed_roots=request.allowed_roots,
+        )
         _validate_argument_paths(request.arguments, request.allowed_roots)
     except SandboxViolation as error:
         return SandboxResult(ok=False, error_code=error.code, stderr=str(error))
@@ -85,11 +95,31 @@ def run_sandboxed_python(request: SandboxRequest) -> SandboxResult:
             env=_sandbox_env(),
         )
     except subprocess.TimeoutExpired as error:
+        stdout = error.stdout or ""
+        stderr = error.stderr or ""
+        if _byte_len(stdout) > request.max_output_bytes or _byte_len(stderr) > request.max_output_bytes:
+            return SandboxResult(
+                ok=False,
+                stdout=stdout,
+                stderr=stderr,
+                error_code="output_too_large",
+            )
         return SandboxResult(
             ok=False,
-            stdout=error.stdout or "",
-            stderr=error.stderr or "",
+            stdout=stdout,
+            stderr=stderr,
             error_code="timeout",
+        )
+
+    if (
+        _byte_len(completed.stdout) > request.max_output_bytes
+        or _byte_len(completed.stderr) > request.max_output_bytes
+    ):
+        return SandboxResult(
+            ok=False,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            error_code="output_too_large",
         )
 
     if completed.returncode != 0:
@@ -126,9 +156,17 @@ def run_sandboxed_python(request: SandboxRequest) -> SandboxResult:
             stderr=completed.stderr,
             error_code="invalid_json_output",
         )
+    if len(artifacts) > request.max_artifacts:
+        return SandboxResult(
+            ok=False,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            error_code="too_many_artifacts",
+        )
 
     try:
         artifact_paths = _artifact_paths_inside_dir(artifacts, artifact_dir)
+        _validate_artifact_sizes(artifact_paths, request.max_artifact_bytes)
     except SandboxViolation as error:
         return SandboxResult(
             ok=False,
@@ -146,21 +184,30 @@ def run_sandboxed_python(request: SandboxRequest) -> SandboxResult:
     )
 
 
-def _reject_forbidden_imports(script: str, network_allowed: bool) -> None:
-    if network_allowed:
-        return
+def _reject_forbidden_script_apis(
+    script: str,
+    *,
+    network_allowed: bool,
+    allowed_roots: list[str],
+) -> None:
     try:
         tree = ast.parse(script)
     except SyntaxError as error:
         raise SandboxViolation("sandbox_process_failed", str(error)) from error
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
+        if not network_allowed and isinstance(node, ast.Import):
             for alias in node.names:
                 _reject_module_name(alias.name)
-        elif isinstance(node, ast.ImportFrom) and node.module:
+        elif not network_allowed and isinstance(node, ast.ImportFrom) and node.module:
             _reject_module_name(node.module)
         elif isinstance(node, ast.Call):
-            _reject_dynamic_import_call(node)
+            if not network_allowed:
+                _reject_dynamic_import_call(node)
+            _reject_direct_file_api_call(node, allowed_roots)
+            _reject_secret_env_call(node)
+            _reject_process_launch_call(node)
+        elif isinstance(node, ast.Subscript):
+            _reject_secret_env_subscript(node)
 
 
 def _reject_module_name(name: str) -> None:
@@ -190,6 +237,113 @@ def _reject_literal_import_argument(node: ast.Call) -> None:
     first_arg = node.args[0]
     if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
         _reject_module_name(first_arg.value)
+
+
+def _reject_direct_file_api_call(node: ast.Call, allowed_roots: list[str]) -> None:
+    literal_path = _literal_path_for_file_call(node)
+    if literal_path is None:
+        return
+    if not _looks_like_path(literal_path):
+        return
+    try:
+        validate_sandbox_path(literal_path, allowed_roots)
+    except SandboxViolation as error:
+        raise SandboxViolation("forbidden_file_api", str(error)) from error
+
+
+def _literal_path_for_file_call(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Name) and node.func.id == "open":
+        return _literal_string_arg(node)
+    if not isinstance(node.func, ast.Attribute):
+        return None
+    if node.func.attr == "open":
+        return _path_constructor_literal(node.func.value)
+    if node.func.attr in {"read_text", "read_bytes"}:
+        return _path_constructor_literal(node.func.value)
+    return None
+
+
+def _path_constructor_literal(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.Call):
+        return None
+    if isinstance(node.func, ast.Name) and node.func.id == "Path":
+        return _literal_string_arg(node)
+    if (
+        isinstance(node.func, ast.Attribute)
+        and node.func.attr == "Path"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "pathlib"
+    ):
+        return _literal_string_arg(node)
+    return None
+
+
+def _literal_string_arg(node: ast.Call) -> str | None:
+    if not node.args:
+        return None
+    first_arg = node.args[0]
+    if isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+        return first_arg.value
+    return None
+
+
+def _reject_secret_env_call(node: ast.Call) -> None:
+    if not isinstance(node.func, ast.Attribute):
+        return
+    if (
+        isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "os"
+        and node.func.attr == "getenv"
+    ):
+        _reject_secret_env_name(_literal_string_arg(node))
+    if (
+        isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "environ"
+        and isinstance(node.func.value.value, ast.Name)
+        and node.func.value.value.id == "os"
+        and node.func.attr == "get"
+    ):
+        _reject_secret_env_name(_literal_string_arg(node))
+
+
+def _reject_secret_env_subscript(node: ast.Subscript) -> None:
+    if not (
+        isinstance(node.value, ast.Attribute)
+        and node.value.attr == "environ"
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "os"
+    ):
+        return
+    key = node.slice
+    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+        _reject_secret_env_name(key.value)
+
+
+def _reject_secret_env_name(name: str | None) -> None:
+    if name is None:
+        return
+    upper = name.upper()
+    if any(marker in upper for marker in SECRET_ENV_MARKERS):
+        raise SandboxViolation(
+            "secret_env_denied",
+            f"secret environment access is not allowed in sandbox: {name}",
+        )
+
+
+def _reject_process_launch_call(node: ast.Call) -> None:
+    if not isinstance(node.func, ast.Attribute):
+        return
+    if isinstance(node.func.value, ast.Name) and node.func.value.id == "os":
+        if node.func.attr in OS_PROCESS_APIS:
+            raise SandboxViolation(
+                "process_launch_denied",
+                f"process launch API is not allowed in sandbox: os.{node.func.attr}",
+            )
+    if isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess":
+        raise SandboxViolation(
+            "process_launch_denied",
+            f"process launch API is not allowed in sandbox: subprocess.{node.func.attr}",
+        )
 
 
 def _validate_argument_paths(value: Any, allowed_roots: list[str]) -> None:
@@ -228,6 +382,15 @@ def _artifact_paths_inside_dir(
     return paths
 
 
+def _validate_artifact_sizes(
+    artifact_paths: list[Path],
+    max_artifact_bytes: int,
+) -> None:
+    for path in artifact_paths:
+        if path.exists() and path.is_file() and path.stat().st_size > max_artifact_bytes:
+            raise SandboxViolation("artifact_too_large", str(path))
+
+
 def _sanitize_values(values: dict[str, Any]) -> dict[str, Any]:
     return {str(key): _sanitize_value(value) for key, value in values.items()}
 
@@ -260,3 +423,25 @@ def _sandbox_env() -> dict[str, str]:
         if os.environ.get(key):
             env[key] = os.environ[key]
     return env
+
+
+def _byte_len(value: str | bytes) -> int:
+    if isinstance(value, bytes):
+        return len(value)
+    return len(value.encode("utf-8", errors="replace"))
+
+
+SECRET_ENV_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL")
+OS_PROCESS_APIS = {
+    "system",
+    "popen",
+    "spawnl",
+    "spawnle",
+    "spawnlp",
+    "spawnlpe",
+    "spawnv",
+    "spawnve",
+    "spawnvp",
+    "spawnvpe",
+    "startfile",
+}

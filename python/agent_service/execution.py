@@ -17,6 +17,8 @@ from agent_service.agent_run_state import AgentRunState
 from agent_service.final_verifier import FinalVerifier
 from agent_service.execution_graph import (
     ExecutionGraph,
+    ExecutionInputMapping,
+    ExecutionToolBinding,
     compile_execution_graph,
     validate_execution_graph_bindings,
 )
@@ -26,6 +28,7 @@ from agent_service.model_client import (
     ChatMessage as ModelChatMessage,
     LlamaCppModelClient,
 )
+from agent_service.memory_store import MemoryRecord, MemoryStore, memory_id_for_source
 from agent_service.model_policy import ModelCallPolicy, policy_for_graph_node
 from agent_service.model_runtime import ModelRuntime
 from agent_service.node_output import NodeOutput
@@ -36,6 +39,7 @@ from agent_service.react_controller import ReActController, ReActPolicy
 from agent_service.research_evidence import (
     ResearchEvidenceSet,
     attach_read_content,
+    claim_level_citation_diagnostics,
     evidence_from_search_results,
     normalize_source_url,
     validate_citation_coverage,
@@ -46,6 +50,7 @@ from agent_service.run_registry import DEFAULT_RUN_REGISTRY, RunRegistry
 from agent_service.schemas import (
     AgentEvent,
     GraphNode,
+    RunAttachment,
     RunGraphRequest,
     ScriptReviewState,
 )
@@ -398,14 +403,18 @@ class PlannedTaskExecutor:
         self,
         node: GraphNode,
         *,
+        binding: ExecutionToolBinding,
         operation: str,
         arguments: dict[str, object],
     ) -> NodeOutput:
-        if not node.toolRef:
-            raise HarnessError(
-                "unsupported_runtime",
-                f"tool node {node.nodeId} has no bound runtime: <missing>",
+        permissions = (
+            list(binding.permission_scope.permissions)
+            if binding.permission_scope.permissions
+            else _required_permissions_for_tool_node(
+                node,
+                tool_registry=self.tool_registry,
             )
+        )
         result = self.tool_gateway.call_tool(
             UnifiedToolInvocation(
                 invocation_id=(
@@ -415,14 +424,11 @@ class PlannedTaskExecutor:
                 run_id=self.run_state.run_id or self.request.run_id,
                 task_id=self.run_state.task_id,
                 node_id=node.nodeId,
-                tool_id=normalize_tool_id(node.toolRef),
+                tool_id=normalize_tool_id(binding.tool_id),
                 arguments={"operation": operation, **arguments},
                 project_path=self.run_state.project_path or self.request.project_path,
                 allowed_roots=self.document_executor._allowed_roots(),
-                requested_permissions=_required_permissions_for_tool_node(
-                    node,
-                    tool_registry=self.tool_registry,
-                ),
+                requested_permissions=permissions,
                 model_session_id=self.run_state.message.model_session_id,
             )
         )
@@ -439,80 +445,199 @@ class PlannedTaskExecutor:
                 "unsupported_binding",
                 f"fixed_tool node {node.nodeId} has no tool binding",
             )
-        tool_id = execution_node.tool_binding.tool_id
+        binding = execution_node.tool_binding
+        if binding.operation is None:
+            raise HarnessError(
+                "unsupported_binding",
+                f"fixed_tool node {node.nodeId} has no executable operation",
+            )
 
-        if tool_id == "document.receive_attachment":
+        outputs = [
+            self._call_tool(
+                node,
+                binding=binding,
+                operation=binding.operation,
+                arguments=arguments,
+            )
+            for arguments in self._render_tool_invocations(binding, inputs)
+        ]
+        return _merge_node_outputs(outputs)
+
+    def _render_tool_invocations(
+        self,
+        binding: ExecutionToolBinding,
+        inputs: dict[str, NodeOutput],
+    ) -> list[dict[str, object]]:
+        if _binding_requires_per_attachment(binding):
             if not self.request.attachments:
                 raise HarnessError(
                     "missing_input",
-                    f"tool node {node.nodeId} requires at least one attachment",
+                    f"tool binding {binding.tool_id} requires at least one attachment",
                 )
-            paths = "\n".join(attachment.path for attachment in self.request.attachments)
-            return self._call_tool(
-                node,
-                operation="receive_attachment",
-                arguments={"paths": paths},
+            return [
+                self._render_tool_arguments(
+                    binding,
+                    inputs,
+                    attachment=attachment,
+                    attachment_index=index,
+                )
+                for index, attachment in enumerate(self.request.attachments)
+            ]
+
+        if _binding_references_attachments(binding) and not self.request.attachments:
+            raise HarnessError(
+                "missing_input",
+                f"tool binding {binding.tool_id} requires at least one attachment",
+            )
+        return [self._render_tool_arguments(binding, inputs)]
+
+    def _render_tool_arguments(
+        self,
+        binding: ExecutionToolBinding,
+        inputs: dict[str, NodeOutput],
+        *,
+        attachment: RunAttachment | None = None,
+        attachment_index: int | None = None,
+    ) -> dict[str, object]:
+        output_stem = f"report-{uuid4().hex[:8]}"
+        arguments = {
+            key: _normalize_rendered_path_argument(
+                key,
+                self._render_template_value(
+                    value,
+                    inputs,
+                    attachment=attachment,
+                    attachment_index=attachment_index,
+                    output_stem=output_stem,
+                ),
+            )
+            for key, value in binding.arguments_template.values.items()
+        }
+        if binding.operation is not None:
+            arguments.setdefault("operation", binding.operation)
+
+        for mapping in binding.input_mappings:
+            arguments[mapping.target_argument] = self._mapped_input_value(
+                mapping,
+                inputs,
+                attachment=attachment,
             )
 
-        if tool_id == "document.markitdown_convert":
-            if not self.request.attachments:
-                raise HarnessError(
-                    "missing_input",
-                    f"tool node {node.nodeId} requires at least one attachment",
-                )
-            texts: list[str] = []
-            artifacts: list[str] = []
-            for index, attachment in enumerate(self.request.attachments):
-                input_path = Path(attachment.path)
-                output_path = self.document_executor._converted_output_path(
-                    index,
-                    input_path,
-                )
-                output = self._call_tool(
-                    node,
-                    operation="convert_local_file",
-                    arguments={
-                        "input_path": attachment.path,
-                        "output_path": str(output_path),
-                    },
-                )
-                text = str(output.values.get("text", ""))
-                if text:
-                    texts.append(text)
-                artifacts.extend(output.artifacts)
-            return NodeOutput(
-                artifacts=artifacts,
-                values={"text": "\n\n".join(texts)},
+        missing = [
+            name
+            for name in binding.arguments_template.required
+            if name not in arguments
+            or arguments[name] is None
+            or arguments[name] == ""
+        ]
+        if missing:
+            raise HarnessError(
+                "missing_input",
+                (
+                    f"tool binding {binding.tool_id} is missing required "
+                    f"arguments: {', '.join(missing)}"
+                ),
             )
 
-        if tool_id == "document.typst_compile":
-            outline = _first_input_value(inputs, "outline")
-            report = _first_input_value(inputs, "report")
-            output_stem = f"report-{uuid4().hex[:8]}"
-            return self._call_tool(
-                node,
-                operation="compile_report_pdf",
-                arguments={
-                    "title": Path(self.request.project_path).stem or "Alita Report",
-                    "outline": outline,
-                    "report": report,
-                    "source_output_path": str(
-                        self.document_executor.artifact_dir
-                        / "typst"
-                        / f"{output_stem}.typ"
-                    ),
-                    "pdf_output_path": str(
-                        self.document_executor.artifact_dir
-                        / "typst"
-                        / f"{output_stem}.pdf"
-                    ),
-                },
-            )
+        arguments.pop("operation", None)
+        return arguments
 
-        raise HarnessError(
-            "unsupported_runtime",
-            f"tool node {node.nodeId} has no bound runtime: {node.toolRef or '<missing>'}",
+    def _render_template_value(
+        self,
+        value: object,
+        inputs: dict[str, NodeOutput],
+        *,
+        attachment: RunAttachment | None,
+        attachment_index: int | None,
+        output_stem: str,
+    ) -> object:
+        if not isinstance(value, str):
+            return value
+
+        replacements = self._template_replacements(
+            inputs,
+            attachment=attachment,
+            attachment_index=attachment_index,
+            output_stem=output_stem,
         )
+        rendered = value
+        for placeholder, replacement in replacements.items():
+            rendered = rendered.replace(placeholder, replacement)
+        return rendered
+
+    def _template_replacements(
+        self,
+        inputs: dict[str, NodeOutput],
+        *,
+        attachment: RunAttachment | None,
+        attachment_index: int | None,
+        output_stem: str,
+    ) -> dict[str, str]:
+        replacements = {
+            "{artifact_dir}": str(self.document_executor.artifact_dir),
+            "{project.name}": Path(self.request.project_path).stem or "Alita Report",
+            "{attachments.paths}": "\n".join(
+                attachment.path for attachment in self.request.attachments
+            ),
+            "{output_stem}": output_stem,
+        }
+        for key, value in self.request.graph.metadata.items():
+            replacements[f"{{graph.metadata.{key}}}"] = str(value)
+
+        if attachment is not None:
+            input_path = Path(attachment.path)
+            index = 0 if attachment_index is None else attachment_index
+            replacements.update(
+                {
+                    "{attachment.path}": attachment.path,
+                    "{attachment.name}": attachment.name,
+                    "{attachment_stem}": _safe_artifact_stem(input_path.stem),
+                    "{index}": str(index + 1),
+                    "{index:02d}": f"{index + 1:02d}",
+                }
+            )
+
+        for node_id, output in inputs.items():
+            for key, value in output.values.items():
+                replacements[f"{{{node_id}.{key}}}"] = str(value)
+            if output.artifacts:
+                replacements[f"{{{node_id}.artifact}}"] = output.artifacts[0]
+        return replacements
+
+    def _mapped_input_value(
+        self,
+        mapping: ExecutionInputMapping,
+        inputs: dict[str, NodeOutput],
+        *,
+        attachment: RunAttachment | None,
+    ) -> object:
+        if mapping.source == "attachments":
+            if mapping.source_key == "paths":
+                return "\n".join(attachment.path for attachment in self.request.attachments)
+            if mapping.source_key == "path" and attachment is not None:
+                return attachment.path
+
+        output = inputs.get(mapping.source)
+        if output is None:
+            if mapping.required:
+                raise HarnessError(
+                    "missing_input",
+                    f"tool input mapping source is missing: {mapping.source}",
+                )
+            return ""
+        if mapping.source_key in output.values:
+            return output.values[mapping.source_key]
+        if mapping.source_key == "artifact" and output.artifacts:
+            return output.artifacts[0]
+        if mapping.required:
+            raise HarnessError(
+                "missing_input",
+                (
+                    f"tool input mapping {mapping.source}.{mapping.source_key} "
+                    "is missing"
+                ),
+            )
+        return ""
 
     def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
         node = self.nodes_by_id[node_id]
@@ -710,6 +835,69 @@ class PlannedTaskExecutor:
                 "summary": node.summary,
             }
         )
+
+
+def _binding_requires_per_attachment(binding: ExecutionToolBinding) -> bool:
+    return any(
+        isinstance(value, str) and "{attachment." in value
+        for value in binding.arguments_template.values.values()
+    ) or any(
+        mapping.source == "attachments" and mapping.source_key == "path"
+        for mapping in binding.input_mappings
+    )
+
+
+def _binding_references_attachments(binding: ExecutionToolBinding) -> bool:
+    return any(
+        isinstance(value, str)
+        and ("{attachment." in value or "{attachments." in value)
+        for value in binding.arguments_template.values.values()
+    ) or any(mapping.source == "attachments" for mapping in binding.input_mappings)
+
+
+def _safe_artifact_stem(stem: str) -> str:
+    unsafe_chars = '<>:"/\\|?*'
+    safe_stem = "".join(
+        "-" if character.isspace() else character
+        for character in stem
+        if character not in unsafe_chars
+    )
+    return safe_stem or "attachment"
+
+
+def _merge_node_outputs(outputs: list[NodeOutput]) -> NodeOutput:
+    if not outputs:
+        return NodeOutput()
+    if len(outputs) == 1:
+        return outputs[0]
+
+    artifacts: list[str] = []
+    values_by_key: dict[str, list[object]] = {}
+    for output in outputs:
+        artifacts.extend(output.artifacts)
+        for key, value in output.values.items():
+            values_by_key.setdefault(key, []).append(value)
+
+    values: dict[str, object] = {}
+    for key, collected in values_by_key.items():
+        if key == "text":
+            values[key] = "\n\n".join(str(value) for value in collected if value)
+        elif len(collected) == 1:
+            values[key] = collected[0]
+        else:
+            values[key] = collected
+    return NodeOutput(artifacts=artifacts, values=values)
+
+
+def _normalize_rendered_path_argument(name: str, value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    if not name.endswith("_path"):
+        return value
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+    return value
 
 
 class ResearchFlowExecutor:
@@ -995,6 +1183,7 @@ class ResearchFlowExecutor:
             issues = _research_quality_issues(markdown, quality_sources)
             if evidence_set is not None:
                 issues.extend(validate_citation_coverage(markdown, evidence_set))
+                issues.extend(claim_level_citation_diagnostics(markdown, evidence_set))
             issues = _dedupe_issue_codes(issues)
             return NodeOutput(
                 values={
@@ -1487,6 +1676,12 @@ def run_graph_events(
                     "errorCode": payload.get("errorCode"),
                     "values": partial_output.values,
                 }
+                verifier_diagnostics = _verifier_diagnostics(
+                    node_id=node.nodeId,
+                    error=error,
+                )
+                if verifier_diagnostics:
+                    record["verifierDiagnostics"] = verifier_diagnostics
                 journal.write_node(node.nodeId, record)
                 journal.write_run(
                     {
@@ -1654,6 +1849,11 @@ def run_graph_events(
                 "mode": request.mode.model_dump(),
             }
         )
+        _auto_write_memory_records(
+            request=request,
+            outputs=outputs,
+            completed_at=completed_at,
+        )
         yield AgentEvent(
             type="task.completed",
             payload={"taskId": request.task_id, "runId": request.run_id},
@@ -1704,6 +1904,76 @@ def _run_state_mismatch(
             f"{run_state.run_id} != {request.run_id}"
         )
     return None
+
+
+def _verifier_diagnostics(
+    *,
+    node_id: str,
+    error: Exception,
+) -> list[dict[str, str]]:
+    if not isinstance(error, HarnessError):
+        return []
+    if error.code not in {
+        "empty_node_output",
+        "missing_artifact",
+        "empty_artifact_content",
+        "missing_final_output",
+    }:
+        return []
+    return [
+        {
+            "nodeId": node_id,
+            "code": error.code,
+            "message": str(error),
+        }
+    ]
+
+
+def _auto_write_memory_records(
+    *,
+    request: RunGraphRequest,
+    outputs: dict[str, NodeOutput],
+    completed_at: str,
+) -> None:
+    memory_config = request.graph.metadata.get("memory")
+    if not isinstance(memory_config, dict) or memory_config.get("autoWrite") is not True:
+        return
+
+    store = MemoryStore(request.project_path)
+    graph_source_ref = f"{request.run_id}:{request.task_id}:graph_summary"
+    store.append(
+        MemoryRecord(
+            memory_id=memory_id_for_source("graph_summary", graph_source_ref),
+            kind="graph_summary",
+            summary=(
+                f"Run {request.run_id} completed task {request.task_id} "
+                f"with {len(outputs)} node output(s)."
+            ),
+            source_ref=request.run_id,
+            source_refs=[request.run_id, request.task_id],
+            created_at=completed_at,
+            tags=["run", request.task_id],
+        )
+    )
+
+    for node_id, output in outputs.items():
+        for artifact_path in output.artifacts:
+            artifact_name = Path(artifact_path).name
+            source_ref = f"{request.run_id}:{node_id}:{artifact_name}"
+            store.append(
+                MemoryRecord(
+                    memory_id=memory_id_for_source("artifact_summary", source_ref),
+                    kind="artifact_summary",
+                    summary=(
+                        f"Node {node_id} produced artifact {artifact_name} "
+                        f"during run {request.run_id}."
+                    ),
+                    source_ref=source_ref,
+                    source_refs=[request.run_id, node_id, artifact_name],
+                    created_at=completed_at,
+                    tags=["artifact", node_id],
+                )
+            )
 
 
 def is_executable_node(node: GraphNode) -> bool:
@@ -1997,6 +2267,7 @@ def _react_policy_from_graph_metadata(metadata: dict) -> ReActPolicy:
     react = dict(metadata.get("react") or {})
     return ReActPolicy(
         enabled=react.get("enabled") is True,
+        use_native_tool_calls=react.get("nativeToolCalls") is True,
         max_steps=int(react.get("maxSteps", 4)),
         max_tool_calls=int(react.get("maxToolCalls", 3)),
         allowed_tool_ids=list(react.get("allowedToolIds") or []),

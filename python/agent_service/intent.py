@@ -95,6 +95,9 @@ def classify_route(message: UserMessage) -> RouteDecision:
             ["document_file"],
         )
 
+    if _is_direct_tool_execution_request(content):
+        return _route(IntentKind.TASK, "user requested creation, modification, or execution")
+
     if _is_polite_task_request(content):
         return _route(IntentKind.TASK, "user requested creation, modification, or execution")
 
@@ -214,6 +217,16 @@ def _is_polite_task_request(content: str) -> bool:
             "可以帮我",
         )
     )
+
+
+def _is_direct_tool_execution_request(content: str) -> bool:
+    if _is_instructional_inquiry(content):
+        return False
+    normalized = content.strip().lower()
+    return re.search(
+        r"^(?:please\s+)?(?:use|using)\b.+\b(?:tool|plugin)\b",
+        normalized,
+    ) is not None
 
 
 def _is_instructional_inquiry(content: str) -> bool:

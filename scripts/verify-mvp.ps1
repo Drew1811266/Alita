@@ -10,7 +10,11 @@ function Invoke-CheckedCommand {
 
     Write-Host ""
     Write-Host "==> $Label"
+    $global:LASTEXITCODE = 0
     & $Command
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Label failed with exit code $LASTEXITCODE."
+    }
 }
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -40,13 +44,27 @@ try {
         }
     }
 
-    Invoke-CheckedCommand "Agent eval smoke" {
+    Invoke-CheckedCommand "Agent eval deterministic gate" {
         Push-Location "python"
         try {
-            python -m agent_service.eval_harness --cases evals/router_cases.jsonl --output ..\.codex-run\evals
+            python -m agent_service.eval_harness --cases-dir evals --output ..\.codex-run\evals
         }
         finally {
             Pop-Location
+        }
+    }
+
+    $sidecarBinary = Join-Path $repoRoot "src-tauri\binaries\alita-agent-sidecar-x86_64-pc-windows-msvc.exe"
+    if (-not (Test-Path $sidecarBinary)) {
+        Invoke-CheckedCommand "Build Python sidecar binary for Rust tests" {
+            & (Join-Path $repoRoot "scripts\build-sidecar.ps1")
+        }
+    }
+
+    $llamaResourceDir = Join-Path $repoRoot "src-tauri\resources\llama-cpp"
+    if (-not (Test-Path $llamaResourceDir)) {
+        Invoke-CheckedCommand "Prepare Tauri resource directory for Rust tests" {
+            New-Item -ItemType Directory -Force -Path $llamaResourceDir | Out-Null
         }
     }
 
