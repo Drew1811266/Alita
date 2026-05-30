@@ -7,13 +7,17 @@ from pydantic import BaseModel, Field
 
 AgentRuntimeStage = Literal[
     "route",
+    "context",
     "plan",
+    "approve",
+    "act",
     "execute",
     "observe",
     "verify",
     "replan",
     "final",
     "failed",
+    "interrupted",
 ]
 
 

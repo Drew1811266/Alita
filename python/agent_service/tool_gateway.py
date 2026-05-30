@@ -19,6 +19,7 @@ from agent_service.tool_protocol import (
     UnifiedToolInvocation,
     UnifiedToolResult,
 )
+from agent_service.mcp_client_factory import create_mcp_client
 from agent_service.tool_providers.internal import InternalToolProvider
 from agent_service.tool_providers.mcp import McpClient, McpProviderConfig, McpToolProvider
 from agent_service.tool_registry import ToolRegistry
@@ -62,6 +63,7 @@ class UnifiedToolGateway:
             self.authority_context,
             invocation,
         )
+        runtime_budget_ms = _effective_runtime_budget_ms(authority_context, tool)
 
         try:
             validate_json_schema_subset(tool.input_schema, invocation.arguments)
@@ -73,9 +75,7 @@ class UnifiedToolGateway:
                 ok=False,
                 duration_ms=timer.elapsed_ms(),
                 error_code="invalid_tool_input",
-                runtime_budget_ms=authority_context.runtime_budget_ms
-                if authority_context is not None
-                else None,
+                runtime_budget_ms=runtime_budget_ms,
             )
 
         decision = authorize_tool_invocation(invocation, tool, authority_context)
@@ -98,7 +98,7 @@ class UnifiedToolGateway:
                 duration_ms=timer.elapsed_ms(),
                 authority_code=decision.code,
                 error_code="authority_denied",
-                runtime_budget_ms=authority_context.runtime_budget_ms,
+                runtime_budget_ms=runtime_budget_ms,
             )
 
         provider = next(
@@ -115,7 +115,7 @@ class UnifiedToolGateway:
                 duration_ms=timer.elapsed_ms(),
                 authority_code=decision.code,
                 error_code=error_code,
-                runtime_budget_ms=authority_context.runtime_budget_ms,
+                runtime_budget_ms=runtime_budget_ms,
             )
         return replace(
             result,
@@ -130,7 +130,7 @@ class UnifiedToolGateway:
                     duration_ms=timer.elapsed_ms(),
                     authority_code=decision.code,
                     error_code=None,
-                    runtime_budget_ms=authority_context.runtime_budget_ms,
+                    runtime_budget_ms=runtime_budget_ms,
                 ),
             },
         )
@@ -143,6 +143,18 @@ def _authority_context_for_invocation(
     if authority_context is None:
         return AuthorityContext.from_invocation(invocation)
     return authority_context.with_invocation_scope(invocation)
+
+
+def _effective_runtime_budget_ms(
+    authority_context: AuthorityContext,
+    tool: UnifiedToolDefinition,
+) -> int | None:
+    candidates = [
+        value
+        for value in (authority_context.runtime_budget_ms, tool.timeout_ms)
+        if value is not None
+    ]
+    return min(candidates) if candidates else None
 
 
 def default_unified_tool_gateway(
@@ -182,8 +194,7 @@ def _mcp_providers_from_config(
     configs: list[McpProviderConfig],
     client_factory: Callable[[McpProviderConfig], McpClient] | None,
 ) -> list[McpToolProvider]:
-    if client_factory is None:
-        return []
+    effective_client_factory = client_factory or create_mcp_client
     providers: list[McpToolProvider] = []
     for config in configs:
         if not config.enabled:
@@ -192,7 +203,7 @@ def _mcp_providers_from_config(
             McpToolProvider(
                 provider_id=config.provider_id,
                 display_name=config.display_name,
-                client=client_factory(config),
+                client=effective_client_factory(config),
                 enabled=True,
             )
         )

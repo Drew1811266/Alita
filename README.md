@@ -2,7 +2,7 @@
 
 Alita 是一个本地优先的 AI Agent 桌面工作台。它不是单纯的聊天窗口，而是把本地大模型、工程文件、节点化任务流程、文档工具、联网查询工具、语音输入、运行历史和 artifact 预览整合到一个 Windows 桌面应用中。
 
-当前仓库版本为 `0.33.0`。这个阶段的重点是：桌面工程闭环已经成型，并完成 Agent Runtime A-L 阶段优化、closed-loop runtime 加固以及 0.33 runtime optimization：Agent 具备运行状态、统一工具网关、结构化路由、规划链、执行图、显式权限授权、manifest 驱动工具入口、受控 ReAct、运行 checkpoint、指定 checkpoint resume、低风险恢复继续、trace primitive、MCP lifecycle handoff、schema-aware tool planning、证据驱动研究、评估基线、项目记忆上下文和前后端 runtime 观测事件。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
+当前仓库版本为 `0.34.0`。这个阶段的重点是：桌面工程闭环已经成型，并完成 Agent Runtime Mainline 优化：Agent 具备运行状态、统一工具网关、结构化路由、规划链、执行图、显式权限授权、manifest 驱动工具入口、受控 ReAct、运行 checkpoint、指定 checkpoint resume、低风险恢复继续、trace store、MCP lifecycle handoff、schema-aware tool planning、证据驱动研究、评估基线、项目记忆上下文和前后端 runtime 观测事件。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
 
 ## 当前阶段
 
@@ -597,23 +597,23 @@ MVP 验证脚本：
 本轮 Agent Runtime goal 验证结果：
 
 ```text
-npm run frontend:lint
+git diff --check
+passed
+
+npm run agent:eval
+67/67 passed
+
+Push-Location python; python -m pytest -q; Pop-Location
+780 passed
+
+npm run frontend:typecheck
 passed
 
 npm run frontend:test
 32 test files passed, 210 tests passed
 
-Push-Location python; python -m pytest -q; Pop-Location
-721 passed
-
-npm run agent:eval
-59/59 passed
-
 cargo test --manifest-path src-tauri/Cargo.toml
 162 tests passed
-
-powershell -ExecutionPolicy Bypass -File scripts/verify-mvp.ps1
-MVP verification passed
 ```
 
 ## 运行时端口
@@ -636,6 +636,7 @@ MVP verification passed
 - 临时脚本 sandbox 已增加路径、输出、artifact、环境变量和进程启动限制，但仍不是 Windows AppContainer/Docker/WSL 级强隔离。
 - MCP provider 已能以配置形式进入统一 gateway 和首选项刷新路径，但 preferences 到 Python sidecar 默认执行路径的完整凭据/连接生命周期仍需继续加固。
 - run checkpoint、低风险自动继续、latest checkpoint resume 和指定 checkpoint id resume 已经存在；rollback、后台多 run 队列和 memory 管理 UI 仍属于后续增强项。
+- Agent Runtime Mainline 已具备 state/action/delta、engine facade、checkpoint v2、trace store 和 memory v2 retrieval；默认自治循环仍按阶段接入，生产级 MCP supervisor、强沙箱和多 Agent team 仍是后续路线。
 - 前端已具备 runtime observability controller 状态；完整 UI 呈现、筛选和持久化查看仍需后续补齐。
 - 桌面构建主线面向 Windows，跨平台发布尚未作为主线目标。
 

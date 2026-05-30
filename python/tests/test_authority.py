@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agent_service.capability_grants import capability_request_for_tool_invocation
 from agent_service.authority import (
     AuthorityContext,
     AuthorityGrant,
@@ -158,6 +159,21 @@ def test_authority_from_invocation_does_not_approve_requested_sensitive_permissi
 
 
 def test_authority_grant_can_approve_sensitive_permissions(tmp_path: Path) -> None:
+    tool = _tool_definition(permissions=["run_python_plugin"])
+    invocation = _invocation(
+        tmp_path,
+        arguments={"operation": "run"},
+        requested_permissions=["run_python_plugin"],
+    )
+    grant = AuthorityGrant(approved_permissions=["run_python_plugin"])
+
+    decision = authorize_tool_invocation(invocation, tool, grant.to_context())
+
+    assert decision.allowed is True
+    assert decision.code == "allowed"
+
+
+def test_authority_requires_network_domain_for_network_tools(tmp_path: Path) -> None:
     tool = _tool_definition(permissions=["network"])
     invocation = _invocation(
         tmp_path,
@@ -168,8 +184,8 @@ def test_authority_grant_can_approve_sensitive_permissions(tmp_path: Path) -> No
 
     decision = authorize_tool_invocation(invocation, tool, grant.to_context())
 
-    assert decision.allowed is True
-    assert decision.code == "allowed"
+    assert decision.allowed is False
+    assert decision.code == "network_domain_required"
 
 
 def test_authority_denies_network_domain_without_grant(tmp_path: Path) -> None:
@@ -209,6 +225,27 @@ def test_authority_allows_network_domain_with_grant(tmp_path: Path) -> None:
 
     assert decision.allowed is True
     assert decision.code == "allowed"
+
+
+def test_capability_request_extracts_tool_filesystem_and_network_domain(
+    tmp_path: Path,
+) -> None:
+    tool = _tool_definition(permissions=["network"])
+    invocation = _invocation(
+        tmp_path,
+        arguments={"operation": "fetch"},
+        requested_permissions=["network"],
+        metadata={"networkDomain": "docs.example.com"},
+    )
+
+    request = capability_request_for_tool_invocation(invocation, tool)
+
+    assert request.capability == "tool"
+    assert request.tool_id == "internal:test.authority"
+    assert request.provider_id == "internal"
+    assert request.operation == "fetch"
+    assert request.network_domains == ["docs.example.com"]
+    assert request.runtime_budget_ms == 5000
 
 
 def test_authority_separates_read_and_write_roots(tmp_path: Path) -> None:

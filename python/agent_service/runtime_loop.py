@@ -15,15 +15,31 @@ class RuntimeCheckpoint(BaseModel):
     pending_node_ids: list[str] = Field(default_factory=list)
     created_at: str
     recovery_count: int = 0
+    thread_id: str | None = None
+    sequence: int | None = None
+    parent_checkpoint_id: str | None = None
+    graph_hash: str | None = None
+    state_version: int = 1
+    writes: list[dict[str, Any]] = Field(default_factory=list)
+    pending_approvals: list[dict[str, Any]] = Field(default_factory=list)
+    runtime_state: dict[str, Any] = Field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:
         return {
             "checkpointId": f"{self.node_id}:{self.status}:{self.recovery_count}",
+            "threadId": self.thread_id,
             "runId": self.run_id,
             "nodeId": self.node_id,
             "status": self.status,
+            "sequence": self.sequence,
+            "parentCheckpointId": self.parent_checkpoint_id,
+            "graphHash": self.graph_hash,
+            "stateVersion": self.state_version,
             "completedOutputs": self.completed_outputs,
             "pendingNodeIds": list(self.pending_node_ids),
+            "writes": list(self.writes),
+            "pendingApprovals": list(self.pending_approvals),
+            "runtimeState": dict(self.runtime_state),
             "createdAt": self.created_at,
             "recoveryCount": self.recovery_count,
         }

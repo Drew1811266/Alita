@@ -54,6 +54,10 @@ fn refresh_mcp_tool_provider_tools_accepts_enabled_mcp_provider() {
         format!("mcp:{}:status", provider.provider_id)
     );
     assert_eq!(tools[0].provider_id, provider.provider_id);
+    assert_eq!(
+        tools[0].description,
+        "Configured MCP stdio provider connectivity check."
+    );
 }
 
 #[test]

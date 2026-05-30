@@ -19,6 +19,9 @@ class RunJournal:
     def write_run(self, payload: dict[str, Any]) -> None:
         self._write_json(self.base_dir / "run.json", payload)
 
+    def read_run(self) -> dict[str, Any]:
+        return json.loads((self.base_dir / "run.json").read_text(encoding="utf-8"))
+
     def write_node(self, node_id: str, payload: dict[str, Any]) -> None:
         safe_node_id = _safe_storage_id("node_id", node_id)
         self._write_json(self.base_dir / f"{safe_node_id}.json", payload)
@@ -73,10 +76,12 @@ class RunJournal:
         return None
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
-        path.write_text(
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        tmp_path.replace(path)
 
 
 def _safe_storage_id(kind: str, value: str) -> str:

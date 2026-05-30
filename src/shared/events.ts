@@ -6,6 +6,7 @@ import type {
   NodeGraph,
   NodeRunRecord,
   RecoveryActionRecord,
+  RuntimeSpanRecord,
   RuntimeCheckpointRecord,
   RuntimeNotice,
   ScriptReviewState,
@@ -186,6 +187,12 @@ export type BackendEvent =
       type: "runtime.checkpoint_recorded";
       payload: {
         checkpoint: RuntimeCheckpointRecord;
+      };
+    }
+  | {
+      type: "runtime.span_recorded";
+      payload: {
+        span: RuntimeSpanRecord;
       };
     }
   | {

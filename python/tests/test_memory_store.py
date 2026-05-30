@@ -54,6 +54,51 @@ def test_memory_store_sanitizes_summary_before_persisting(tmp_path: Path) -> Non
     assert "secret.docx" not in stored_summary
 
 
+def test_memory_record_v2_defaults_are_backward_compatible() -> None:
+    record = MemoryRecord(
+        memory_id="memory-1",
+        kind="preference",
+        summary="Prefer concise reports.",
+        source_ref="user",
+        created_at="2026-05-30T00:00:00Z",
+    )
+
+    assert record.schema_version == 2
+    assert record.importance == 0.5
+    assert record.confidence == 0.8
+    assert record.visibility == "project"
+
+
+def test_memory_selection_prefers_relevant_high_importance_records() -> None:
+    records = [
+        MemoryRecord(
+            memory_id="old",
+            kind="graph_summary",
+            summary="Unrelated weather research.",
+            source_ref="run-old",
+            created_at="2026-05-29T00:00:00Z",
+            importance=0.4,
+        ),
+        MemoryRecord(
+            memory_id="new",
+            kind="tool_outcome",
+            summary="CSV parser failed on quoted rows.",
+            source_ref="run-new",
+            created_at="2026-05-30T00:00:00Z",
+            importance=0.9,
+            tags=["csv"],
+        ),
+    ]
+
+    selected = select_memory_for_context(
+        records,
+        budget_for_mode("planning"),
+        query="Fix CSV parser quoted rows",
+    )
+
+    assert selected[0].memory_id == "new"
+
+
 def test_sanitize_memory_summary_removes_secrets_paths_and_large_content() -> None:
     text = "api_key=sk-secret D:\\Project\\secret.docx " + ("x" * 2000)
 
