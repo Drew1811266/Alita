@@ -398,6 +398,29 @@ def test_default_gateway_loads_enabled_mcp_providers_from_config() -> None:
     assert "mcp:mcp-docs:search_docs" in tool_ids
 
 
+def test_default_gateway_uses_safe_mcp_factory_without_custom_factory() -> None:
+    from agent_service.tool_gateway import default_unified_tool_gateway
+
+    gateway = default_unified_tool_gateway(
+        registry=ToolRegistry([]),
+        mcp_provider_configs=[
+            McpProviderConfig(
+                provider_id="mcp-docs",
+                display_name="Docs MCP",
+                transport="stdio",
+            )
+        ],
+    )
+
+    mcp_provider = next(
+        provider for provider in gateway.providers if provider.provider_id == "mcp-docs"
+    )
+
+    assert mcp_provider.health()["ok"] is False
+    assert mcp_provider.health()["errorCode"] == "missing_command"
+    assert gateway.list_tools() == []
+
+
 def test_default_unified_tool_gateway_uses_injected_internal_executor() -> None:
     from agent_service.tool_gateway import default_unified_tool_gateway
     from agent_service.tool_protocol import UnifiedToolInvocation

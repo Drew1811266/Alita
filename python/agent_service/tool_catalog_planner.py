@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 from typing import Any
 
@@ -8,11 +9,17 @@ from pydantic import BaseModel, Field
 from agent_service.context_manager import ContextBundle, ToolCapability
 from agent_service.goal_spec import GoalSpec
 from agent_service.schemas import UserMessage
+from agent_service.tool_graph_planner import (
+    PlannedToolNode,
+    ToolActionGraph,
+    validate_tool_action_graph,
+)
 from agent_service.tool_protocol import normalize_tool_id, provider_tool_id
 from agent_service.tool_registry import ToolManifestSpec, ToolRegistry
 
 
 TOOL_CATALOG_PLANNER_ID = "tool_catalog.planner.v1"
+CHAIN_TEXT_ARGUMENTS = {"source_text", "text", "input"}
 
 
 class ToolCatalogPlanningRequest(BaseModel):
@@ -29,32 +36,151 @@ class ToolCatalogPlanningResult(BaseModel):
     diagnostics: list[str] = Field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class _CatalogToolPlan:
+    selected: ToolCapability
+    manifest: ToolManifestSpec
+    operation: str
+    argument_values: dict[str, Any]
+    node_id: str
+
+
+@dataclass(frozen=True)
+class _GraphStep:
+    plan: _CatalogToolPlan
+    dependencies: list[str]
+    argument_values: dict[str, Any]
+
+
 class ToolCatalogPlanner:
     def __init__(self, *, tool_registry: ToolRegistry) -> None:
         self.tool_registry = tool_registry
 
     def plan(self, request: ToolCatalogPlanningRequest) -> ToolCatalogPlanningResult:
-        selected = _select_tool(request.message.content, request.context.available_tools)
-        if selected is None:
+        selected_tools = _select_tools(
+            request.message.content,
+            request.context.available_tools,
+        )
+        if not selected_tools:
             return ToolCatalogPlanningResult(
                 planned=False,
                 diagnostics=["no catalog tool matched the task"],
             )
 
+        first_plan, diagnostics = self._plan_selected_tool(selected_tools[0], request)
+        if first_plan is None:
+            return ToolCatalogPlanningResult(planned=False, diagnostics=diagnostics)
+
+        graph_steps = [
+            _GraphStep(
+                plan=first_plan,
+                dependencies=[],
+                argument_values=dict(first_plan.argument_values),
+            )
+        ]
+        for selected_tool in selected_tools[1:]:
+            second_plan, second_diagnostics = self._plan_selected_tool(
+                selected_tool,
+                request,
+            )
+            if (
+                second_plan is not None
+                and not second_diagnostics
+                and _can_chain_tool_plans(first_plan, second_plan)
+            ):
+                target_argument = _chain_target_argument(second_plan)
+                second_arguments = dict(second_plan.argument_values)
+                second_arguments[target_argument] = f"{{{first_plan.node_id}.text}}"
+                graph_steps.append(
+                    _GraphStep(
+                        plan=second_plan,
+                        dependencies=[first_plan.node_id],
+                        argument_values=second_arguments,
+                    )
+                )
+                break
+
+        action_graph = ToolActionGraph(
+            nodes=[
+                _planned_tool_node(
+                    step.plan,
+                    dependencies=step.dependencies,
+                    argument_values=step.argument_values,
+                )
+                for step in graph_steps
+            ]
+        )
+        diagnostics = validate_tool_action_graph(action_graph)
+        if diagnostics:
+            return ToolCatalogPlanningResult(planned=False, diagnostics=diagnostics)
+
+        fixed_nodes = [
+            _fixed_tool_node(
+                node_id=step.plan.node_id,
+                manifest=step.plan.manifest,
+                operation=step.plan.operation,
+                argument_values=step.argument_values,
+                dependencies=step.dependencies,
+                position={"x": 260 + (index * 300), "y": 180},
+            )
+            for index, step in enumerate(graph_steps)
+        ]
+        last_node_id = graph_steps[-1].plan.node_id
+        graph_payload = {
+            "graphId": f"{request.task_id}-graph",
+            "nodes": [
+                *fixed_nodes,
+                _output_node(dependency=last_node_id),
+            ],
+            "edges": [
+                *[
+                    {
+                        "id": (
+                            f"{graph_steps[index - 1].plan.node_id}-"
+                            f"{graph_steps[index].plan.node_id}"
+                        ),
+                        "source": graph_steps[index - 1].plan.node_id,
+                        "target": graph_steps[index].plan.node_id,
+                    }
+                    for index in range(1, len(graph_steps))
+                ],
+                {
+                    "id": f"{last_node_id}-task-output",
+                    "source": last_node_id,
+                    "target": "task-output",
+                },
+            ],
+            "metadata": {
+                "kind": "task",
+                "toolCatalogPlanner": {
+                    "toolId": normalize_tool_id(first_plan.manifest.tool_id),
+                    "operation": first_plan.operation,
+                    "toolIds": [
+                        normalize_tool_id(step.plan.manifest.tool_id)
+                        for step in graph_steps
+                    ],
+                    "operations": [
+                        step.plan.operation for step in graph_steps
+                    ],
+                },
+                "userMessage": request.message.content,
+            },
+        }
+        return ToolCatalogPlanningResult(planned=True, graph_payload=graph_payload)
+
+    def _plan_selected_tool(
+        self,
+        selected: ToolCapability,
+        request: ToolCatalogPlanningRequest,
+    ) -> tuple[_CatalogToolPlan | None, list[str]]:
         try:
             manifest = self.tool_registry.get(provider_tool_id(selected.tool_id))
         except KeyError:
-            return ToolCatalogPlanningResult(
-                planned=False,
-                diagnostics=[f"catalog tool is unavailable: {selected.tool_id}"],
-            )
+            return None, [f"catalog tool is unavailable: {selected.tool_id}"]
 
         operation = _operation_for_message(manifest, request.message.content)
         if operation is None:
-            return ToolCatalogPlanningResult(
-                planned=False,
-                diagnostics=[f"catalog tool has no matching operation: {manifest.tool_id}"],
-            )
+            return None, [f"catalog tool has no matching operation: {manifest.tool_id}"]
 
         argument_values, diagnostics = _argument_values_for_tool(
             manifest,
@@ -63,43 +189,32 @@ class ToolCatalogPlanner:
             context=request.context,
         )
         if diagnostics:
-            return ToolCatalogPlanningResult(planned=False, diagnostics=diagnostics)
+            return None, diagnostics
 
-        node_id = _node_id_for_tool(manifest.tool_id)
-        graph_payload = {
-            "graphId": f"{request.task_id}-graph",
-            "nodes": [
-                _fixed_tool_node(
-                    node_id=node_id,
-                    manifest=manifest,
-                    operation=operation,
-                    argument_values=argument_values,
-                ),
-                _output_node(dependency=node_id),
-            ],
-            "edges": [
-                {
-                    "id": f"{node_id}-task-output",
-                    "source": node_id,
-                    "target": "task-output",
-                }
-            ],
-            "metadata": {
-                "kind": "task",
-                "toolCatalogPlanner": {
-                    "toolId": normalize_tool_id(manifest.tool_id),
-                    "operation": operation,
-                },
-                "userMessage": request.message.content,
-            },
-        }
-        return ToolCatalogPlanningResult(planned=True, graph_payload=graph_payload)
+        return (
+            _CatalogToolPlan(
+                selected=selected,
+                manifest=manifest,
+                operation=operation,
+                argument_values=argument_values,
+                node_id=_node_id_for_tool(manifest.tool_id),
+            ),
+            [],
+        )
 
 
 def _select_tool(
     content: str,
     tools: list[ToolCapability],
 ) -> ToolCapability | None:
+    selected = _select_tools(content, tools)
+    return selected[0] if selected else None
+
+
+def _select_tools(
+    content: str,
+    tools: list[ToolCapability],
+) -> list[ToolCapability]:
     text_tokens = _signal_tokens(content)
     scored: list[tuple[int, ToolCapability]] = []
     for tool in tools:
@@ -115,9 +230,9 @@ def _select_tool(
         if score >= 2:
             scored.append((score, tool))
     if not scored:
-        return None
+        return []
     scored.sort(key=lambda item: (-item[0], item[1].tool_id))
-    return scored[0][1]
+    return [tool for _, tool in scored]
 
 
 def _signal_tokens(value: str) -> set[str]:
@@ -237,12 +352,52 @@ def _required_arguments(manifest: ToolManifestSpec) -> list[str]:
     return [str(value) for value in manifest.input_schema.get("required", [])]
 
 
+def _planned_tool_node(
+    plan: _CatalogToolPlan,
+    *,
+    dependencies: list[str],
+    argument_values: dict[str, Any],
+) -> PlannedToolNode:
+    return PlannedToolNode(
+        node_id=plan.node_id,
+        tool_id=normalize_tool_id(plan.manifest.tool_id),
+        operation=plan.operation,
+        arguments=dict(argument_values),
+        dependencies=list(dependencies),
+        required_arguments=_required_arguments(plan.manifest),
+        output_schema=dict(plan.manifest.output_schema),
+    )
+
+
+def _can_chain_tool_plans(
+    first_plan: _CatalogToolPlan,
+    second_plan: _CatalogToolPlan,
+) -> bool:
+    return _has_text_output(first_plan.manifest) and (
+        _chain_target_argument(second_plan) is not None
+    )
+
+
+def _has_text_output(manifest: ToolManifestSpec) -> bool:
+    properties = manifest.output_schema.get("properties", {})
+    return isinstance(properties, dict) and "text" in properties
+
+
+def _chain_target_argument(plan: _CatalogToolPlan) -> str | None:
+    for argument in _required_arguments(plan.manifest):
+        if argument in CHAIN_TEXT_ARGUMENTS:
+            return argument
+    return None
+
+
 def _fixed_tool_node(
     *,
     node_id: str,
     manifest: ToolManifestSpec,
     operation: str,
     argument_values: dict[str, Any],
+    dependencies: list[str] | None = None,
+    position: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     template = manifest.node_templates[0] if manifest.node_templates else {}
     return {
@@ -252,7 +407,7 @@ def _fixed_tool_node(
         "status": "waiting",
         "inputPorts": list(template.get("inputPorts") or []),
         "outputPorts": list(template.get("outputPorts") or []),
-        "dependencies": [],
+        "dependencies": list(dependencies or []),
         "toolRef": normalize_tool_id(manifest.tool_id),
         "toolBinding": {
             "providerId": "internal",
@@ -272,7 +427,7 @@ def _fixed_tool_node(
         "artifactRefs": [],
         "retryCount": 0,
         "permissionsRequired": list(manifest.permissions),
-        "position": {"x": 260, "y": 180},
+        "position": position or {"x": 260, "y": 180},
     }
 
 

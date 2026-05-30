@@ -101,3 +101,42 @@ def test_run_journal_reads_checkpoint_by_id(tmp_path: Path) -> None:
     assert checkpoint is not None
     assert checkpoint["checkpointId"] == "first:before_node:0"
     assert checkpoint["nodeId"] == "first"
+
+
+def test_checkpoint_v2_records_sequence_parent_hash_and_state(tmp_path: Path) -> None:
+    checkpoint = RuntimeCheckpoint(
+        run_id="run-1",
+        node_id="node-a",
+        status="after_node",
+        completed_outputs={},
+        pending_node_ids=[],
+        created_at="2026-05-30T00:00:00Z",
+        thread_id="thread-1",
+        sequence=7,
+        parent_checkpoint_id="ckpt-parent",
+        graph_hash="sha256:abc",
+        state_version=2,
+        writes=[{"kind": "node_output"}],
+        pending_approvals=[{"kind": "tool"}],
+        runtime_state={"stage": "observe"},
+    )
+
+    record = checkpoint.to_record()
+
+    assert record["threadId"] == "thread-1"
+    assert record["sequence"] == 7
+    assert record["parentCheckpointId"] == "ckpt-parent"
+    assert record["graphHash"] == "sha256:abc"
+    assert record["stateVersion"] == 2
+    assert record["writes"] == [{"kind": "node_output"}]
+    assert record["pendingApprovals"] == [{"kind": "tool"}]
+    assert record["runtimeState"] == {"stage": "observe"}
+
+
+def test_run_journal_atomic_write_leaves_no_tmp_file(tmp_path: Path) -> None:
+    journal = RunJournal(project_path=str(tmp_path / "demo.alita"), run_id="run-1")
+
+    journal.write_run({"runId": "run-1", "status": "running"})
+
+    assert journal.read_run()["status"] == "running"
+    assert list(journal.base_dir.glob("*.tmp")) == []

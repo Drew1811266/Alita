@@ -153,6 +153,7 @@ def test_model_tool_call_executes_through_gateway_provider() -> None:
         "durationMs": observation["durationMs"],
         "authorityCode": "allowed",
         "errorCode": None,
+        "runtimeBudgetMs": 60000,
     }
     assert isinstance(observation["durationMs"], int)
 

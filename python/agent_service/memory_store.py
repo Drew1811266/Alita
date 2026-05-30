@@ -13,12 +13,20 @@ from agent_service.privacy import sanitize_for_web_search
 
 class MemoryRecord(BaseModel):
     memory_id: str
+    schema_version: int = 2
     scope: Literal["project", "global"] = "project"
     kind: Literal["preference", "graph_summary", "artifact_summary", "tool_outcome"]
     summary: str
+    source_type: str = "run"
     source_ref: str
     source_refs: list[str] = Field(default_factory=list)
     created_at: str
+    updated_at: str | None = None
+    last_used_at: str | None = None
+    expires_at: str | None = None
+    importance: float = 0.5
+    confidence: float = 0.8
+    visibility: Literal["private", "project", "global"] = "project"
     tags: list[str] = Field(default_factory=list)
 
 

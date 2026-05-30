@@ -232,6 +232,24 @@ def test_run_eval_cases_skips_model_loop_case_by_default() -> None:
     }
 
 
+def test_model_loop_eval_runs_mock_runner_when_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("ALITA_MODEL_LOOP_EVAL", "mock")
+
+    summary = run_eval_cases(
+        [
+            EvalCase(
+                case_id="model-loop-mock",
+                category="model_loop",
+                input={"kind": "planner_binding", "content": "Use echo tool"},
+                expected={"skipped": False, "runner": "mock", "ok": True},
+            )
+        ]
+    )
+
+    assert summary.failed == 0
+    assert summary.results[0].details["runner"] == "mock"
+
+
 def test_eval_harness_writes_summary_for_loaded_cases(tmp_path: Path) -> None:
     cases_path = tmp_path / "cases.jsonl"
     cases_path.write_text(

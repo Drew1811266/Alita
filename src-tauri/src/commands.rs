@@ -1025,7 +1025,10 @@ pub fn refresh_mcp_tool_provider_tools_for_preferences(
         tool_id: format!("mcp:{}:status", provider.provider_id),
         provider_id: provider.provider_id.clone(),
         name: format!("{} Status", provider.display_name),
-        description: "Configured MCP provider connectivity check.".to_string(),
+        description: format!(
+            "Configured MCP {} provider connectivity check.",
+            provider.transport.as_deref().unwrap_or("unknown")
+        ),
     }])
 }
 

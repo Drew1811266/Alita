@@ -126,6 +126,72 @@ def test_tool_catalog_planner_binds_attachment_paths_and_output_path() -> None:
     assert values["output_path"] == "artifacts/task-document-read-document-read-write.md"
 
 
+def test_tool_catalog_planner_chains_schema_compatible_tools() -> None:
+    attachment = Attachment(
+        attachment_id="att-chain",
+        name="source.md",
+        path=str(PROJECT_ROOT / "inputs" / "source.md"),
+        size_bytes=12,
+        mime_type="text/markdown",
+    )
+    message = UserMessage(
+        task_id="task-document-echo-chain",
+        content=(
+            "Use the document read write tool and echo values tool to read "
+            "this attachment then echo the extracted text."
+        ),
+        attachments=[attachment],
+    )
+    registry = ToolRegistry.from_packages_root(TOOL_PACKAGES_ROOT)
+    goal_spec = parse_goal_spec(message)
+    context = build_context_bundle(
+        message,
+        goal_spec,
+        str(PROJECT_ROOT / "project.alita"),
+        registry,
+    )
+
+    result = ToolCatalogPlanner(tool_registry=registry).plan(
+        ToolCatalogPlanningRequest(
+            task_id=message.task_id,
+            message=message,
+            goal_spec=goal_spec,
+            context=context,
+        )
+    )
+
+    assert result.planned is True
+    assert result.diagnostics == []
+    assert result.graph_payload is not None
+    RunGraph.model_validate(result.graph_payload)
+    assert [node["nodeId"] for node in result.graph_payload["nodes"]] == [
+        "tool-document-read-write",
+        "tool-test-echo-values",
+        "task-output",
+    ]
+    document_node = result.graph_payload["nodes"][0]
+    echo_node = result.graph_payload["nodes"][1]
+    assert document_node["toolBinding"]["argumentsTemplate"]["values"][
+        "input_paths"
+    ] == [attachment.path]
+    assert echo_node["dependencies"] == ["tool-document-read-write"]
+    assert echo_node["toolBinding"]["argumentsTemplate"]["values"][
+        "source_text"
+    ] == "{tool-document-read-write.text}"
+    assert result.graph_payload["edges"] == [
+        {
+            "id": "tool-document-read-write-tool-test-echo-values",
+            "source": "tool-document-read-write",
+            "target": "tool-test-echo-values",
+        },
+        {
+            "id": "tool-test-echo-values-task-output",
+            "source": "tool-test-echo-values",
+            "target": "task-output",
+        },
+    ]
+
+
 def test_tool_catalog_planner_reports_unbound_required_argument(tmp_path: Path) -> None:
     package_root = tmp_path / "tool-packages"
     tool_root = package_root / "strict"

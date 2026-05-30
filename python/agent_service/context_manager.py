@@ -57,7 +57,11 @@ def build_context_bundle(
 ) -> ContextBundle:
     project_file = Path(project_path)
     budget = budget_for_mode(context_mode)
-    selected_memory = select_memory_for_context(memory_records or [], budget)
+    selected_memory = select_memory_for_context(
+        memory_records or [],
+        budget,
+        query=message.content,
+    )
     available_tools = (
         _tool_capabilities_from_unified_catalog(
             resolve_tools_for_task(

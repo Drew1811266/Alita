@@ -38,6 +38,7 @@ export function graphRunSettled(): GraphRuntimeControllerState {
 export function createRuntimeObservabilityState(): RuntimeObservabilityState {
   return {
     checkpoints: [],
+    spans: [],
     authorityDecisions: [],
     recoveryActions: [],
   };
@@ -48,12 +49,18 @@ export function reduceRuntimeObservabilityEvents(
   events: BackendEvent[],
 ): RuntimeObservabilityState {
   let checkpoints = state.checkpoints;
+  let spans = state.spans;
   let authorityDecisions = state.authorityDecisions;
   let recoveryActions = state.recoveryActions;
 
   for (const event of events) {
     if (event.type === "runtime.checkpoint_recorded") {
       checkpoints = [...checkpoints, event.payload.checkpoint];
+      continue;
+    }
+
+    if (event.type === "runtime.span_recorded") {
+      spans = [...spans, event.payload.span];
       continue;
     }
 
@@ -89,6 +96,7 @@ export function reduceRuntimeObservabilityEvents(
 
   if (
     checkpoints === state.checkpoints &&
+    spans === state.spans &&
     authorityDecisions === state.authorityDecisions &&
     recoveryActions === state.recoveryActions
   ) {
@@ -97,6 +105,7 @@ export function reduceRuntimeObservabilityEvents(
 
   return {
     checkpoints,
+    spans,
     authorityDecisions,
     recoveryActions,
   };

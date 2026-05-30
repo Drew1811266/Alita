@@ -197,13 +197,27 @@ def _run_eval_case(case: EvalCase) -> EvalCaseResult:
 
 
 def _run_model_loop_case(case: EvalCase) -> EvalCaseResult:
-    if os.getenv("ALITA_MODEL_LOOP_EVAL", "").strip().lower() not in {
+    mode = os.getenv("ALITA_MODEL_LOOP_EVAL", "").strip().lower()
+    if mode not in {
         "1",
         "true",
         "yes",
         "on",
+        "mock",
     }:
         details = {"skipped": True, "reason": "model loop eval disabled"}
+        return EvalCaseResult(
+            case_id=case.case_id,
+            category=case.category,
+            passed=_expected_subset_matches(details, case.expected),
+            details=details,
+        )
+    if mode == "mock":
+        details = {
+            "skipped": False,
+            "runner": "mock",
+            "ok": True,
+        }
         return EvalCaseResult(
             case_id=case.case_id,
             category=case.category,
@@ -348,6 +362,7 @@ def _run_authority_security_case(case: EvalCase) -> EvalCaseResult:
                 )
             ),
             requested_permissions=list(case.input.get("requested_permissions") or []),
+            metadata=dict(case.input.get("metadata") or {}),
         )
         if case.input.get("context") == "from_invocation":
             context = AuthorityContext.from_invocation(invocation)
@@ -368,6 +383,7 @@ def _run_authority_security_case(case: EvalCase) -> EvalCaseResult:
                         placeholders,
                     )
                 ),
+                network_domains=list(case.input.get("context_network_domains") or []),
             )
         decision = authorize_tool_invocation(invocation, tool, context)
         details = {"ok": decision.allowed, "authorityCode": decision.code}
