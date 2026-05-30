@@ -220,9 +220,35 @@ def test_task_message_creates_graph_with_planning_and_executable_nodes() -> None
         "temporary-script-file-inspect",
         "task-output",
     ]
+    route_decision = graph["metadata"]["routeDecision"]
+    assert route_decision["intent"] == "task"
+    assert route_decision["source"] == "deterministic"
+    planner_chain = graph["metadata"]["plannerChain"]
+    assert planner_chain["version"] == "planner_chain.v1"
+    assert planner_chain["strategy"] == "legacy_task_planner"
     assert executable_nodes[0]["scriptReview"]["status"] == "not_reviewed"
     assert executable_nodes[0].get("estimate")
     assert executable_nodes[1]["nodeType"] == "output"
+
+
+def test_route_metadata_does_not_change_graph_created_event_shape() -> None:
+    response = TestClient(app).post(
+        "/agent/message",
+        json={
+            "task_id": "task-route-shape",
+            "content": "Create a Python script that counts rows in a CSV file.",
+            "attachments": [],
+        },
+    )
+
+    assert response.status_code == 200
+    events = response.json()
+    assert [event["type"] for event in events] == ["node_graph.created"]
+    assert set(events[0].keys()) == {"type", "payload"}
+    assert set(events[0]["payload"].keys()) == {"graph"}
+    graph = events[0]["payload"]["graph"]
+    assert "routeDecision" in graph["metadata"]
+    assert graph["metadata"]["routeDecision"]["intent"] == "task"
 
 
 def test_high_risk_temporary_script_blocks_execution_until_approved(

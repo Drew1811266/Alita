@@ -16,6 +16,19 @@ fn new_project_uses_schema_version_one_and_empty_state() {
 }
 
 #[test]
+fn project_schema_does_not_store_memory_records() {
+    let project = new_project("Memory test", "D:\\Projects\\memory-test.alita");
+    let json = serde_json::to_value(&project).expect("project serializes");
+
+    assert!(json.get("memory").is_none());
+    assert!(json.get("memories").is_none());
+    assert_eq!(
+        json.get("schemaVersion").and_then(|value| value.as_u64()),
+        Some(1)
+    );
+}
+
+#[test]
 fn saves_and_loads_project_json() {
     let temp_dir = tempfile::tempdir().unwrap();
     let project_path = temp_dir.path().join("demo.alita");

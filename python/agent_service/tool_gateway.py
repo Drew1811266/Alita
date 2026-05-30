@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from agent_service.schema_validation import validate_json_schema_subset
+from agent_service.tool_execution import ToolExecutor, default_tool_packages_root
 from agent_service.tool_protocol import (
     ToolProvider,
     UnifiedToolError,
     UnifiedToolInvocation,
     UnifiedToolResult,
 )
+from agent_service.tool_providers.internal import InternalToolProvider
+from agent_service.tool_registry import ToolRegistry
 
 
 class UnifiedToolGateway:
@@ -38,6 +43,25 @@ class UnifiedToolGateway:
             provider for provider in self.providers if provider.provider_id == tool.provider_id
         )
         return provider.call_tool(invocation)
+
+
+def default_unified_tool_gateway(
+    *,
+    packages_root: Path | None = None,
+    registry: ToolRegistry | None = None,
+    internal_executor: ToolExecutor | None = None,
+) -> UnifiedToolGateway:
+    effective_registry = registry or ToolRegistry.from_packages_root(
+        packages_root or default_tool_packages_root()
+    )
+    return UnifiedToolGateway(
+        providers=[
+            InternalToolProvider(
+                registry=effective_registry,
+                executor=internal_executor,
+            )
+        ]
+    )
 
 
 def _error(

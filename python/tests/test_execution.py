@@ -4,29 +4,39 @@ import tempfile
 from pathlib import Path
 from time import sleep
 
+import pytest
+
+from agent_service.agent_run_state import AgentRunState
 from agent_service.intent import classify_route
 from agent_service.execution import (
     DocumentFlowExecutor,
     NodeOutput,
+    PlannedTaskExecutor,
+    ResearchFlowExecutor,
     _runtime_notice_for_node,
     run_graph_events,
 )
+from agent_service.execution_graph import compile_execution_graph
 from agent_service.graph import run_agent
 from agent_service.harness_errors import HarnessError
 from agent_service.model_client import ChatMessage
 from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
+from agent_service.research_evidence import evidence_from_search_results
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import RunRegistry
 from agent_service.schemas import (
     Attachment,
+    RunGraph,
     RunGraphRequest,
     ScriptReviewState,
     UserMessage,
 )
 from agent_service.script_review import script_review_fingerprint as canonical_script_review_fingerprint
 from agent_service.tool_execution import ToolResult
+from agent_service.tool_registry import ToolManifestSpec, ToolOperationSpec, ToolRegistry
 from agent_service.web_research import build_research_graph
 from agent_service.web_search import SearchFailure, SearchResponse, SearchResult
+from tests.helpers.tool_gateway import RecordingGateway
 
 
 class FakeNodeExecutor:
@@ -82,6 +92,10 @@ class FakeToolExecutor:
 
     def run(self, invocation):
         self.calls.append(invocation)
+        if invocation.tool_id == "document.receive_attachment":
+            return ToolResult(
+                values={"paths": str(invocation.arguments.get("paths", ""))}
+            )
         output_path = Path(invocation.arguments["output_path"])
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("# Markdown\n\nparsed text", encoding="utf-8")
@@ -98,6 +112,11 @@ class TypstFlowToolExecutor:
 
     def run(self, invocation):
         self.calls.append(invocation)
+        if invocation.tool_id == "document.receive_attachment":
+            return ToolResult(
+                values={"paths": str(invocation.arguments.get("paths", ""))}
+            )
+
         if invocation.tool_id == "document.markitdown_convert":
             output_path = Path(invocation.arguments["output_path"])
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -270,6 +289,53 @@ def test_rejects_graph_with_unknown_tool_ref_before_running_nodes(tmp_path: Path
     assert "missing.tool" in events[-1].payload["error"]
 
 
+def test_run_graph_events_accepts_matching_agent_run_state(tmp_path: Path) -> None:
+    request = _single_output_run_request(tmp_path)
+    run_state = AgentRunState.from_run_graph_request(request)
+
+    events = list(
+        run_graph_events(
+            request,
+            run_state=run_state,
+            executor=FakeNodeExecutor(),
+        )
+    )
+
+    assert events[0].type == "run.started"
+    assert events[-1].type == "task.completed"
+
+
+def test_run_graph_events_rejects_mismatched_agent_run_state(tmp_path: Path) -> None:
+    request = _single_output_run_request(tmp_path)
+    run_state = AgentRunState.from_run_graph_request(request).model_copy(
+        update={"task_id": "different-task"}
+    )
+
+    events = list(run_graph_events(request, run_state=run_state))
+
+    assert events[0].type == "task.failed"
+    assert events[0].payload["taskId"] == request.task_id
+    assert events[0].payload["runId"] == request.run_id
+    assert events[0].payload["error"]["code"] == "run_state_mismatch"
+
+
+def test_run_graph_events_rejects_run_id_mismatched_agent_run_state(
+    tmp_path: Path,
+) -> None:
+    request = _single_output_run_request(tmp_path)
+    run_state = AgentRunState.from_run_graph_request(request).model_copy(
+        update={"run_id": "different-run"}
+    )
+
+    events = list(run_graph_events(request, run_state=run_state))
+
+    assert events[0].type == "task.failed"
+    assert events[0].payload["taskId"] == request.task_id
+    assert events[0].payload["runId"] == request.run_id
+    assert events[0].payload["error"]["code"] == "run_state_mismatch"
+    assert "run_id" in events[0].payload["error"]["message"]
+
+
 def test_run_graph_events_executes_generic_planner_graph_from_run_agent(
     tmp_path: Path,
 ) -> None:
@@ -385,7 +451,8 @@ def test_low_risk_temporary_script_runs_through_planned_executor(
         run_id=request.run_id,
     ).read_node("temp-script")
     assert script_record["status"] == "completed"
-    assert script_record["values"]["scriptStatus"] == "preview_only"
+    assert script_record["values"]["scriptStatus"] == "executed"
+    assert script_record["values"]["answer"] == 42
     assert script_record["values"]["riskLevel"] == "low"
 
 
@@ -578,6 +645,92 @@ def test_research_graph_executes_nodes_and_writes_markdown_report(tmp_path: Path
     assert quality_record["values"]["qualityStatus"] == "passed"
     assert quality_record["values"]["checkedReferenceCount"] == 2
     assert events[-1].type == "task.completed"
+
+
+def test_research_report_synthesis_includes_source_citations(tmp_path: Path) -> None:
+    question = "Compare current Python packaging tools"
+    request = build_research_flow_request(tmp_path, question)
+    provider = SequencedSearchProvider(
+        {
+            question: [
+                SearchResponse(
+                    results=[
+                        SearchResult(
+                            title="Python packaging user guide",
+                            url="https://packaging.python.org/en/latest/",
+                            snippet="Official guide to Python packaging tools.",
+                        )
+                    ]
+                )
+            ],
+            f"{question} official sources": [SearchResponse(results=[])],
+        }
+    )
+    source_fetcher = FakeSourceFetcher(
+        {
+            "https://packaging.python.org/en/latest/": (
+                "The Python Packaging User Guide explains pip, build backends, "
+                "publishing workflows, and modern project metadata."
+            )
+        }
+    )
+
+    events = list(
+        run_graph_events(
+            request,
+            search_provider=provider,
+            source_fetcher=source_fetcher,
+        )
+    )
+
+    artifact_event = next(event for event in events if event.type == "artifact.created")
+    report = Path(artifact_event.payload["path"]).read_text(encoding="utf-8")
+
+    assert "[S1]" in report
+    assert "## References" in report
+    assert "S1" in report
+    assert "https://packaging.python.org/en/latest/" in report
+
+
+def test_research_quality_check_flags_missing_evidence_citations(tmp_path: Path) -> None:
+    question = "Compare current Python packaging tools"
+    request = build_research_flow_request(tmp_path, question)
+    evidence = evidence_from_search_results(
+        question,
+        [
+            {
+                "title": "Python packaging user guide",
+                "url": "https://packaging.python.org/en/latest/",
+                "snippet": "Official guide to Python packaging tools.",
+                "accepted": True,
+            }
+        ],
+    )
+    output = ResearchFlowExecutor(request).run(
+        "research-report-quality-check",
+        {
+            "research-report-synthesis": NodeOutput(
+                values={
+                    "markdown": "# Research Report\n\nNo citations here.",
+                    "summary": "No citations here.",
+                    "acceptedSources": [
+                        {
+                            "title": "Python packaging user guide",
+                            "url": "https://packaging.python.org/en/latest/",
+                            "snippet": "Official guide to Python packaging tools.",
+                            "accepted": True,
+                            "sourceContent": "Readable content.",
+                        }
+                    ],
+                    "rejectedSources": [],
+                    "evidenceSet": evidence.model_dump(),
+                }
+            )
+        },
+    )
+
+    assert output.values["qualityStatus"] == "needs_review"
+    assert "missing_citations" in output.values["qualityIssues"]
 
 
 def test_research_search_retries_failed_query_without_repeating_success(
@@ -901,6 +1054,286 @@ def test_graph_tool_validation_uses_configured_tool_packages_root(
         "node.run_recorded",
         "task.completed",
     ]
+
+
+def test_graph_tool_validation_uses_injected_tool_registry_catalog(
+    tmp_path: Path,
+) -> None:
+    custom_registry = ToolRegistry(
+        [
+            ToolManifestSpec(
+                tool_id="document.injected_custom",
+                name="Injected Custom",
+                description="A test-only injected registry tool.",
+                version="1.0.0",
+                source_type="test",
+                license="internal",
+                runtime=None,
+                entrypoint=None,
+                capabilities=["test_custom"],
+                operations=[
+                    ToolOperationSpec(
+                        name="run",
+                        description="Run the injected registry tool.",
+                    )
+                ],
+                input_schema={"type": "object"},
+                output_schema={"type": "object"},
+                permissions=["read_project_files"],
+                error_codes=[],
+                timeout_policy={},
+                artifact_policy={},
+                security_policy={},
+                examples=[],
+                node_templates=[],
+            )
+        ]
+    )
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "custom-tool",
+                "fixed_tool",
+                [],
+                tool_ref="document.injected_custom",
+            )
+        ],
+    )
+
+    events = list(
+        run_graph_events(
+            request,
+            executor=FakeNodeExecutor(),
+            tool_registry=custom_registry,
+        )
+    )
+
+    assert [event.type for event in events] == [
+        "run.started",
+        "node.running",
+        "node.completed",
+        "node.run_recorded",
+        "task.completed",
+    ]
+
+
+def test_planned_executor_uses_execution_graph_tool_binding(tmp_path: Path) -> None:
+    request = RunGraphRequest(
+        task_id="task-binding-runtime",
+        run_id="run-binding-runtime",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[],
+        graph=RunGraph(
+            graphId="binding-graph",
+            nodes=[
+                build_node(
+                    "tool-node",
+                    "fixed_tool",
+                    [],
+                    tool_ref="internal:document.markitdown_convert",
+                )
+            ],
+            edges=[],
+            metadata={"plannerChain": {"strategy": "legacy_task_planner"}},
+        ),
+    )
+    execution_graph = compile_execution_graph(request)
+    request.graph.nodes[0].toolRef = "internal:missing.after.compile"
+    executor = PlannedTaskExecutor(
+        request,
+        tool_gateway=RecordingGateway(),
+        execution_graph=execution_graph,
+    )
+
+    with pytest.raises(HarnessError) as error:
+        executor.run("tool-node", {})
+
+    assert error.value.code == "missing_input"
+    assert "requires at least one attachment" in error.value.message
+
+
+def test_missing_fixed_tool_binding_fails_before_run_started(tmp_path: Path) -> None:
+    request = RunGraphRequest(
+        task_id="task-missing-binding",
+        run_id="run-missing-binding",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[],
+        graph=RunGraph(
+            graphId="missing-binding-graph",
+            nodes=[
+                build_node("missing-tool", "fixed_tool", []),
+                build_node("task-output", "output", ["missing-tool"]),
+            ],
+            edges=[
+                {
+                    "id": "missing-tool-task-output",
+                    "source": "missing-tool",
+                    "target": "task-output",
+                }
+            ],
+            metadata={"plannerChain": {"strategy": "legacy_task_planner"}},
+        ),
+    )
+
+    events = list(run_graph_events(request))
+
+    assert [event.type for event in events] == ["task.failed"]
+    assert events[0].payload["errorCode"] == "unsupported_binding"
+    assert "missing-tool" in events[0].payload["error"]
+
+
+def test_execution_graph_does_not_change_run_event_shape(tmp_path: Path) -> None:
+    graph_event = run_agent(
+        UserMessage(
+            task_id="execution-graph-event-shape",
+            content="Create a Python script that counts rows in a CSV file.",
+        )
+    )[0]
+    graph = graph_event.payload["graph"]
+    request = RunGraphRequest(
+        task_id="execution-graph-event-shape",
+        run_id="execution-graph-run",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[],
+        graph=RunGraph.model_validate(graph),
+    )
+
+    events = list(run_graph_events(request))
+
+    assert events[0].type == "run.started"
+    assert set(events[0].payload.keys()) == {"runId", "taskId", "startedAt"}
+    assert all("executionGraph" not in event.payload for event in events)
+
+
+def test_react_enabled_model_node_records_observations(tmp_path: Path) -> None:
+    class SequencedExecutionModel:
+        def __init__(self) -> None:
+            self.replies = [
+                (
+                    '{"kind":"tool","tool_id":"internal:document.receive_attachment",'
+                    '"arguments":{"paths":"README.md"}}'
+                ),
+                '{"kind":"final","text":"Inspected README."}',
+            ]
+            self.calls: list[list[ChatMessage]] = []
+
+        def chat(
+            self,
+            messages: list[ChatMessage],
+            *,
+            temperature=None,
+            max_tokens=None,
+            policy=None,
+        ) -> str:
+            self.calls.append(messages)
+            return self.replies.pop(0)
+
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "model-reasoning",
+                "model",
+                [],
+                model_ref="local-task-reasoner",
+            ),
+            build_node("task-output", "output", ["model-reasoning"]),
+        ],
+        graph_metadata={
+            "plannerChain": {"strategy": "legacy_task_planner"},
+            "react": {
+                "enabled": True,
+                "allowedToolIds": ["internal:document.receive_attachment"],
+                "maxSteps": 2,
+                "maxToolCalls": 1,
+            },
+        },
+    )
+    gateway = RecordingGateway()
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=SequencedExecutionModel(),
+            tool_gateway=gateway,
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+    model_record = RunJournal(
+        project_path=request.project_path,
+        run_id=request.run_id,
+    ).read_node("model-reasoning")
+    assert model_record["values"]["text"] == "Inspected README."
+    assert model_record["values"]["react"]["toolCallCount"] == 1
+    assert (
+        model_record["values"]["react"]["observations"][0]["tool_id"]
+        == "internal:document.receive_attachment"
+    )
+    assert gateway.calls[0].tool_id == "internal:document.receive_attachment"
+
+
+def test_react_metadata_string_false_does_not_enable_react(tmp_path: Path) -> None:
+    class SequencedExecutionModel:
+        def __init__(self) -> None:
+            self.replies = [
+                (
+                    '{"kind":"tool","tool_id":"internal:document.receive_attachment",'
+                    '"arguments":{"paths":"README.md"}}'
+                ),
+                '{"kind":"final","text":"React should not run."}',
+            ]
+            self.calls: list[list[ChatMessage]] = []
+
+        def chat(
+            self,
+            messages: list[ChatMessage],
+            *,
+            temperature=None,
+            max_tokens=None,
+            policy=None,
+        ) -> str:
+            self.calls.append(messages)
+            return self.replies.pop(0)
+
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "model-reasoning",
+                "model",
+                [],
+                model_ref="local-task-reasoner",
+            ),
+            build_node("task-output", "output", ["model-reasoning"]),
+        ],
+        graph_metadata={
+            "plannerChain": {"strategy": "legacy_task_planner"},
+            "react": {
+                "enabled": "false",
+                "allowedToolIds": ["internal:document.receive_attachment"],
+            },
+        },
+    )
+    gateway = RecordingGateway()
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=SequencedExecutionModel(),
+            tool_gateway=gateway,
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+    model_record = RunJournal(
+        project_path=request.project_path,
+        run_id=request.run_id,
+    ).read_node("model-reasoning")
+    assert "react" not in model_record["values"]
+    assert model_record["values"]["text"].startswith('{"kind":"tool"')
+    assert gateway.calls == []
 
 
 def test_runs_nodes_after_all_dependencies_complete(tmp_path: Path) -> None:
@@ -1417,8 +1850,8 @@ def test_research_report_binds_each_key_finding_to_source_reference(
 
     artifact_event = next(event for event in events if event.type == "artifact.created")
     content = Path(artifact_event.payload["path"]).read_text(encoding="utf-8")
-    assert "- [1] Python packaging docs:" in content
-    assert "- [1] Python packaging docs - https://docs.python.org/3/" in content
+    assert "- [S1] Python packaging docs:" in content
+    assert "- S1 Python packaging docs - https://docs.python.org/3/" in content
 
 
 def test_generated_markdown_conversion_graph_exports_converted_artifact(
@@ -1478,7 +1911,11 @@ def test_document_parse_uses_markitdown_tool_executor(tmp_path: Path) -> None:
     )
 
     assert tool_executor.calls
-    invocation = tool_executor.calls[0]
+    invocation = next(
+        call
+        for call in tool_executor.calls
+        if call.tool_id == "document.markitdown_convert"
+    )
     assert invocation.tool_id == "document.markitdown_convert"
     assert invocation.operation == "convert_local_file"
     assert invocation.arguments["input_path"] == str(source)
@@ -1486,6 +1923,139 @@ def test_document_parse_uses_markitdown_tool_executor(tmp_path: Path) -> None:
         tmp_path / "artifacts" / "converted" / "01-input.md"
     )
     assert events[-1].type == "task.completed"
+
+
+def test_tool_executor_injection_is_wrapped_by_unified_gateway(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from agent_service.tool_gateway import (
+        default_unified_tool_gateway as real_default_unified_tool_gateway,
+    )
+
+    class StrictGatewayTranslatedExecutor:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def run(self, invocation):
+            self.calls.append(invocation)
+            if invocation.tool_id == "document.receive_attachment":
+                assert invocation.operation == "receive_attachment"
+                assert "operation" not in invocation.arguments
+                return ToolResult(
+                    values={"paths": str(invocation.arguments.get("paths", ""))}
+                )
+
+            assert invocation.tool_id == "document.markitdown_convert"
+            assert invocation.operation == "convert_local_file"
+            assert "operation" not in invocation.arguments
+            output_path = Path(invocation.arguments["output_path"])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("# Markdown\n\nparsed text", encoding="utf-8")
+            return ToolResult(
+                values={"text": "# Markdown\n\nparsed text"},
+                artifacts=[str(output_path)],
+                metadata={"converter": "strict"},
+            )
+
+    class SpyGateway:
+        def __init__(self, gateway) -> None:
+            self.gateway = gateway
+            self.calls = []
+
+        def list_tools(self):
+            return self.gateway.list_tools()
+
+        def call_tool(self, invocation):
+            self.calls.append(invocation)
+            if invocation.tool_id == "internal:document.receive_attachment":
+                assert invocation.arguments["operation"] == "receive_attachment"
+                assert "paths" in invocation.arguments
+            else:
+                assert invocation.tool_id == "internal:document.markitdown_convert"
+                assert invocation.arguments["operation"] == "convert_local_file"
+                assert "input_path" in invocation.arguments
+                assert "output_path" in invocation.arguments
+            return self.gateway.call_tool(invocation)
+
+    source = tmp_path / "input.pdf"
+    source.write_bytes(b"%PDF-1.4\n")
+    request = build_document_flow_request(tmp_path, source)
+    tool_executor = StrictGatewayTranslatedExecutor()
+    factory_calls = []
+    spy_gateways = []
+
+    def spy_default_unified_tool_gateway(
+        *,
+        packages_root=None,
+        registry=None,
+        internal_executor=None,
+    ):
+        factory_calls.append(
+            {
+                "packages_root": packages_root,
+                "registry": registry,
+                "internal_executor": internal_executor,
+            }
+        )
+        spy_gateway = SpyGateway(
+            real_default_unified_tool_gateway(
+                packages_root=packages_root,
+                registry=registry,
+                internal_executor=internal_executor,
+            )
+        )
+        spy_gateways.append(spy_gateway)
+        return spy_gateway
+
+    monkeypatch.setattr(
+        "agent_service.execution.default_unified_tool_gateway",
+        spy_default_unified_tool_gateway,
+    )
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=FakeModelClient(),
+            tool_executor=tool_executor,
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+    assert len(factory_calls) == 1
+    assert factory_calls[0]["internal_executor"] is tool_executor
+    assert len(spy_gateways) == 1
+    assert [call.tool_id for call in spy_gateways[0].calls] == [
+        "internal:document.receive_attachment",
+        "internal:document.markitdown_convert",
+    ]
+    assert [call.tool_id for call in tool_executor.calls] == [
+        "document.receive_attachment",
+        "document.markitdown_convert",
+    ]
+
+
+def test_explicit_tool_gateway_takes_precedence_over_tool_executor(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "input.pdf"
+    source.write_bytes(b"%PDF-1.4\n")
+    request = build_document_flow_request(tmp_path, source)
+    gateway = RecordingGateway()
+    tool_executor = FakeToolExecutor()
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=FakeModelClient(),
+            tool_gateway=gateway,
+            tool_executor=tool_executor,
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+    assert gateway.calls
+    assert tool_executor.calls == []
 
 
 def test_document_flow_runs_typst_export_and_file_export_passes_pdf_artifact(
@@ -1505,10 +2075,11 @@ def test_document_flow_runs_typst_export_and_file_export_passes_pdf_artifact(
     )
 
     assert [call.tool_id for call in tool_executor.calls] == [
+        "document.receive_attachment",
         "document.markitdown_convert",
         "document.typst_compile",
     ]
-    typst_call = tool_executor.calls[1]
+    typst_call = tool_executor.calls[2]
     assert typst_call.operation == "compile_report_pdf"
     assert typst_call.arguments["source_output_path"].endswith(".typ")
     assert typst_call.arguments["pdf_output_path"].endswith(".pdf")
@@ -1543,10 +2114,15 @@ def test_document_parse_uses_unique_output_paths_for_duplicate_attachment_names(
         )
     )
 
-    assert len(tool_executor.calls) == 2
+    convert_calls = [
+        call
+        for call in tool_executor.calls
+        if call.tool_id == "document.markitdown_convert"
+    ]
+    assert len(convert_calls) == 2
     output_paths = [
         Path(invocation.arguments["output_path"])
-        for invocation in tool_executor.calls
+        for invocation in convert_calls
     ]
     assert output_paths[0] != output_paths[1]
     for output_path in output_paths:
@@ -1835,7 +2411,11 @@ def script_review(*, risk_level: str, requires_approval: bool) -> dict:
         "permissions": ["read_project_files", "write_project_files"],
         "riskLevel": risk_level,
         "requiresApproval": requires_approval,
-        "codePreview": "print('planned script')\n",
+        "codePreview": (
+            "import json, sys\n"
+            "json.load(sys.stdin)\n"
+            "print(json.dumps({'values': {'answer': 42}}))\n"
+        ),
         "inputContract": {"targetPath": "project-relative path"},
         "outputContract": {"summary": "text"},
         "approvalFingerprint": None,
@@ -2023,6 +2603,35 @@ def build_node(
     if estimate is not None:
         node["estimate"] = estimate
     return node
+
+
+def _single_output_run_request(tmp_path: Path) -> RunGraphRequest:
+    return RunGraphRequest(
+        task_id="execution-state-task",
+        run_id="execution-state-run",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[],
+        graph={
+            "graphId": "execution-state-graph",
+            "nodes": [
+                {
+                    "nodeId": "task-output",
+                    "nodeType": "output",
+                    "displayName": "Task output",
+                    "status": "waiting",
+                    "inputPorts": [],
+                    "outputPorts": [],
+                    "dependencies": [],
+                    "summary": "Return final output.",
+                    "createdBy": "agent",
+                    "artifactRefs": [],
+                    "retryCount": 0,
+                    "position": {"x": 0, "y": 0},
+                }
+            ],
+            "edges": [],
+        },
+    )
 
 
 def test_research_flow_executor_uses_default_search_provider_factory(monkeypatch) -> None:

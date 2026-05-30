@@ -40,6 +40,16 @@ try {
         }
     }
 
+    Invoke-CheckedCommand "Agent eval smoke" {
+        Push-Location "python"
+        try {
+            python -m agent_service.eval_harness --cases evals/router_cases.jsonl --output ..\.codex-run\evals
+        }
+        finally {
+            Pop-Location
+        }
+    }
+
     Invoke-CheckedCommand "Rust formatting" {
         Push-Location "src-tauri"
         try {
