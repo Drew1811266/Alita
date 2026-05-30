@@ -174,6 +174,10 @@ def test_gateway_calls_internal_tool_adapter_and_normalizes_result() -> None:
     assert result.artifacts == ["outputs/source.md"]
     assert result.content[0].type == "json"
     assert result.content[1].path == "outputs/source.md"
+    assert result.metadata["observation"]["toolId"] == "internal:document.markitdown_convert"
+    assert result.metadata["observation"]["providerId"] == "internal"
+    assert result.metadata["observation"]["ok"] is True
+    assert isinstance(result.metadata["observation"]["durationMs"], int)
 
 
 def test_gateway_denies_path_outside_authority_roots_before_provider_call(
@@ -234,6 +238,8 @@ def test_gateway_denies_path_outside_authority_roots_before_provider_call(
     assert result.ok is False
     assert result.error is not None
     assert result.error.code == "authority_denied"
+    assert result.metadata["observation"]["ok"] is False
+    assert result.metadata["observation"]["errorCode"] == "authority_denied"
     assert calls == []
 
 
@@ -292,6 +298,7 @@ def test_gateway_adds_authority_audit_metadata_on_allowed_call(tmp_path: Path) -
     assert result.ok is True
     assert result.metadata["authority"] == "allowed"
     assert result.metadata["authorityCode"] == "allowed"
+    assert result.metadata["observation"]["authorityCode"] == "allowed"
 
 
 def test_default_unified_tool_gateway_lists_internal_tools() -> None:

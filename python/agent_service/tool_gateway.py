@@ -4,11 +4,17 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from agent_service.authority import AuthorityContext, authorize_tool_invocation
+from agent_service.authority import (
+    AuthorityContext,
+    AuthorityDecision,
+    authorize_tool_invocation,
+)
 from agent_service.schema_validation import validate_json_schema_subset
 from agent_service.tool_execution import ToolExecutor, default_tool_packages_root
+from agent_service.tool_observation import ObservationTimer, observation_metadata
 from agent_service.tool_protocol import (
     ToolProvider,
+    UnifiedToolDefinition,
     UnifiedToolError,
     UnifiedToolInvocation,
     UnifiedToolResult,
@@ -18,15 +24,23 @@ from agent_service.tool_providers.mcp import McpClient, McpProviderConfig, McpTo
 from agent_service.tool_registry import ToolRegistry
 
 
+AuthorityEventSink = Callable[
+    [UnifiedToolInvocation, UnifiedToolDefinition, AuthorityDecision],
+    None,
+]
+
+
 class UnifiedToolGateway:
     def __init__(
         self,
         *,
         providers: list[ToolProvider],
         authority_context: AuthorityContext | None = None,
+        authority_event_sink: AuthorityEventSink | None = None,
     ) -> None:
         self.providers = providers
         self.authority_context = authority_context
+        self.authority_event_sink = authority_event_sink
 
     def list_tools(self):
         tools = []
@@ -43,26 +57,44 @@ class UnifiedToolGateway:
             return _error("unsupported_tool", f"unsupported tool: {invocation.tool_id}")
         if not tool.enabled:
             return _error("tool_disabled", f"tool disabled: {invocation.tool_id}")
+        timer = ObservationTimer()
 
         try:
             validate_json_schema_subset(tool.input_schema, invocation.arguments)
         except ValueError as error:
-            return _error("invalid_tool_input", str(error), recoverable=True)
+            return _with_observation(
+                _error("invalid_tool_input", str(error), recoverable=True),
+                invocation=invocation,
+                tool=tool,
+                ok=False,
+                duration_ms=timer.elapsed_ms(),
+                error_code="invalid_tool_input",
+            )
 
         authority_context = _authority_context_for_invocation(
             self.authority_context,
             invocation,
         )
         decision = authorize_tool_invocation(invocation, tool, authority_context)
+        if self.authority_event_sink is not None:
+            self.authority_event_sink(invocation, tool, decision)
         if not decision.allowed:
-            return _error(
-                "authority_denied",
-                decision.message,
-                recoverable=True,
-                safe_details={
-                    "authorityCode": decision.code,
-                    **decision.metadata,
-                },
+            return _with_observation(
+                _error(
+                    "authority_denied",
+                    decision.message,
+                    recoverable=True,
+                    safe_details={
+                        "authorityCode": decision.code,
+                        **decision.metadata,
+                    },
+                ),
+                invocation=invocation,
+                tool=tool,
+                ok=False,
+                duration_ms=timer.elapsed_ms(),
+                authority_code=decision.code,
+                error_code="authority_denied",
             )
 
         provider = next(
@@ -70,13 +102,30 @@ class UnifiedToolGateway:
         )
         result = provider.call_tool(invocation)
         if not result.ok:
-            return result
+            error_code = result.error.code if result.error is not None else "tool_failed"
+            return _with_observation(
+                result,
+                invocation=invocation,
+                tool=tool,
+                ok=False,
+                duration_ms=timer.elapsed_ms(),
+                authority_code=decision.code,
+                error_code=error_code,
+            )
         return replace(
             result,
             metadata={
                 **result.metadata,
                 "authority": "allowed",
                 "authorityCode": decision.code,
+                **observation_metadata(
+                    tool_id=invocation.tool_id,
+                    provider_id=tool.provider_id,
+                    ok=True,
+                    duration_ms=timer.elapsed_ms(),
+                    authority_code=decision.code,
+                    error_code=None,
+                ),
             },
         )
 
@@ -96,6 +145,7 @@ def default_unified_tool_gateway(
     registry: ToolRegistry | None = None,
     internal_executor: ToolExecutor | None = None,
     authority_context: AuthorityContext | None = None,
+    authority_event_sink: AuthorityEventSink | None = None,
     mcp_provider_configs: list[McpProviderConfig] | None = None,
     mcp_client_factory: Callable[[McpProviderConfig], McpClient] | None = None,
 ) -> UnifiedToolGateway:
@@ -117,6 +167,7 @@ def default_unified_tool_gateway(
     return UnifiedToolGateway(
         providers=providers,
         authority_context=authority_context,
+        authority_event_sink=authority_event_sink,
     )
 
 
@@ -161,4 +212,30 @@ def _error(
             recoverable=recoverable,
             safe_details=safe_details,
         ),
+    )
+
+
+def _with_observation(
+    result: UnifiedToolResult,
+    *,
+    invocation: UnifiedToolInvocation,
+    tool: UnifiedToolDefinition,
+    ok: bool,
+    duration_ms: int,
+    authority_code: str | None = None,
+    error_code: str | None = None,
+) -> UnifiedToolResult:
+    return replace(
+        result,
+        metadata={
+            **result.metadata,
+            **observation_metadata(
+                tool_id=invocation.tool_id,
+                provider_id=tool.provider_id,
+                ok=ok,
+                duration_ms=duration_ms,
+                authority_code=authority_code,
+                error_code=error_code,
+            ),
+        },
     )

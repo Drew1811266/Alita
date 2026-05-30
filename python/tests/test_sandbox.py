@@ -30,6 +30,11 @@ def test_sandbox_reads_allowed_project_file(tmp_path: Path) -> None:
 
     assert result.ok is True
     assert result.values == {"rows": 2}
+    assert result.security_model == "constrained_subprocess_runner"
+    assert (
+        result.security_boundary
+        == "preflight_and_runtime_limits_not_os_isolation"
+    )
 
 
 def test_sandbox_rejects_network_import_when_network_denied(tmp_path: Path) -> None:
@@ -239,6 +244,46 @@ def test_sandbox_rejects_path_read_text_outside_allowed_roots(tmp_path: Path) ->
 
     assert result.ok is False
     assert result.error_code == "forbidden_file_api"
+
+
+def test_sandbox_rejects_path_write_text_outside_artifact_dir(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    artifact_dir = tmp_path / "artifacts"
+    outside_artifact = tmp_path / "outside.txt"
+    project.mkdir()
+    artifact_dir.mkdir()
+
+    result = run_sandboxed_python(
+        SandboxRequest(
+            script=(
+                "from pathlib import Path\n"
+                f"Path(r'{outside_artifact}').write_text('escape', encoding='utf-8')\n"
+                "print('{}')\n"
+            ),
+            project_path=str(project / "project.alita"),
+            allowed_roots=[str(project), str(tmp_path)],
+            artifact_dir=str(artifact_dir),
+        )
+    )
+
+    assert result.ok is False
+    assert result.error_code == "forbidden_file_api"
+
+
+def test_sandbox_rejects_socket_call_when_network_is_not_allowed(
+    tmp_path: Path,
+) -> None:
+    result = run_sandboxed_python(
+        SandboxRequest(
+            script="socket.socket()\nprint('{}')\n",
+            project_path=str(tmp_path / "project.alita"),
+            allowed_roots=[str(tmp_path)],
+            artifact_dir=str(tmp_path / "artifacts"),
+        )
+    )
+
+    assert result.ok is False
+    assert result.error_code == "network_call_denied"
 
 
 def test_sandbox_rejects_secret_environment_access(tmp_path: Path) -> None:

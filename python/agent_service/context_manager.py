@@ -51,6 +51,7 @@ def build_context_bundle(
     tool_registry: ToolRegistry,
     tool_gateway: UnifiedToolGateway | None = None,
     disabled_tool_ids: list[str] | None = None,
+    external_tools: list[ToolCapability] | None = None,
     memory_records: list[MemoryRecord] | None = None,
     context_mode: str = "planning",
 ) -> ContextBundle:
@@ -68,6 +69,11 @@ def build_context_bundle(
         )
         if tool_gateway is not None
         else _tool_capabilities_from_registry(tool_registry)
+    )
+    available_tools = _merge_tool_capabilities(
+        available_tools,
+        external_tools or [],
+        disabled_tool_ids or [],
     )
     return ContextBundle(
         project_path=project_path,
@@ -123,6 +129,24 @@ def _tool_capabilities_from_unified_catalog(
         )
         for tool in tools
     ]
+
+
+def _merge_tool_capabilities(
+    base_tools: list[ToolCapability],
+    external_tools: list[ToolCapability],
+    disabled_tool_ids: list[str],
+) -> list[ToolCapability]:
+    disabled = set(disabled_tool_ids)
+    merged: list[ToolCapability] = []
+    seen: set[str] = set()
+    for tool in [*base_tools, *external_tools]:
+        if tool.tool_id in disabled:
+            continue
+        if tool.tool_id in seen:
+            continue
+        seen.add(tool.tool_id)
+        merged.append(tool)
+    return merged
 
 
 def _operation_names_from_schema(schema: dict) -> list[str]:

@@ -51,7 +51,8 @@ export type RunNodeGraphPayload = {
 export type RunNodeGraphMode =
   | { type: "full" }
   | { type: "failed_only"; sourceRunId: string }
-  | { type: "from_node"; nodeId: string; sourceRunId?: string };
+  | { type: "from_node"; nodeId: string; sourceRunId?: string }
+  | { type: "resume_checkpoint"; checkpointId?: string };
 
 export async function submitUserMessage(
   payload: SubmitMessagePayload,
@@ -364,6 +365,13 @@ function toSidecarRunMode(mode: RunNodeGraphMode) {
       type: mode.type,
       node_id: mode.nodeId,
       source_run_id: mode.sourceRunId,
+    };
+  }
+
+  if (mode.type === "resume_checkpoint") {
+    return {
+      type: mode.type,
+      checkpoint_id: mode.checkpointId,
     };
   }
 
