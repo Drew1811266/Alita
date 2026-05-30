@@ -9,7 +9,7 @@ from uuid import uuid4
 from langgraph.graph import END, StateGraph
 
 from agent_service.agent_run_state import AgentRunState
-from agent_service.context_manager import build_context_bundle
+from agent_service.context_manager import ToolCapability, build_context_bundle
 from agent_service.goal_spec import GoalSpec, parse_goal_spec
 from agent_service.intent import (
     IntentKind,
@@ -262,6 +262,7 @@ def _graph_payload_for_task(
     *,
     goal_spec: GoalSpec | None = None,
     run_state: AgentRunState | None = None,
+    external_tools: list[ToolCapability] | None = None,
 ) -> dict:
     spec = goal_spec or parse_goal_spec(message)
     tool_registry = ToolRegistry.from_packages_root(default_tool_packages_root())
@@ -276,6 +277,7 @@ def _graph_payload_for_task(
         goal_spec=spec,
         project_path=project_path,
         tool_registry=tool_registry,
+        external_tools=external_tools,
         memory_records=MemoryStore(project_path).list(),
     )
     result = PlannerChain(tool_registry=tool_registry).plan(

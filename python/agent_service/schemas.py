@@ -192,9 +192,10 @@ class RunGraph(BaseModel):
 
 
 class RunMode(BaseModel):
-    type: Literal["full", "failed_only", "from_node"] = "full"
+    type: Literal["full", "failed_only", "from_node", "resume_checkpoint"] = "full"
     source_run_id: str | None = None
     node_id: str | None = None
+    checkpoint_id: str | None = None
 
 
 class CancelRunRequest(BaseModel):

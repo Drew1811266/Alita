@@ -67,6 +67,23 @@ export function reduceRuntimeObservabilityEvents(
       event.type === "recovery.action_applied"
     ) {
       recoveryActions = [...recoveryActions, event.payload.action];
+      continue;
+    }
+
+    if (event.type === "recovery.continued") {
+      recoveryActions = [
+        ...recoveryActions,
+        {
+          runId: event.payload.runId,
+          nodeId: event.payload.nodeId,
+          action: "applied",
+          reason: event.payload.reason,
+          operations: [],
+          requiresUserApproval: false,
+          createdAt: event.payload.createdAt,
+          recoveryCount: event.payload.recoveryCount,
+        },
+      ];
     }
   }
 

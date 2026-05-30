@@ -48,7 +48,17 @@ from agent_service.research_evidence import (
 )
 from agent_service.result_verifier import ResultVerifier
 from agent_service.run_journal import RunJournal
-from agent_service.runtime_loop import RuntimeCheckpoint, checkpoint_outputs
+from agent_service.runtime_events import (
+    authority_decision_recorded_event,
+    checkpoint_recorded_event,
+    recovery_action_event,
+)
+from agent_service.runtime_loop import (
+    RuntimeCheckpoint,
+    checkpoint_outputs,
+    outputs_from_checkpoint_record,
+    pending_node_ids_from_checkpoint_record,
+)
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY, RunRegistry
 from agent_service.schemas import (
     AgentEvent,
@@ -65,6 +75,7 @@ from agent_service.tool_execution import (
     default_tool_packages_root,
 )
 from agent_service.tool_gateway import (
+    AuthorityEventSink,
     UnifiedToolGateway,
     default_unified_tool_gateway,
 )
@@ -741,8 +752,9 @@ class PlannedTaskExecutor:
                 node,
                 graph_metadata=self.request.graph.metadata,
             )
-            react_policy = _react_policy_from_graph_metadata(
-                self.request.graph.metadata
+            react_policy = _react_policy_for_node(
+                self.request.graph.metadata,
+                node.nodeId,
             )
             if react_policy.enabled:
                 result = ReActController(
@@ -1303,6 +1315,17 @@ def run_graph_events(
         return
 
     replanner = failure_replanner or FailureReplanner()
+    pending_observability_events: list[AgentEvent] = []
+
+    def record_authority_decision(invocation, tool, decision) -> None:
+        pending_observability_events.append(
+            authority_decision_recorded_event(
+                invocation=invocation,
+                tool=tool,
+                decision=decision,
+            )
+        )
+
     try:
         ordered_nodes = _topological_nodes(request)
         execution_graph = compile_execution_graph(request)
@@ -1319,6 +1342,7 @@ def run_graph_events(
             tool_executor=tool_executor,
             tool_registry=effective_tool_registry,
             authority_context=_runtime_authority_context(request),
+            authority_event_sink=record_authority_decision,
         )
         _validate_graph_tools(request, effective_tool_gateway.list_tools())
     except (ValueError, HarnessError) as error:
@@ -1330,6 +1354,12 @@ def run_graph_events(
             error=error,
         )
         if suggestion is not None:
+            yield recovery_action_event(
+                event_type="recovery.action_proposed",
+                run_id=request.run_id,
+                node_id=failed_node.nodeId if failed_node is not None else "",
+                suggestion=suggestion,
+            )
             yield AgentEvent(
                 type="graph.patch_suggested",
                 payload=suggestion.model_dump(),
@@ -1407,6 +1437,51 @@ def run_graph_events(
             "startedAt": started_at,
         },
     )
+
+    if request.mode.type == "resume_checkpoint":
+        latest_checkpoint = journal.read_latest_checkpoint()
+        if latest_checkpoint is None:
+            completed_at = _now_iso()
+            error = HarnessError(
+                "missing_checkpoint",
+                "no checkpoint exists for resume",
+            )
+            payload = harness_error_payload(error)
+            journal.write_run(
+                {
+                    "runId": request.run_id,
+                    "taskId": request.task_id,
+                    "status": "failed",
+                    "startedAt": started_at,
+                    "completedAt": completed_at,
+                    "mode": request.mode.model_dump(),
+                }
+            )
+            yield AgentEvent(
+                type="task.failed",
+                payload={
+                    "taskId": request.task_id,
+                    "runId": request.run_id,
+                    **payload,
+                },
+            )
+            run_registry.finish(request.run_id)
+            return
+        outputs.update(outputs_from_checkpoint_record(latest_checkpoint))
+        pending_node_ids = pending_node_ids_from_checkpoint_record(latest_checkpoint)
+        pending_node_id_set = set(pending_node_ids)
+        selected_nodes = [
+            node for node in selected_nodes if node.nodeId in pending_node_id_set
+        ]
+        yield AgentEvent(
+            type="runtime.resume_started",
+            payload={
+                "runId": request.run_id,
+                "taskId": request.task_id,
+                "checkpoint": latest_checkpoint,
+                "pendingNodeIds": pending_node_ids,
+            },
+        )
 
     try:
         permission_node = _permission_blocking_node(selected_nodes)
@@ -1519,6 +1594,12 @@ def run_graph_events(
                     error=error,
                 )
                 if suggestion is not None:
+                    yield recovery_action_event(
+                        event_type="recovery.action_proposed",
+                        run_id=request.run_id,
+                        node_id=node.nodeId,
+                        suggestion=suggestion,
+                    )
                     yield AgentEvent(
                         type="graph.patch_suggested",
                         payload=suggestion.model_dump(),
@@ -1618,17 +1699,17 @@ def run_graph_events(
                 recovery_count = recovery_counts.get(node.nodeId, 0)
                 node_started_at = _now_iso()
                 node_run_id = f"{request.run_id}-{node.nodeId}"
-                journal.write_checkpoint(
-                    RuntimeCheckpoint(
-                        run_id=request.run_id,
-                        node_id=node.nodeId,
-                        status="before_node",
-                        completed_outputs=checkpoint_outputs(outputs),
-                        pending_node_ids=_pending_node_ids(selected_nodes, node.nodeId),
-                        created_at=node_started_at,
-                        recovery_count=recovery_count,
-                    )
+                checkpoint = RuntimeCheckpoint(
+                    run_id=request.run_id,
+                    node_id=node.nodeId,
+                    status="before_node",
+                    completed_outputs=checkpoint_outputs(outputs),
+                    pending_node_ids=_pending_node_ids(selected_nodes, node.nodeId),
+                    created_at=node_started_at,
+                    recovery_count=recovery_count,
                 )
+                journal.write_checkpoint(checkpoint)
+                yield checkpoint_recorded_event(checkpoint)
                 journal.write_node(
                     node.nodeId,
                     {
@@ -1677,9 +1758,15 @@ def run_graph_events(
                             ),
                         )
                     output = node_executor.run(node.nodeId, dependency_outputs)
+                    yield from _drain_observability_events(
+                        pending_observability_events
+                    )
                     verifier.verify(node.nodeId, output)
                     break
                 except Exception as error:
+                    yield from _drain_observability_events(
+                        pending_observability_events
+                    )
                     suggestion = replanner.propose(
                         request=request,
                         failed_node=node,
@@ -1701,19 +1788,27 @@ def run_graph_events(
                             "createdAt": retry_at,
                         }
                         journal.write_audit_event(retry_payload)
-                        journal.write_checkpoint(
-                            RuntimeCheckpoint(
-                                run_id=request.run_id,
-                                node_id=node.nodeId,
-                                status="retrying",
-                                completed_outputs=checkpoint_outputs(outputs),
-                                pending_node_ids=_pending_node_ids(
-                                    selected_nodes,
-                                    node.nodeId,
-                                ),
-                                created_at=retry_at,
-                                recovery_count=recovery_count + 1,
-                            )
+                        checkpoint = RuntimeCheckpoint(
+                            run_id=request.run_id,
+                            node_id=node.nodeId,
+                            status="retrying",
+                            completed_outputs=checkpoint_outputs(outputs),
+                            pending_node_ids=_pending_node_ids(
+                                selected_nodes,
+                                node.nodeId,
+                            ),
+                            created_at=retry_at,
+                            recovery_count=recovery_count + 1,
+                        )
+                        journal.write_checkpoint(checkpoint)
+                        yield checkpoint_recorded_event(checkpoint)
+                        yield recovery_action_event(
+                            event_type="recovery.action_applied",
+                            run_id=request.run_id,
+                            node_id=node.nodeId,
+                            suggestion=suggestion,
+                            recovery_count=recovery_count + 1,
+                            created_at=retry_at,
                         )
                         yield AgentEvent(
                             type="recovery.continued",
@@ -1753,20 +1848,20 @@ def run_graph_events(
                         error=error,
                         completed_at=completed_at,
                     )
-                    journal.write_checkpoint(
-                        RuntimeCheckpoint(
-                            run_id=request.run_id,
-                            node_id=node.nodeId,
-                            status="failed",
-                            completed_outputs=checkpoint_outputs(outputs),
-                            pending_node_ids=_pending_node_ids(
-                                selected_nodes,
-                                node.nodeId,
-                            ),
-                            created_at=completed_at,
-                            recovery_count=recovery_count,
-                        )
+                    checkpoint = RuntimeCheckpoint(
+                        run_id=request.run_id,
+                        node_id=node.nodeId,
+                        status="failed",
+                        completed_outputs=checkpoint_outputs(outputs),
+                        pending_node_ids=_pending_node_ids(
+                            selected_nodes,
+                            node.nodeId,
+                        ),
+                        created_at=completed_at,
+                        recovery_count=recovery_count,
                     )
+                    journal.write_checkpoint(checkpoint)
+                    yield checkpoint_recorded_event(checkpoint)
                     journal.write_run(
                         {
                             "runId": request.run_id,
@@ -1791,6 +1886,13 @@ def run_graph_events(
                         payload={"record": _event_record(record)},
                     )
                     if suggestion is not None:
+                        yield recovery_action_event(
+                            event_type="recovery.action_proposed",
+                            run_id=request.run_id,
+                            node_id=node.nodeId,
+                            suggestion=suggestion,
+                            recovery_count=recovery_count,
+                        )
                         yield AgentEvent(
                             type="graph.patch_suggested",
                             payload=suggestion.model_dump(),
@@ -1822,20 +1924,20 @@ def run_graph_events(
             if runtime_notice is not None:
                 record["runtimeNotice"] = runtime_notice
             journal.write_node(node.nodeId, record)
-            journal.write_checkpoint(
-                RuntimeCheckpoint(
-                    run_id=request.run_id,
-                    node_id=node.nodeId,
-                    status="after_node",
-                    completed_outputs=checkpoint_outputs(outputs),
-                    pending_node_ids=_pending_node_ids_after(
-                        selected_nodes,
-                        node.nodeId,
-                    ),
-                    created_at=completed_at,
-                    recovery_count=recovery_counts.get(node.nodeId, 0),
-                )
+            checkpoint = RuntimeCheckpoint(
+                run_id=request.run_id,
+                node_id=node.nodeId,
+                status="after_node",
+                completed_outputs=checkpoint_outputs(outputs),
+                pending_node_ids=_pending_node_ids_after(
+                    selected_nodes,
+                    node.nodeId,
+                ),
+                created_at=completed_at,
+                recovery_count=recovery_counts.get(node.nodeId, 0),
             )
+            journal.write_checkpoint(checkpoint)
+            yield checkpoint_recorded_event(checkpoint)
             yield AgentEvent(
                 type="node.completed",
                 payload={"nodeId": node.nodeId, "artifactRefs": output.artifacts},
@@ -1885,6 +1987,12 @@ def run_graph_events(
                 error=error,
             )
             if suggestion is not None:
+                yield recovery_action_event(
+                    event_type="recovery.action_proposed",
+                    run_id=request.run_id,
+                    node_id=output_node.nodeId,
+                    suggestion=suggestion,
+                )
                 yield AgentEvent(
                     type="graph.patch_suggested",
                     payload=suggestion.model_dump(),
@@ -2112,7 +2220,9 @@ def _auto_write_tool_failure_memory(
 
 def _memory_auto_write_enabled(request: RunGraphRequest) -> bool:
     memory_config = request.graph.metadata.get("memory")
-    return isinstance(memory_config, dict) and memory_config.get("autoWrite") is True
+    if isinstance(memory_config, dict) and memory_config.get("autoWrite") is False:
+        return False
+    return True
 
 
 def is_executable_node(node: GraphNode) -> bool:
@@ -2248,11 +2358,13 @@ def _default_tool_gateway(
     tool_executor: ToolExecutor | None = None,
     tool_registry: ToolRegistry | None = None,
     authority_context: AuthorityContext | None = None,
+    authority_event_sink: AuthorityEventSink | None = None,
 ) -> UnifiedToolGateway:
     return default_unified_tool_gateway(
         registry=tool_registry,
         internal_executor=tool_executor,
         authority_context=authority_context,
+        authority_event_sink=authority_event_sink,
     )
 
 
@@ -2282,10 +2394,16 @@ def _node_output_from_unified_result(result) -> NodeOutput:
             error.code if error is not None else "tool_failed",
             error.message if error is not None else "tool failed",
         )
-    return NodeOutput(
-        values=dict(result.structured_content or {}),
-        artifacts=list(result.artifacts),
-    )
+    values = dict(result.structured_content or {})
+    if "observation" in result.metadata:
+        values["observation"] = result.metadata["observation"]
+    return NodeOutput(values=values, artifacts=list(result.artifacts))
+
+
+def _drain_observability_events(queue: list[AgentEvent]) -> list[AgentEvent]:
+    events = list(queue)
+    queue.clear()
+    return events
 
 
 def _required_permissions_for_tool_node(
@@ -2432,6 +2550,22 @@ def _react_policy_from_graph_metadata(metadata: dict) -> ReActPolicy:
         allowed_tool_ids=list(react.get("allowedToolIds") or []),
         allowed_permissions=list(react.get("allowedPermissions") or []),
     )
+
+
+def _react_policy_for_node(metadata: dict, node_id: str) -> ReActPolicy:
+    action_policies = metadata.get("actionPolicies")
+    if isinstance(action_policies, dict):
+        policy = action_policies.get(node_id)
+        if isinstance(policy, dict):
+            return ReActPolicy(
+                enabled=policy.get("reactEnabled") is True,
+                use_native_tool_calls=policy.get("nativeToolCalls") is True,
+                max_steps=int(policy.get("maxSteps", 4)),
+                max_tool_calls=int(policy.get("maxToolCalls", 3)),
+                allowed_tool_ids=list(policy.get("allowedToolIds") or []),
+                allowed_permissions=list(policy.get("allowedPermissions") or []),
+            )
+    return _react_policy_from_graph_metadata(metadata)
 
 
 def _selected_nodes_for_mode(

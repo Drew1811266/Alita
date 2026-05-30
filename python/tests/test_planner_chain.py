@@ -282,6 +282,11 @@ def test_planner_chain_emits_bounded_react_policy_for_tool_exploration() -> None
     assert react["maxToolCalls"] <= 3
     assert react["allowedToolIds"] == ["internal:test.echo_values"]
     assert react["allowedPermissions"] == ["read_project_files"]
+    action_policies = result.graph_payload["metadata"]["actionPolicies"]
+    assert action_policies["model-model-reasoning"]["reactEnabled"] is True
+    assert action_policies["model-model-reasoning"]["allowedToolIds"] == [
+        "internal:test.echo_values"
+    ]
     assert any(node.get("modelRef") == "local-task-reasoner" for node in result.graph_payload["nodes"])
 
 

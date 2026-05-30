@@ -189,6 +189,15 @@ export type BackendEvent =
       };
     }
   | {
+      type: "runtime.resume_started";
+      payload: {
+        runId: string;
+        taskId: string;
+        checkpoint: RuntimeCheckpointRecord;
+        pendingNodeIds: string[];
+      };
+    }
+  | {
       type: "authority.decision_recorded";
       payload: {
         decision: AuthorityDecisionRecord;
@@ -204,6 +213,18 @@ export type BackendEvent =
       type: "recovery.action_applied";
       payload: {
         action: RecoveryActionRecord;
+      };
+    }
+  | {
+      type: "recovery.continued";
+      payload: {
+        runId: string;
+        taskId: string;
+        nodeId: string;
+        reason: string;
+        recoveryCount: number;
+        suggestion?: unknown;
+        createdAt: string;
       };
     }
   | {
