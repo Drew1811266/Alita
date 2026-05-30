@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agent_service.sandbox import SandboxRequest, run_sandboxed_python
+from agent_service.sandbox import (
+    SandboxRequest,
+    job_object_backend_available,
+    run_sandboxed_python,
+)
 
 
 def test_sandbox_reads_allowed_project_file(tmp_path: Path) -> None:
@@ -35,6 +39,15 @@ def test_sandbox_reads_allowed_project_file(tmp_path: Path) -> None:
         result.security_boundary
         == "preflight_and_runtime_limits_not_os_isolation"
     )
+    assert result.backend == "subprocess"
+    assert result.is_os_isolated is False
+    assert result.is_process_tree_limited is False
+
+
+def test_sandbox_job_object_probe_is_windows_only() -> None:
+    import os
+
+    assert job_object_backend_available() is (os.name == "nt")
 
 
 def test_sandbox_rejects_network_import_when_network_denied(tmp_path: Path) -> None:

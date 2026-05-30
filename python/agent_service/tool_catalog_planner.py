@@ -49,17 +49,18 @@ class ToolCatalogPlanner:
                 diagnostics=[f"catalog tool is unavailable: {selected.tool_id}"],
             )
 
-        operation = _single_operation(manifest)
+        operation = _operation_for_message(manifest, request.message.content)
         if operation is None:
             return ToolCatalogPlanningResult(
                 planned=False,
-                diagnostics=[f"catalog tool has no single operation: {manifest.tool_id}"],
+                diagnostics=[f"catalog tool has no matching operation: {manifest.tool_id}"],
             )
 
         argument_values, diagnostics = _argument_values_for_tool(
             manifest,
             operation=operation,
             message=request.message,
+            context=request.context,
         )
         if diagnostics:
             return ToolCatalogPlanningResult(planned=False, diagnostics=diagnostics)
@@ -144,7 +145,7 @@ def _tokens(value: str) -> list[str]:
     return [token for token in re.split(r"[^a-zA-Z0-9]+", value.lower()) if token]
 
 
-def _single_operation(manifest: ToolManifestSpec) -> str | None:
+def _operation_for_message(manifest: ToolManifestSpec, content: str) -> str | None:
     if len(manifest.operations) == 1:
         return manifest.operations[0].name
     operation_values = (
@@ -154,6 +155,16 @@ def _single_operation(manifest: ToolManifestSpec) -> str | None:
     )
     if len(operation_values) == 1:
         return str(operation_values[0])
+    text_tokens = _signal_tokens(content)
+    scored: list[tuple[int, str]] = []
+    for operation in manifest.operations:
+        haystack = f"{operation.name} {operation.description}"
+        score = len(text_tokens & _signal_tokens(haystack))
+        if score > 0:
+            scored.append((score, operation.name))
+    if scored:
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return scored[0][1]
     return None
 
 
@@ -162,6 +173,7 @@ def _argument_values_for_tool(
     *,
     operation: str,
     message: UserMessage,
+    context: ContextBundle,
 ) -> tuple[dict[str, Any], list[str]]:
     values: dict[str, Any] = {"operation": operation}
     diagnostics: list[str] = []
@@ -172,6 +184,38 @@ def _argument_values_for_tool(
             values[argument] = message.content
         elif argument in {"source_text", "text", "input"}:
             values[argument] = message.content
+        elif argument == "input_path":
+            if message.attachments:
+                values[argument] = message.attachments[0].path
+            else:
+                diagnostics.append(
+                    f"missing binding value for required argument: {argument}"
+                )
+        elif argument == "input_paths":
+            if message.attachments:
+                values[argument] = [
+                    attachment.path for attachment in message.attachments
+                ]
+            else:
+                values[argument] = []
+        elif argument == "output_path":
+            values[argument] = _artifact_path(
+                task_id=message.task_id,
+                tool_id=manifest.tool_id,
+                suffix=".md",
+            )
+        elif argument == "source_output_path":
+            values[argument] = _artifact_path(
+                task_id=message.task_id,
+                tool_id=manifest.tool_id,
+                suffix=".typ",
+            )
+        elif argument == "pdf_output_path":
+            values[argument] = _artifact_path(
+                task_id=message.task_id,
+                tool_id=manifest.tool_id,
+                suffix=".pdf",
+            )
         elif argument == "metadata_value":
             values[argument] = "tool_catalog"
         else:
@@ -179,6 +223,14 @@ def _argument_values_for_tool(
                 f"missing binding value for required argument: {argument}"
             )
     return values, diagnostics
+
+
+def _artifact_path(*, task_id: str, tool_id: str, suffix: str) -> str:
+    return f"artifacts/{_safe_name(task_id)}-{_safe_name(tool_id)}{suffix}"
+
+
+def _safe_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
 
 
 def _required_arguments(manifest: ToolManifestSpec) -> list[str]:

@@ -301,6 +301,63 @@ def test_gateway_adds_authority_audit_metadata_on_allowed_call(tmp_path: Path) -
     assert result.metadata["observation"]["authorityCode"] == "allowed"
 
 
+def test_gateway_adds_runtime_budget_to_observation(tmp_path: Path) -> None:
+    from agent_service.tool_execution import ToolExecutor
+    from agent_service.tool_gateway import UnifiedToolGateway
+    from agent_service.tool_protocol import UnifiedToolInvocation
+
+    output_path = tmp_path / "artifacts" / "source.md"
+
+    def adapter(invocation):
+        return ToolResult(values={"text": "converted"}, artifacts=[str(output_path)])
+
+    registry = ToolRegistry.from_packages_root(_packages_root())
+    provider = InternalToolProvider(
+        registry=registry,
+        executor=ToolExecutor(
+            registry=registry,
+            adapters={("document.markitdown_convert", "convert_local_file"): adapter},
+        ),
+    )
+    gateway = UnifiedToolGateway(
+        providers=[provider],
+        authority_context=AuthorityContext(
+            approved_permissions=[
+                "read_project_files",
+                "write_project_outputs",
+                "run_python_plugin",
+            ],
+            read_roots=[str(tmp_path)],
+            write_roots=[str(tmp_path / "artifacts")],
+            runtime_budget_ms=2500,
+        ),
+    )
+
+    result = gateway.call_tool(
+        UnifiedToolInvocation(
+            invocation_id="inv-budget",
+            run_id="run-budget",
+            task_id="task-budget",
+            tool_id="internal:document.markitdown_convert",
+            arguments={
+                "operation": "convert_local_file",
+                "input_path": str(tmp_path / "source.docx"),
+                "output_path": str(output_path),
+            },
+            project_path=str(tmp_path / "project.alita"),
+            allowed_roots=[str(tmp_path)],
+            requested_permissions=[
+                "read_project_files",
+                "write_project_outputs",
+                "run_python_plugin",
+            ],
+        )
+    )
+
+    assert result.ok is True
+    assert result.metadata["observation"]["runtimeBudgetMs"] == 2500
+
+
 def test_default_unified_tool_gateway_lists_internal_tools() -> None:
     from agent_service.tool_gateway import default_unified_tool_gateway
 

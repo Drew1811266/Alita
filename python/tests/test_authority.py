@@ -172,6 +172,45 @@ def test_authority_grant_can_approve_sensitive_permissions(tmp_path: Path) -> No
     assert decision.code == "allowed"
 
 
+def test_authority_denies_network_domain_without_grant(tmp_path: Path) -> None:
+    tool = _tool_definition(permissions=["network"])
+    invocation = _invocation(
+        tmp_path,
+        arguments={"operation": "fetch"},
+        requested_permissions=["network"],
+        metadata={"networkDomain": "api.example.com"},
+    )
+    context = AuthorityContext(
+        approved_permissions=["network"],
+        network_domains=["docs.example.com"],
+    )
+
+    decision = authorize_tool_invocation(invocation, tool, context)
+
+    assert decision.allowed is False
+    assert decision.code == "network_domain_denied"
+    assert decision.metadata["networkDomain"] == "api.example.com"
+
+
+def test_authority_allows_network_domain_with_grant(tmp_path: Path) -> None:
+    tool = _tool_definition(permissions=["network"])
+    invocation = _invocation(
+        tmp_path,
+        arguments={"operation": "fetch"},
+        requested_permissions=["network"],
+        metadata={"networkDomain": "api.example.com"},
+    )
+    grant = AuthorityGrant(
+        approved_permissions=["network"],
+        network_domains=["api.example.com"],
+    )
+
+    decision = authorize_tool_invocation(invocation, tool, grant.to_context())
+
+    assert decision.allowed is True
+    assert decision.code == "allowed"
+
+
 def test_authority_separates_read_and_write_roots(tmp_path: Path) -> None:
     read_dir = tmp_path / "inputs"
     write_dir = tmp_path / "artifacts"
@@ -218,6 +257,7 @@ def _invocation(
     *,
     arguments: dict,
     requested_permissions: list[str],
+    metadata: dict | None = None,
 ) -> UnifiedToolInvocation:
     return UnifiedToolInvocation(
         invocation_id="inv-authority",
@@ -228,6 +268,7 @@ def _invocation(
         project_path=str(tmp_path / "project.alita"),
         allowed_roots=[str(tmp_path)],
         requested_permissions=requested_permissions,
+        metadata=metadata or {},
     )
 
 

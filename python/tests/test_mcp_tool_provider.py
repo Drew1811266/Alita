@@ -27,6 +27,21 @@ class FakeMcpClient:
         }
 
 
+class FakeLifecycleMcpClient(FakeMcpClient):
+    def __init__(self) -> None:
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    def start(self) -> None:
+        self.start_calls += 1
+
+    def health(self):
+        return {"ok": self.start_calls > 0}
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+
 def test_mcp_provider_maps_tools_to_unified_catalog() -> None:
     provider = McpToolProvider(
         provider_id="mcp-docs",
@@ -41,6 +56,22 @@ def test_mcp_provider_maps_tools_to_unified_catalog() -> None:
     assert tools[0].source == "mcp"
     assert tools[0].provider_tool_name == "search_docs"
     assert tools[0].input_schema["required"] == ["query"]
+
+
+def test_mcp_provider_starts_lifecycle_client_once_before_listing() -> None:
+    client = FakeLifecycleMcpClient()
+    provider = McpToolProvider(
+        provider_id="mcp-docs",
+        display_name="Docs MCP",
+        client=client,
+        enabled=True,
+    )
+
+    provider.list_tools()
+    provider.list_tools()
+
+    assert client.start_calls == 1
+    assert provider.health() == {"ok": True}
 
 
 def test_mcp_provider_calls_tool_and_maps_result() -> None:
@@ -66,6 +97,31 @@ def test_mcp_provider_calls_tool_and_maps_result() -> None:
     assert result.ok is True
     assert result.structured_content == {"matches": 1}
     assert result.content[0].text == "result"
+
+
+def test_mcp_provider_starts_lifecycle_client_once_before_calling() -> None:
+    client = FakeLifecycleMcpClient()
+    provider = McpToolProvider(
+        provider_id="mcp-docs",
+        display_name="Docs MCP",
+        client=client,
+        enabled=True,
+    )
+
+    result = provider.call_tool(
+        UnifiedToolInvocation(
+            invocation_id="inv-1",
+            run_id="run-1",
+            task_id="task-1",
+            tool_id="mcp:mcp-docs:search_docs",
+            arguments={"query": "alita"},
+            allowed_roots=[],
+            requested_permissions=["call_external_mcp_tool"],
+        )
+    )
+
+    assert result.ok is True
+    assert client.start_calls == 1
 
 
 def test_mcp_provider_config_carries_transport_details() -> None:

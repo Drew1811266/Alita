@@ -18,6 +18,7 @@ class RuntimeCheckpoint(BaseModel):
 
     def to_record(self) -> dict[str, Any]:
         return {
+            "checkpointId": f"{self.node_id}:{self.status}:{self.recovery_count}",
             "runId": self.run_id,
             "nodeId": self.node_id,
             "status": self.status,

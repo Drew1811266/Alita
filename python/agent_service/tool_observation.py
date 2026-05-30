@@ -20,14 +20,24 @@ def observation_metadata(
     duration_ms: int,
     authority_code: str | None = None,
     error_code: str | None = None,
+    trace_id: str | None = None,
+    span_id: str | None = None,
+    runtime_budget_ms: int | None = None,
 ) -> dict[str, Any]:
+    observation: dict[str, Any] = {
+        "toolId": tool_id,
+        "providerId": provider_id,
+        "ok": ok,
+        "durationMs": duration_ms,
+        "authorityCode": authority_code,
+        "errorCode": error_code,
+    }
+    if trace_id is not None:
+        observation["traceId"] = trace_id
+    if span_id is not None:
+        observation["spanId"] = span_id
+    if runtime_budget_ms is not None:
+        observation["runtimeBudgetMs"] = runtime_budget_ms
     return {
-        "observation": {
-            "toolId": tool_id,
-            "providerId": provider_id,
-            "ok": ok,
-            "durationMs": duration_ms,
-            "authorityCode": authority_code,
-            "errorCode": error_code,
-        }
+        "observation": observation
     }

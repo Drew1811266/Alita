@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from agent_service.authority import AuthorityDecision
 from agent_service.replan import ReplanSuggestion
 from agent_service.runtime_loop import RuntimeCheckpoint
+from agent_service.runtime_trace import RuntimeSpan
 from agent_service.schemas import AgentEvent
 from agent_service.tool_protocol import UnifiedToolDefinition, UnifiedToolInvocation
 
@@ -17,6 +18,13 @@ def checkpoint_recorded_event(checkpoint: RuntimeCheckpoint) -> AgentEvent:
     return AgentEvent(
         type="runtime.checkpoint_recorded",
         payload={"checkpoint": checkpoint.to_record()},
+    )
+
+
+def runtime_span_recorded_event(span: RuntimeSpan) -> AgentEvent:
+    return AgentEvent(
+        type="runtime.span_recorded",
+        payload={"span": span.to_record()},
     )
 
 

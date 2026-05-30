@@ -1,0 +1,1 @@
+{"case_id":"model-loop-planner-binding-smoke","category":"model_loop","input":{"kind":"planner_binding","content":"Use the echo tool to summarize this text"},"expected":{"skipped":true}}
