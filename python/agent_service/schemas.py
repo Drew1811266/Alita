@@ -198,6 +198,15 @@ class RunMode(BaseModel):
     checkpoint_id: str | None = None
 
 
+class AuthorityGrantPayload(BaseModel):
+    approved_tool_ids: list[str] = Field(default_factory=list)
+    approved_permissions: list[str] = Field(default_factory=list)
+    read_roots: list[str] = Field(default_factory=list)
+    write_roots: list[str] = Field(default_factory=list)
+    network_domains: list[str] = Field(default_factory=list)
+    runtime_budget_ms: int | None = None
+
+
 class CancelRunRequest(BaseModel):
     run_id: str
 
@@ -229,4 +238,5 @@ class RunGraphRequest(BaseModel):
     mode: RunMode = Field(default_factory=RunMode)
     disabled_tool_ids: list[str] = Field(default_factory=list)
     approved_permissions: list[str] = Field(default_factory=list)
+    authority_grants: list[AuthorityGrantPayload] = Field(default_factory=list)
     model_session_id: str | None = None

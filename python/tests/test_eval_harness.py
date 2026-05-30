@@ -209,6 +209,29 @@ def test_run_eval_cases_handles_security_sandbox_case() -> None:
     assert summary.results[0].details["errorCode"] == "network_import_denied"
 
 
+def test_run_eval_cases_skips_model_loop_case_by_default() -> None:
+    summary = run_eval_cases(
+        [
+            EvalCase(
+                case_id="model-loop-planner-binding-smoke",
+                category="model_loop",
+                input={
+                    "kind": "planner_binding",
+                    "content": "Use the echo tool to summarize this text",
+                },
+                expected={"skipped": True},
+            )
+        ]
+    )
+
+    assert summary.failed == 0
+    assert summary.categories["model_loop"].passed == 1
+    assert summary.results[0].details == {
+        "skipped": True,
+        "reason": "model loop eval disabled",
+    }
+
+
 def test_eval_harness_writes_summary_for_loaded_cases(tmp_path: Path) -> None:
     cases_path = tmp_path / "cases.jsonl"
     cases_path.write_text(

@@ -72,6 +72,7 @@ class UnifiedToolInvocation:
     node_id: str | None = None
     approval_token: str | None = None
     model_session_id: str | None = None
+    metadata: JsonObject = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

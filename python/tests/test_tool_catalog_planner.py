@@ -4,7 +4,7 @@ from pathlib import Path
 
 from agent_service.context_manager import build_context_bundle
 from agent_service.goal_spec import parse_goal_spec
-from agent_service.schemas import RunGraph, UserMessage
+from agent_service.schemas import Attachment, RunGraph, UserMessage
 from agent_service.tool_catalog_planner import (
     ToolCatalogPlanner,
     ToolCatalogPlanningRequest,
@@ -83,3 +83,112 @@ def test_tool_catalog_planner_returns_diagnostics_without_matching_tool() -> Non
     assert result.planned is False
     assert result.graph_payload is None
     assert result.diagnostics == ["no catalog tool matched the task"]
+
+
+def test_tool_catalog_planner_binds_attachment_paths_and_output_path() -> None:
+    attachment = Attachment(
+        attachment_id="att-1",
+        name="source.md",
+        path=str(PROJECT_ROOT / "inputs" / "source.md"),
+        size_bytes=12,
+        mime_type="text/markdown",
+    )
+    message = UserMessage(
+        task_id="task-document-read",
+        content="Use the document read write tool to read this attachment.",
+        attachments=[attachment],
+    )
+    registry = ToolRegistry.from_packages_root(TOOL_PACKAGES_ROOT)
+    goal_spec = parse_goal_spec(message)
+    context = build_context_bundle(
+        message,
+        goal_spec,
+        str(PROJECT_ROOT / "project.alita"),
+        registry,
+    )
+
+    result = ToolCatalogPlanner(tool_registry=registry).plan(
+        ToolCatalogPlanningRequest(
+            task_id=message.task_id,
+            message=message,
+            goal_spec=goal_spec,
+            context=context,
+        )
+    )
+
+    assert result.planned is True
+    assert result.diagnostics == []
+    assert result.graph_payload is not None
+    tool_node = result.graph_payload["nodes"][0]
+    values = tool_node["toolBinding"]["argumentsTemplate"]["values"]
+    assert values["operation"] == "read"
+    assert values["input_paths"] == [attachment.path]
+    assert values["output_path"] == "artifacts/task-document-read-document-read-write.md"
+
+
+def test_tool_catalog_planner_reports_unbound_required_argument(tmp_path: Path) -> None:
+    package_root = tmp_path / "tool-packages"
+    tool_root = package_root / "strict"
+    tool_root.mkdir(parents=True)
+    (tool_root / "manifest.json").write_text(
+        """
+{
+  "tool_id": "strict.requires_owner",
+  "name": "Strict Owner Tool",
+  "description": "Requires an owner field.",
+  "version": "0.1.0",
+  "source_type": "test",
+  "license": "internal",
+  "runtime": "python_function",
+  "entrypoint": "strict_tool:run",
+  "capabilities": ["strict", "owner"],
+  "operations": [
+    {
+      "name": "run",
+      "description": "Run strict owner tool."
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": ["operation", "owner"],
+    "properties": {
+      "operation": {"type": "string", "enum": ["run"]},
+      "owner": {"type": "string"}
+    }
+  },
+  "output_schema": {"type": "object"},
+  "permissions": [],
+  "error_codes": [],
+  "timeout_policy": {},
+  "artifact_policy": {},
+  "security_policy": {},
+  "examples": [],
+  "node_templates": []
+}
+""",
+        encoding="utf-8",
+    )
+    message = UserMessage(
+        task_id="task-strict-owner",
+        content="Use the strict owner tool.",
+    )
+    registry = ToolRegistry.from_packages_root(package_root)
+    goal_spec = parse_goal_spec(message)
+    context = build_context_bundle(
+        message,
+        goal_spec,
+        str(tmp_path / "project.alita"),
+        registry,
+    )
+
+    result = ToolCatalogPlanner(tool_registry=registry).plan(
+        ToolCatalogPlanningRequest(
+            task_id=message.task_id,
+            message=message,
+            goal_spec=goal_spec,
+            context=context,
+        )
+    )
+
+    assert result.planned is False
+    assert result.diagnostics == ["missing binding value for required argument: owner"]

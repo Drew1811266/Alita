@@ -320,6 +320,130 @@ def run(invocation):
     assert result.metadata == {"runtime": "python_function"}
 
 
+def test_tool_executor_rejects_python_script_runtime_until_provider_exists(tmp_path):
+    package_root = tmp_path / "tool-packages"
+    tool_root = package_root / "scripted"
+    tool_root.mkdir(parents=True)
+    (tool_root / "manifest.json").write_text(
+        """
+{
+  "tool_id": "custom.scripted",
+  "name": "Custom Scripted",
+  "description": "Test-only script tool.",
+  "version": "0.1.0",
+  "source_type": "python_plugin",
+  "license": "internal",
+  "runtime": "python_script",
+  "entrypoint": "python/tools/missing_script.py",
+  "capabilities": [],
+  "operations": [
+    {
+      "name": "run",
+      "description": "Run script."
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": ["operation"],
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["run"]
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object"
+  },
+  "permissions": [],
+  "error_codes": [],
+  "timeout_policy": {},
+  "artifact_policy": {},
+  "security_policy": {},
+  "examples": [],
+  "node_templates": []
+}
+""",
+        encoding="utf-8",
+    )
+    executor = ToolExecutor(registry=ToolRegistry.from_packages_root(package_root))
+
+    with pytest.raises(HarnessError) as exc_info:
+        executor.run(
+            ToolInvocation(
+                tool_id="custom.scripted",
+                operation="run",
+                arguments={},
+                project_path=str(tmp_path),
+            )
+        )
+
+    assert exc_info.value.code == "unsupported_runtime"
+    assert "python_script" in exc_info.value.message
+
+
+def test_tool_executor_rejects_cli_runtime_until_provider_exists(tmp_path):
+    package_root = tmp_path / "tool-packages"
+    tool_root = package_root / "cli"
+    tool_root.mkdir(parents=True)
+    (tool_root / "manifest.json").write_text(
+        """
+{
+  "tool_id": "custom.cli",
+  "name": "Custom CLI",
+  "description": "Test-only CLI tool.",
+  "version": "0.1.0",
+  "source_type": "external_cli",
+  "license": "internal",
+  "runtime": "cli",
+  "entrypoint": "custom-cli",
+  "capabilities": [],
+  "operations": [
+    {
+      "name": "run",
+      "description": "Run CLI."
+    }
+  ],
+  "input_schema": {
+    "type": "object",
+    "required": ["operation"],
+    "properties": {
+      "operation": {
+        "type": "string",
+        "enum": ["run"]
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object"
+  },
+  "permissions": [],
+  "error_codes": [],
+  "timeout_policy": {},
+  "artifact_policy": {},
+  "security_policy": {},
+  "examples": [],
+  "node_templates": []
+}
+""",
+        encoding="utf-8",
+    )
+    executor = ToolExecutor(registry=ToolRegistry.from_packages_root(package_root))
+
+    with pytest.raises(HarnessError) as exc_info:
+        executor.run(
+            ToolInvocation(
+                tool_id="custom.cli",
+                operation="run",
+                arguments={},
+                project_path=str(tmp_path),
+            )
+        )
+
+    assert exc_info.value.code == "unsupported_runtime"
+    assert "cli" in exc_info.value.message
+
+
 def test_tool_executor_runs_test_echo_package_from_manifest_entrypoint():
     result = ToolExecutor(
         registry=ToolRegistry.from_packages_root(TOOL_PACKAGES_ROOT),

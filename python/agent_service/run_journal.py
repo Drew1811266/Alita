@@ -66,6 +66,12 @@ class RunJournal:
             return None
         return checkpoints[-1]
 
+    def read_checkpoint(self, checkpoint_id: str) -> dict[str, Any] | None:
+        for checkpoint in self.read_checkpoints():
+            if checkpoint.get("checkpointId") == checkpoint_id:
+                return checkpoint
+        return None
+
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),

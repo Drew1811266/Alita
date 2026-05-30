@@ -82,7 +82,7 @@ def test_unknown_tool_raises_key_error(tmp_path: Path) -> None:
         registry.get("missing.tool")
 
 
-def test_loads_real_tool_packages_with_legacy_document_manifest() -> None:
+def test_loads_real_tool_packages_with_document_operations() -> None:
     packages_root = Path(__file__).resolve().parents[2] / "tool-packages"
     registry = ToolRegistry.from_packages_root(packages_root)
 
@@ -94,4 +94,7 @@ def test_loads_real_tool_packages_with_legacy_document_manifest() -> None:
     assert "write_project_outputs" in typst.permissions
 
     document_tool = registry.get("document.read_write")
-    assert document_tool.runtime is None
+    assert document_tool.runtime == "python_script"
+    assert registry.has_operation("document.read_write", "read")
+    assert registry.has_operation("document.read_write", "write_markdown")
+    assert registry.has_operation("document.read_write", "write_docx")

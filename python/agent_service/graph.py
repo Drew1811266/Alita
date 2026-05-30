@@ -9,6 +9,7 @@ from uuid import uuid4
 from langgraph.graph import END, StateGraph
 
 from agent_service.agent_run_state import AgentRunState
+from agent_service.agent_runtime_graph import runtime_metadata
 from agent_service.context_manager import ToolCapability, build_context_bundle
 from agent_service.goal_spec import GoalSpec, parse_goal_spec
 from agent_service.intent import (
@@ -322,6 +323,7 @@ def _run_state_with_structured_route_for_planning(
 def _with_model_policy_metadata(graph_payload: dict, policy_name: str) -> dict:
     metadata = dict(graph_payload.get("metadata") or {})
     metadata["modelPolicy"] = policy_name
+    metadata["agentRuntime"] = runtime_metadata("plan")
     return {**graph_payload, "metadata": metadata}
 
 

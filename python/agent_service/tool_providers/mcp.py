@@ -54,10 +54,12 @@ class McpToolProvider:
         self.display_name = display_name
         self.client = client
         self.enabled = enabled
+        self._started = False
 
     def list_tools(self) -> list[UnifiedToolDefinition]:
         if not self.enabled:
             return []
+        self._ensure_started()
         return [
             UnifiedToolDefinition(
                 id=f"mcp:{self.provider_id}:{tool.name}",
@@ -86,6 +88,7 @@ class McpToolProvider:
         ]
 
     def call_tool(self, invocation: UnifiedToolInvocation) -> UnifiedToolResult:
+        self._ensure_started()
         name = invocation.tool_id.removeprefix(f"mcp:{self.provider_id}:")
         try:
             raw = self.client.call_tool(name, invocation.arguments)
@@ -104,6 +107,23 @@ class McpToolProvider:
             artifacts=[],
             metadata={"providerId": self.provider_id},
         )
+
+    def health(self) -> dict[str, Any]:
+        if hasattr(self.client, "health"):
+            return dict(self.client.health())
+        return {"ok": self.enabled}
+
+    def stop(self) -> None:
+        if hasattr(self.client, "stop"):
+            self.client.stop()
+        self._started = False
+
+    def _ensure_started(self) -> None:
+        if self._started:
+            return
+        if hasattr(self.client, "start"):
+            self.client.start()
+        self._started = True
 
 
 def _map_content(items: list[dict[str, Any]]) -> list[ToolResultContent]:

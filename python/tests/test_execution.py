@@ -1072,7 +1072,8 @@ def test_graph_tool_validation_uses_configured_tool_packages_root(
     assert [
         event.type
         for event in events
-        if event.type != "runtime.checkpoint_recorded"
+        if event.type
+        not in {"runtime.checkpoint_recorded", "runtime.span_recorded"}
     ] == [
         "run.started",
         "node.running",
@@ -1080,6 +1081,7 @@ def test_graph_tool_validation_uses_configured_tool_packages_root(
         "node.run_recorded",
         "task.completed",
     ]
+    assert any(event.type == "runtime.span_recorded" for event in events)
 
 
 def test_graph_tool_validation_uses_injected_tool_registry_catalog(
@@ -1138,7 +1140,8 @@ def test_graph_tool_validation_uses_injected_tool_registry_catalog(
     assert [
         event.type
         for event in events
-        if event.type != "runtime.checkpoint_recorded"
+        if event.type
+        not in {"runtime.checkpoint_recorded", "runtime.span_recorded"}
     ] == [
         "run.started",
         "node.running",
@@ -1146,6 +1149,7 @@ def test_graph_tool_validation_uses_injected_tool_registry_catalog(
         "node.run_recorded",
         "task.completed",
     ]
+    assert any(event.type == "runtime.span_recorded" for event in events)
 
 
 def test_planned_executor_uses_execution_graph_tool_binding(tmp_path: Path) -> None:
@@ -2682,6 +2686,39 @@ def test_resume_checkpoint_runs_only_pending_nodes(tmp_path: Path) -> None:
 
     assert "runtime.resume_started" in [event.type for event in resumed_events]
     assert resume_executor.calls == ["task-output"]
+    assert resumed_events[-1].type == "task.completed"
+
+
+def test_resume_checkpoint_uses_requested_checkpoint_id(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node("first", "model", []),
+            build_node("task-output", "output", ["first"]),
+        ],
+    )
+    request.run_id = "run-resume-specific-checkpoint"
+
+    class RecordingExecutor:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+            self.calls.append(node_id)
+            return NodeOutput(values={"text": f"{node_id} result"})
+
+    initial_executor = RecordingExecutor()
+    initial_events = list(run_graph_events(request, executor=initial_executor))
+    assert initial_events[-1].type == "task.completed"
+    assert initial_executor.calls == ["first", "task-output"]
+
+    request.mode.type = "resume_checkpoint"
+    request.mode.checkpoint_id = "first:before_node:0"
+    resume_executor = RecordingExecutor()
+    resumed_events = list(run_graph_events(request, executor=resume_executor))
+
+    assert "runtime.resume_started" in [event.type for event in resumed_events]
+    assert resume_executor.calls == ["first", "task-output"]
     assert resumed_events[-1].type == "task.completed"
 
 

@@ -68,3 +68,36 @@ def test_run_journal_persists_latest_checkpoint(tmp_path: Path) -> None:
     assert latest["nodeId"] == "document-input"
     assert latest["status"] == "after_node"
     assert latest["pendingNodeIds"] == ["document-parse"]
+
+
+def test_run_journal_reads_checkpoint_by_id(tmp_path: Path) -> None:
+    journal = RunJournal(project_path=str(tmp_path / "demo.alita"), run_id="run-1")
+
+    journal.write_checkpoint(
+        RuntimeCheckpoint(
+            run_id="run-1",
+            node_id="first",
+            status="before_node",
+            completed_outputs={},
+            pending_node_ids=["first", "task-output"],
+            created_at="2026-05-30T00:00:00Z",
+            recovery_count=0,
+        )
+    )
+    journal.write_checkpoint(
+        RuntimeCheckpoint(
+            run_id="run-1",
+            node_id="task-output",
+            status="after_node",
+            completed_outputs={"first": {"values": {"text": "done"}}},
+            pending_node_ids=[],
+            created_at="2026-05-30T00:00:01Z",
+            recovery_count=0,
+        )
+    )
+
+    checkpoint = journal.read_checkpoint("first:before_node:0")
+
+    assert checkpoint is not None
+    assert checkpoint["checkpointId"] == "first:before_node:0"
+    assert checkpoint["nodeId"] == "first"

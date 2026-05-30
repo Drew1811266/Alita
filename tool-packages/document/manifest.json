@@ -5,7 +5,22 @@
   "version": "0.1.0",
   "source_type": "python_plugin",
   "license": "internal",
+  "runtime": "python_script",
   "entrypoint": "python/tools/document_tool.py",
+  "operations": [
+    {
+      "name": "read",
+      "description": "Read local project documents."
+    },
+    {
+      "name": "write_markdown",
+      "description": "Write Markdown output."
+    },
+    {
+      "name": "write_docx",
+      "description": "Write Word document output."
+    }
+  ],
   "input_schema": {
     "type": "object",
     "required": ["operation", "input_paths", "output_path"],

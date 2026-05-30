@@ -109,6 +109,10 @@ def authorize_tool_invocation(
     if permission_decision is not None:
         return permission_decision
 
+    network_decision = _authorize_network_domain(invocation, context)
+    if network_decision is not None:
+        return network_decision
+
     paths = extract_invocation_paths(
         invocation.arguments,
         project_path=invocation.project_path,
@@ -164,6 +168,24 @@ def _authorize_permissions(
         code="permission_denied",
         message=f"permission is not approved: {', '.join(sensitive)}",
         metadata={"permissions": sensitive},
+    )
+
+
+def _authorize_network_domain(
+    invocation: UnifiedToolInvocation,
+    context: AuthorityContext,
+) -> AuthorityDecision | None:
+    domain = invocation.metadata.get("networkDomain")
+    if not domain:
+        return None
+    allowed_domains = set(context.network_domains)
+    if str(domain) in allowed_domains:
+        return None
+    return AuthorityDecision(
+        allowed=False,
+        code="network_domain_denied",
+        message=f"network domain is not approved: {domain}",
+        metadata={"networkDomain": str(domain)},
     )
 
 
