@@ -2,7 +2,7 @@
 
 Alita 是一个本地优先的 AI Agent 桌面工作台。它不是单纯的聊天窗口，而是把本地大模型、工程文件、节点化任务流程、文档工具、联网查询工具、语音输入、运行历史和 artifact 预览整合到一个 Windows 桌面应用中。
 
-当前仓库版本为 `0.29.0`。这个阶段的重点是：桌面工程闭环已经成型，并完成 Agent Runtime A-L 阶段优化：Agent 具备运行状态、统一工具网关、结构化路由、规划链、执行图、受控 ReAct、临时脚本沙箱、证据驱动研究、评估基线、项目记忆上下文和前端状态控制器拆分。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
+当前仓库版本为 `0.30.0`。这个阶段的重点是：桌面工程闭环已经成型，并完成 Agent Runtime A-L 阶段优化：Agent 具备运行状态、统一工具网关、结构化路由、规划链、执行图、受控 ReAct、临时脚本沙箱、证据驱动研究、评估基线、项目记忆上下文和前端状态控制器拆分。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
 
 ## 当前阶段
 
@@ -285,13 +285,14 @@ llama.cpp / Qwen ASR / MarkItDown / Typst / Open-Meteo / Web search providers
 
 | 路径 | 说明 |
 | --- | --- |
-| `src/app` | 应用主状态、后端事件 reducer、全局样式 |
-| `src/features/chat` | 聊天面板、附件选择 |
-| `src/features/task` | Agent 消息提交、节点图运行、SSE 事件处理 |
+| `src/app` | 应用装配、后端事件 reducer、全局样式 |
+| `src/features/chat` | 聊天面板、附件选择、聊天会话 controller |
+| `src/features/task` | Agent 消息提交、节点图运行、SSE 事件处理、图运行态 controller |
 | `src/features/canvas` | 节点画布、布局、节点弹窗 |
 | `src/features/artifacts` | artifact 预览、打开、定位 |
 | `src/features/preferences` | 模型库和工具节点首选项 |
-| `src/features/project` | 工程创建、打开、保存 |
+| `src/features/project` | 工程创建、打开、保存、工程状态 controller |
+| `src/features/permissions` | pending choice 和权限提示协调 controller |
 | `src/features/voice` | 录音、WAV 编码、ASR API、转写插入 |
 | `src/shared` | 共享类型和后端事件定义 |
 
@@ -354,7 +355,7 @@ Python sidecar 位于 `python/agent_service`，使用 FastAPI、Pydantic、LangG
 ├── scripts/                     # Windows 开发、构建和 runtime 安装脚本
 ├── tool-packages/               # 工具节点 manifest
 ├── docs/                        # 设计文档、计划和验证说明
-├── models/                      # 项目级模型目录占位
+├── models/                      # 项目级模型目录示例
 ├── package.json                 # 前端、Tauri 和开发脚本入口
 └── README.md                    # 当前说明文档
 ```
@@ -565,7 +566,15 @@ npm run frontend:typecheck
 Python 测试：
 
 ```powershell
-python -m pytest python/tests -q
+Push-Location python
+python -m pytest -q
+Pop-Location
+```
+
+Agent deterministic eval：
+
+```powershell
+npm run agent:eval
 ```
 
 Rust/Tauri 测试：
@@ -580,23 +589,26 @@ MVP 验证脚本：
 .\scripts\verify-mvp.ps1
 ```
 
-0.29 发布前的主要验证结果：
+本轮 Agent Runtime goal 验证结果：
 
 ```text
 npm run frontend:lint
 passed
 
 npm run frontend:test
-197 passed
+32 test files passed, 207 tests passed
 
-python -m pytest
-668 passed
+Push-Location python; python -m pytest -q; Pop-Location
+707 passed
 
-python -m agent_service.eval_harness --cases evals/router_cases.jsonl
-1/1 passed
+npm run agent:eval
+56/56 passed
 
 cargo test --manifest-path src-tauri/Cargo.toml
 passed
+
+powershell -ExecutionPolicy Bypass -File scripts/verify-mvp.ps1
+MVP verification passed
 ```
 
 ## 运行时端口
@@ -616,6 +628,8 @@ passed
 - 通用任务自动执行仍在扩展中；当前最完整闭环是文档处理、研究流程、天气查询和基础 web 搜索。
 - 简单 web 问答目前主要基于搜索结果摘要；研究流程会进一步读取来源页面。
 - Brave Search 需要 API key；没有 key 时会 fallback 到 DuckDuckGo。
+- 临时脚本 sandbox 已增加路径、输出、artifact、环境变量和进程启动限制，但仍不是 Windows AppContainer/Docker/WSL 级强隔离。
+- MCP provider、后台多 run 队列、run checkpoint/rollback 和 memory 管理 UI 仍属于后续增强项。
 - 桌面构建主线面向 Windows，跨平台发布尚未作为主线目标。
 
 ## 相关文档

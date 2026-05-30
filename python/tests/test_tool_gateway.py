@@ -2,6 +2,7 @@ from pathlib import Path
 
 from agent_service.tool_execution import ToolResult
 from agent_service.tool_providers.internal import InternalToolProvider
+from agent_service.authority import AuthorityContext
 from agent_service.tool_registry import ToolManifestSpec, ToolOperationSpec, ToolRegistry
 
 
@@ -160,6 +161,124 @@ def test_gateway_calls_internal_tool_adapter_and_normalizes_result() -> None:
     assert result.artifacts == ["outputs/source.md"]
     assert result.content[0].type == "json"
     assert result.content[1].path == "outputs/source.md"
+
+
+def test_gateway_denies_path_outside_authority_roots_before_provider_call(
+    tmp_path: Path,
+) -> None:
+    from agent_service.tool_execution import ToolExecutor
+    from agent_service.tool_gateway import UnifiedToolGateway
+    from agent_service.tool_protocol import UnifiedToolInvocation
+
+    calls = []
+
+    def adapter(invocation):
+        calls.append(invocation)
+        return ToolResult(values={"text": "should not run"})
+
+    registry = ToolRegistry.from_packages_root(_packages_root())
+    provider = InternalToolProvider(
+        registry=registry,
+        executor=ToolExecutor(
+            registry=registry,
+            adapters={("document.markitdown_convert", "convert_local_file"): adapter},
+        ),
+    )
+    gateway = UnifiedToolGateway(
+        providers=[provider],
+        authority_context=AuthorityContext(
+            approved_permissions=[
+                "read_project_files",
+                "write_project_outputs",
+                "run_python_plugin",
+            ],
+            read_roots=[str(tmp_path)],
+            write_roots=[str(tmp_path / "artifacts")],
+        ),
+    )
+
+    result = gateway.call_tool(
+        UnifiedToolInvocation(
+            invocation_id="inv-denied-path",
+            run_id="run-denied-path",
+            task_id="task-denied-path",
+            tool_id="internal:document.markitdown_convert",
+            arguments={
+                "operation": "convert_local_file",
+                "input_path": str(tmp_path / "source.docx"),
+                "output_path": str(tmp_path.parent / "escape.md"),
+            },
+            project_path=str(tmp_path / "project.alita"),
+            allowed_roots=[str(tmp_path)],
+            requested_permissions=[
+                "read_project_files",
+                "write_project_outputs",
+                "run_python_plugin",
+            ],
+        )
+    )
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "authority_denied"
+    assert calls == []
+
+
+def test_gateway_adds_authority_audit_metadata_on_allowed_call(tmp_path: Path) -> None:
+    from agent_service.tool_execution import ToolExecutor
+    from agent_service.tool_gateway import UnifiedToolGateway
+    from agent_service.tool_protocol import UnifiedToolInvocation
+
+    output_path = tmp_path / "artifacts" / "source.md"
+
+    def adapter(invocation):
+        return ToolResult(values={"text": "converted"}, artifacts=[str(output_path)])
+
+    registry = ToolRegistry.from_packages_root(_packages_root())
+    provider = InternalToolProvider(
+        registry=registry,
+        executor=ToolExecutor(
+            registry=registry,
+            adapters={("document.markitdown_convert", "convert_local_file"): adapter},
+        ),
+    )
+    gateway = UnifiedToolGateway(
+        providers=[provider],
+        authority_context=AuthorityContext(
+            approved_permissions=[
+                "read_project_files",
+                "write_project_outputs",
+                "run_python_plugin",
+            ],
+            read_roots=[str(tmp_path)],
+            write_roots=[str(tmp_path / "artifacts")],
+        ),
+    )
+
+    result = gateway.call_tool(
+        UnifiedToolInvocation(
+            invocation_id="inv-allowed-path",
+            run_id="run-allowed-path",
+            task_id="task-allowed-path",
+            tool_id="internal:document.markitdown_convert",
+            arguments={
+                "operation": "convert_local_file",
+                "input_path": str(tmp_path / "source.docx"),
+                "output_path": str(output_path),
+            },
+            project_path=str(tmp_path / "project.alita"),
+            allowed_roots=[str(tmp_path)],
+            requested_permissions=[
+                "read_project_files",
+                "write_project_outputs",
+                "run_python_plugin",
+            ],
+        )
+    )
+
+    assert result.ok is True
+    assert result.metadata["authority"] == "allowed"
+    assert result.metadata["authorityCode"] == "allowed"
 
 
 def test_default_unified_tool_gateway_lists_internal_tools() -> None:

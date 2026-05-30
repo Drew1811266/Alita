@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
 from pathlib import Path
 from typing import Literal
 
@@ -16,6 +17,7 @@ class MemoryRecord(BaseModel):
     kind: Literal["preference", "graph_summary", "artifact_summary", "tool_outcome"]
     summary: str
     source_ref: str
+    source_refs: list[str] = Field(default_factory=list)
     created_at: str
     tags: list[str] = Field(default_factory=list)
 
@@ -23,6 +25,12 @@ class MemoryRecord(BaseModel):
 def memory_dir_for_project(project_path: str) -> Path:
     path = Path(project_path)
     return path.with_name(f"{path.name}-memory")
+
+
+def memory_id_for_source(kind: str, source_ref: str) -> str:
+    digest = hashlib.sha256(source_ref.encode("utf-8")).hexdigest()[:16]
+    safe_kind = re.sub(r"[^a-z0-9_]+", "_", kind.lower()).strip("_")
+    return f"{safe_kind}-{digest}"
 
 
 def sanitize_memory_summary(text: str, max_chars: int = 1200) -> str:

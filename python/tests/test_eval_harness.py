@@ -5,9 +5,11 @@ from pathlib import Path
 
 from agent_service.eval_harness import (
     EvalCase,
+    EvalCategorySummary,
     EvalCaseResult,
     EvalRunSummary,
     load_eval_cases,
+    load_eval_cases_from_dir,
     run_eval_cases,
     write_eval_summary,
 )
@@ -47,6 +49,7 @@ def test_write_eval_summary_writes_json_and_markdown(tmp_path: Path) -> None:
         total=1,
         passed=1,
         failed=0,
+        categories={"router": EvalCategorySummary(total=1, passed=1, failed=0)},
         results=[
             EvalCaseResult(
                 case_id="router-hello",
@@ -61,7 +64,23 @@ def test_write_eval_summary_writes_json_and_markdown(tmp_path: Path) -> None:
 
     assert json_path.read_text(encoding="utf-8").startswith("{")
     markdown = markdown_path.read_text(encoding="utf-8")
+    assert "| router | 1 | 1 | 0 |" in markdown
     assert "| router-hello | router | PASS |" in markdown
+
+
+def test_load_eval_cases_from_dir_reads_jsonl_files_in_name_order(tmp_path: Path) -> None:
+    (tmp_path / "b.jsonl").write_text(
+        '{"case_id":"router-b","category":"router","input":{"task_id":"router-b","content":"Hello"},"expected":{"intent":"chat"}}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "a.jsonl").write_text(
+        '{"case_id":"router-a","category":"router","input":{"task_id":"router-a","content":"Hello"},"expected":{"intent":"chat"}}\n',
+        encoding="utf-8",
+    )
+
+    cases = load_eval_cases_from_dir(tmp_path)
+
+    assert [case.case_id for case in cases] == ["router-a", "router-b"]
 
 
 def test_run_eval_cases_handles_router_case() -> None:
@@ -81,6 +100,11 @@ def test_run_eval_cases_handles_router_case() -> None:
 
     assert summary.total == 1
     assert summary.failed == 0
+    assert summary.categories["router"] == EvalCategorySummary(
+        total=1,
+        passed=1,
+        failed=0,
+    )
     assert summary.results[0].details["intent"] == "task"
 
 
@@ -146,6 +170,42 @@ def test_run_eval_cases_handles_research_case_without_network() -> None:
 
     assert summary.failed == 0
     assert summary.results[0].details["citationPresent"] is True
+
+
+def test_run_eval_cases_handles_security_permission_case() -> None:
+    summary = run_eval_cases(
+        [
+            EvalCase(
+                case_id="security-network-denied",
+                category="security",
+                input={
+                    "kind": "permission",
+                    "permissions": ["network"],
+                    "default_allowed_permissions": [],
+                },
+                expected={"ok": False, "errorCode": "permission_required"},
+            )
+        ]
+    )
+
+    assert summary.failed == 0
+    assert summary.categories["security"].passed == 1
+
+
+def test_run_eval_cases_handles_security_sandbox_case() -> None:
+    summary = run_eval_cases(
+        [
+            EvalCase(
+                case_id="security-sandbox-network-import",
+                category="security",
+                input={"kind": "sandbox", "script": "import socket\nprint('{}')\n"},
+                expected={"ok": False, "errorCode": "network_import_denied"},
+            )
+        ]
+    )
+
+    assert summary.failed == 0
+    assert summary.results[0].details["errorCode"] == "network_import_denied"
 
 
 def test_eval_harness_writes_summary_for_loaded_cases(tmp_path: Path) -> None:

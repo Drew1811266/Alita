@@ -99,6 +99,44 @@ class RuntimeNotice(BaseModel):
     actualDurationMs: int | None = None
 
 
+class GraphArgumentTemplate(BaseModel):
+    values: dict[str, Any] = Field(default_factory=dict)
+    required: list[str] = Field(default_factory=list)
+
+
+class GraphInputMapping(BaseModel):
+    source: str
+    sourceKey: str
+    targetArgument: str
+    required: bool = True
+
+
+class GraphExpectedArtifact(BaseModel):
+    name: str
+    pathTemplate: str
+    mimeType: str | None = None
+    sourceArgument: str | None = None
+
+
+class GraphPermissionScope(BaseModel):
+    permissions: list[str] = Field(default_factory=list)
+    filesystem: str | None = None
+    network: bool = False
+    sandbox: bool = False
+    timeoutMs: int | None = None
+
+
+class GraphToolBinding(BaseModel):
+    toolId: str | None = None
+    providerId: str | None = None
+    operation: str | None = None
+    argumentsTemplate: GraphArgumentTemplate | None = None
+    inputMappings: list[GraphInputMapping] = Field(default_factory=list)
+    outputSchema: dict[str, Any] | None = None
+    expectedArtifacts: list[GraphExpectedArtifact] = Field(default_factory=list)
+    permissionScope: GraphPermissionScope | None = None
+
+
 class GraphNode(BaseModel):
     nodeId: str
     nodeType: Literal[
@@ -124,6 +162,7 @@ class GraphNode(BaseModel):
     outputPorts: list[dict[str, Any]] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
     toolRef: str | None = None
+    toolBinding: GraphToolBinding | None = None
     modelRef: str | None = None
     summary: str
     createdBy: str

@@ -1,1 +1,10 @@
 {"case_id":"research-citation-smoke","category":"research","input":{"task_id":"research-citation-smoke","content":"Research Python packaging."},"expected":{"requiresCitation":true},"tags":["smoke","offline"]}
+{"case_id":"research-build-backends","category":"research","input":{"task_id":"research-build-backends","content":"Research Python build backends."},"expected":{"requiresCitation":true},"tags":["offline"]}
+{"case_id":"research-package-metadata","category":"research","input":{"task_id":"research-package-metadata","content":"Research Python package metadata."},"expected":{"requiresCitation":true},"tags":["offline"]}
+{"case_id":"research-pip-workflows","category":"research","input":{"task_id":"research-pip-workflows","content":"Research pip workflows."},"expected":{"requiresCitation":true},"tags":["offline"]}
+{"case_id":"research-publishing","category":"research","input":{"task_id":"research-publishing","content":"Research Python publishing workflows."},"expected":{"requiresCitation":true},"tags":["offline"]}
+{"case_id":"research-packaging-tools","category":"research","input":{"task_id":"research-packaging-tools","content":"Research Python packaging tools."},"expected":{"requiresCitation":true},"tags":["offline"]}
+{"case_id":"research-project-config","category":"research","input":{"task_id":"research-project-config","content":"Research Python project configuration."},"expected":{"requiresCitation":true},"tags":["offline"]}
+{"case_id":"research-wheel-sdist","category":"research","input":{"task_id":"research-wheel-sdist","content":"Research Python wheel and source distributions."},"expected":{"requiresCitation":true},"tags":["offline"]}
+{"case_id":"research-dependency-management","category":"research","input":{"task_id":"research-dependency-management","content":"Research Python dependency management."},"expected":{"requiresCitation":true},"tags":["offline"]}
+{"case_id":"research-official-guide","category":"research","input":{"task_id":"research-official-guide","content":"Research the official Python packaging guide."},"expected":{"requiresCitation":true},"tags":["offline"]}

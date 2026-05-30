@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from agent_service.model_tool_adapter import ModelToolCall, model_safe_tool_name
 from agent_service.model_client import ChatMessage
+from agent_service.model_client import ChatWithToolsResponse
 from agent_service.react_controller import ReActController, ReActPolicy
 from agent_service.tool_protocol import (
     ToolResultContent,
@@ -21,9 +23,46 @@ class SequencedModel:
         return self.replies.pop(0)
 
 
+class NativeToolModel:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        raise AssertionError("native tool-call path should not call chat()")
+
+    def chat_with_tools(
+        self,
+        messages,
+        *,
+        tools,
+        tool_choice="auto",
+        temperature=None,
+        max_tokens=None,
+        policy=None,
+    ):
+        self.calls.append(
+            {"messages": messages, "tools": tools, "tool_choice": tool_choice}
+        )
+        if len(self.calls) == 1:
+            return ChatWithToolsResponse(
+                content="",
+                tool_calls=[
+                    ModelToolCall(
+                        id="call-native-1",
+                        name=model_safe_tool_name("internal:file.inspect"),
+                        arguments={"path": "README.md"},
+                    )
+                ],
+            )
+        return ChatWithToolsResponse(content="Native final answer.", tool_calls=[])
+
+
 class RecordingGateway:
     def __init__(self) -> None:
         self.calls: list[UnifiedToolInvocation] = []
+
+    def list_tools(self) -> list[UnifiedToolDefinition]:
+        return [_tool()]
 
     def call_tool(self, invocation: UnifiedToolInvocation) -> UnifiedToolResult:
         self.calls.append(invocation)
@@ -105,6 +144,80 @@ def test_react_controller_runs_one_tool_call_then_final_answer() -> None:
     assert result.observations[0]["artifacts"] == ["result.md"]
     assert len(model.calls) == 2
     assert "tool observation" in model.calls[1][-1].content
+
+
+def test_react_controller_accepts_wrapped_json_action_for_local_models() -> None:
+    model = SequencedModel(
+        [
+            'Thought: inspect first.\n{"kind":"tool","tool_id":"internal:file.inspect","arguments":{"path":"README.md"}}',
+            '{"kind":"final","text":"Wrapped JSON worked."}',
+        ]
+    )
+    gateway = RecordingGateway()
+
+    result = ReActController(model_client=model, gateway=gateway).run(
+        messages=[ChatMessage(role="user", content="Inspect the file.")],
+        tools=[_tool()],
+        base_invocation=_base_invocation(),
+        policy=ReActPolicy(
+            enabled=True,
+            max_steps=3,
+            max_tool_calls=2,
+            allowed_tool_ids=["internal:file.inspect"],
+            allowed_permissions=["read_project_files"],
+        ),
+    )
+
+    assert result.ok is True
+    assert gateway.calls[0].arguments == {"path": "README.md"}
+    assert result.text == "Wrapped JSON worked."
+
+
+def test_react_controller_rejects_ambiguous_wrapped_json_action() -> None:
+    model = SequencedModel(
+        [
+            '{"kind":"tool","tool_id":"internal:file.inspect","arguments":{}}\n'
+            '{"kind":"final","text":"done"}'
+        ]
+    )
+
+    result = ReActController(model_client=model, gateway=RecordingGateway()).run(
+        messages=[ChatMessage(role="user", content="Use a tool.")],
+        tools=[_tool()],
+        base_invocation=_base_invocation(),
+        policy=ReActPolicy(enabled=True, allowed_tool_ids=["internal:file.inspect"]),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "malformed_action"
+
+
+def test_react_controller_executes_native_tool_calls_through_gateway() -> None:
+    model = NativeToolModel()
+    gateway = RecordingGateway()
+
+    result = ReActController(model_client=model, gateway=gateway).run(
+        messages=[ChatMessage(role="user", content="Inspect the file.")],
+        tools=[_tool()],
+        base_invocation=_base_invocation(),
+        policy=ReActPolicy(
+            enabled=True,
+            use_native_tool_calls=True,
+            max_steps=3,
+            max_tool_calls=2,
+            allowed_tool_ids=["internal:file.inspect"],
+            allowed_permissions=["read_project_files"],
+        ),
+    )
+
+    assert result.ok is True
+    assert result.text == "Native final answer."
+    assert result.tool_call_count == 1
+    assert gateway.calls[0].invocation_id == "call-native-1"
+    assert gateway.calls[0].tool_id == "internal:file.inspect"
+    assert gateway.calls[0].arguments == {"path": "README.md"}
+    assert model.calls[0]["tool_choice"] == "auto"
+    assert model.calls[0]["tools"][0]["function"]["name"] == "internal__file__inspect"
 
 
 def test_react_controller_rejects_disallowed_tool_id() -> None:

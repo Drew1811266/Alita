@@ -64,9 +64,20 @@
 脚本会执行：
 
 - 前端 TypeScript 类型检查：`npm run frontend:lint`
-- Python 测试：`python -m pytest`
+- Python 测试：在 `python` 目录运行 `python -m pytest`
+- Agent deterministic eval gate：`python -m agent_service.eval_harness --cases-dir evals --output ..\.codex-run\evals`
+- 如果 Rust 测试需要而 sidecar binary 不存在，会先运行 `scripts\build-sidecar.ps1`
+- 如果 Tauri 资源目录不存在，会创建 `src-tauri\resources\llama-cpp`
 - Rust 格式检查：`cargo fmt --check`
 - Rust 测试：`cargo test`
+
+也可以单独运行 Agent eval：
+
+```powershell
+npm run agent:eval
+```
+
+该命令会执行 router、planner、tool、research、security 五类 deterministic eval，并在任一 case 失败时返回非零退出码。
 
 当前机器如果未安装 Visual Studio Build Tools 的 C++ 工具链和 Windows SDK，Rust 测试会因为缺少 `link.exe` 被阻塞。这个结果代表本机编译环境不完整，不代表 Rust 源码测试断言失败。
 

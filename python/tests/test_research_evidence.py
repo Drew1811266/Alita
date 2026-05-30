@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from agent_service.research_evidence import (
     attach_read_content,
+    claim_level_citation_diagnostics,
     citation_ids_in_markdown,
     content_hash,
     evidence_from_search_results,
+    research_claims_from_markdown,
     normalize_source_url,
     validate_citation_coverage,
 )
@@ -91,3 +93,32 @@ def test_attach_read_content_adds_excerpt_and_hash() -> None:
     assert source.content_hash
     assert source.content_excerpt.startswith("Long source content")
     assert len(source.content_excerpt) <= 600
+
+
+def test_research_claims_report_claims_without_evidence_refs() -> None:
+    evidence = evidence_from_search_results(
+        "Question",
+        [
+            {
+                "title": "Accepted",
+                "url": "https://example.com/a",
+                "snippet": "Useful.",
+                "accepted": True,
+            }
+        ],
+    )
+
+    claims = research_claims_from_markdown(
+        "Supported claim [S1].\n\nUnsupported claim.",
+        evidence,
+    )
+
+    assert claims[0].claim_id == "C1"
+    assert claims[0].evidence_refs[0].source_id == "S1"
+    assert claims[0].diagnostics == []
+    assert claims[1].claim_id == "C2"
+    assert claims[1].diagnostics == ["missing_evidence"]
+    assert claim_level_citation_diagnostics(
+        "Supported claim [S1].\n\nUnsupported claim.",
+        evidence,
+    ) == ["claim_C2_missing_evidence"]

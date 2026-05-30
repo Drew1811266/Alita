@@ -19,8 +19,10 @@ from agent_service.execution import (
 from agent_service.execution_graph import compile_execution_graph
 from agent_service.graph import run_agent
 from agent_service.harness_errors import HarnessError
-from agent_service.model_client import ChatMessage
+from agent_service.model_client import ChatMessage, ChatWithToolsResponse
+from agent_service.model_tool_adapter import ModelToolCall, model_safe_tool_name
 from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
+from agent_service.memory_store import MemoryStore
 from agent_service.research_evidence import evidence_from_search_results
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import RunRegistry
@@ -33,6 +35,12 @@ from agent_service.schemas import (
 )
 from agent_service.script_review import script_review_fingerprint as canonical_script_review_fingerprint
 from agent_service.tool_execution import ToolResult
+from agent_service.tool_protocol import (
+    ToolResultContent,
+    ToolSafetyPolicy,
+    UnifiedToolDefinition,
+    UnifiedToolResult,
+)
 from agent_service.tool_registry import ToolManifestSpec, ToolOperationSpec, ToolRegistry
 from agent_service.web_research import build_research_graph
 from agent_service.web_search import SearchFailure, SearchResponse, SearchResult
@@ -1153,6 +1161,150 @@ def test_planned_executor_uses_execution_graph_tool_binding(tmp_path: Path) -> N
     assert "requires at least one attachment" in error.value.message
 
 
+def test_planned_fixed_tool_executes_from_runtime_binding_without_tool_id_branch(
+    tmp_path: Path,
+) -> None:
+    class EchoGateway:
+        provider_id = "echo"
+
+        def __init__(self) -> None:
+            self.calls = []
+
+        def list_tools(self):
+            return [
+                UnifiedToolDefinition(
+                    id="internal:test.echo_values",
+                    source="internal",
+                    provider_id="internal",
+                    provider_tool_name="test.echo_values",
+                    display_name="Echo Values",
+                    description="Echo rendered values.",
+                    capabilities=["test.echo"],
+                    input_schema={
+                        "type": "object",
+                        "required": [
+                            "operation",
+                            "message",
+                            "source_text",
+                            "metadata_value",
+                        ],
+                        "properties": {
+                            "operation": {
+                                "type": "string",
+                                "enum": ["echo_values"],
+                            },
+                            "message": {"type": "string"},
+                            "source_text": {"type": "string"},
+                            "metadata_value": {"type": "string"},
+                        },
+                    },
+                    output_schema={"type": "object"},
+                    permissions=[],
+                    safety_policy=ToolSafetyPolicy(
+                        filesystem="none",
+                        network="none",
+                        user_approval="never",
+                        secrets="none",
+                        sandbox="not_required",
+                        max_runtime_ms=5000,
+                    ),
+                    timeout_ms=5000,
+                )
+            ]
+
+        def call_tool(self, invocation):
+            self.calls.append(invocation)
+            return UnifiedToolResult(
+                ok=True,
+                content=[
+                    ToolResultContent(
+                        type="json",
+                        value={
+                            "echo": invocation.arguments["message"],
+                            "source_text": invocation.arguments["source_text"],
+                            "metadata_value": invocation.arguments["metadata_value"],
+                        },
+                    )
+                ],
+                structured_content={
+                    "echo": invocation.arguments["message"],
+                    "source_text": invocation.arguments["source_text"],
+                    "metadata_value": invocation.arguments["metadata_value"],
+                },
+                artifacts=[],
+                metadata={"gateway": "echo"},
+            )
+
+    echo_node = build_node(
+        "echo-node",
+        "fixed_tool",
+        ["source-node"],
+        tool_ref="internal:test.echo_values",
+    )
+    echo_node["toolBinding"] = {
+        "operation": "echo_values",
+        "argumentsTemplate": {
+            "values": {
+                "operation": "echo_values",
+                "message": "hello from binding",
+                "metadata_value": "{graph.metadata.echoLabel}",
+            },
+            "required": ["operation", "message", "source_text", "metadata_value"],
+        },
+        "inputMappings": [
+            {
+                "source": "source-node",
+                "sourceKey": "text",
+                "targetArgument": "source_text",
+            }
+        ],
+    }
+    request = RunGraphRequest(
+        task_id="task-generic-fixed-tool",
+        run_id="run-generic-fixed-tool",
+        project_path=str(tmp_path / "project.alita"),
+        attachments=[],
+        graph=RunGraph(
+            graphId="generic-fixed-tool-graph",
+            nodes=[
+                build_node("source-node", "planning", []),
+                echo_node,
+            ],
+            edges=[],
+            metadata={
+                "taskKind": "generic_tool",
+                "echoLabel": "phase3",
+            },
+        ),
+    )
+    gateway = EchoGateway()
+    executor = PlannedTaskExecutor(
+        request,
+        tool_gateway=gateway,
+        execution_graph=compile_execution_graph(request),
+    )
+
+    output = executor.run(
+        "echo-node",
+        {"source-node": NodeOutput(values={"text": "upstream text"})},
+    )
+
+    assert len(gateway.calls) == 1
+    invocation = gateway.calls[0]
+    assert invocation.tool_id == "internal:test.echo_values"
+    assert invocation.arguments == {
+        "operation": "echo_values",
+        "message": "hello from binding",
+        "metadata_value": "phase3",
+        "source_text": "upstream text",
+    }
+    assert output.values == {
+        "echo": "hello from binding",
+        "source_text": "upstream text",
+        "metadata_value": "phase3",
+    }
+
+
 def test_missing_fixed_tool_binding_fails_before_run_started(tmp_path: Path) -> None:
     request = RunGraphRequest(
         task_id="task-missing-binding",
@@ -1272,6 +1424,104 @@ def test_react_enabled_model_node_records_observations(tmp_path: Path) -> None:
         == "internal:document.receive_attachment"
     )
     assert gateway.calls[0].tool_id == "internal:document.receive_attachment"
+
+
+def test_react_native_tool_calls_metadata_routes_through_gateway(tmp_path: Path) -> None:
+    class NativeExecutionModel:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def chat(
+            self,
+            messages: list[ChatMessage],
+            *,
+            temperature=None,
+            max_tokens=None,
+            policy=None,
+        ) -> str:
+            raise AssertionError("native metadata should call chat_with_tools()")
+
+        def chat_with_tools(
+            self,
+            messages: list[ChatMessage],
+            *,
+            tools,
+            tool_choice="auto",
+            temperature=None,
+            max_tokens=None,
+            policy=None,
+        ) -> ChatWithToolsResponse:
+            self.calls.append(
+                {"messages": messages, "tools": tools, "tool_choice": tool_choice}
+            )
+            if len(self.calls) == 1:
+                return ChatWithToolsResponse(
+                    content="",
+                    tool_calls=[
+                        ModelToolCall(
+                            id="call-native-receive",
+                            name=model_safe_tool_name(
+                                "internal:document.receive_attachment"
+                            ),
+                            arguments={
+                                "operation": "receive_attachment",
+                                "paths": "README.md",
+                            },
+                        )
+                    ],
+                )
+            return ChatWithToolsResponse(
+                content="Native inspection complete.",
+                tool_calls=[],
+            )
+
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "model-reasoning",
+                "model",
+                [],
+                model_ref="local-task-reasoner",
+            ),
+            build_node("task-output", "output", ["model-reasoning"]),
+        ],
+        graph_metadata={
+            "plannerChain": {"strategy": "legacy_task_planner"},
+            "react": {
+                "enabled": True,
+                "nativeToolCalls": True,
+                "allowedToolIds": ["internal:document.receive_attachment"],
+                "maxSteps": 2,
+                "maxToolCalls": 1,
+            },
+        },
+    )
+    gateway = RecordingGateway()
+    model = NativeExecutionModel()
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=model,
+            tool_gateway=gateway,
+        )
+    )
+
+    assert events[-1].type == "task.completed"
+    model_record = RunJournal(
+        project_path=request.project_path,
+        run_id=request.run_id,
+    ).read_node("model-reasoning")
+    assert model_record["values"]["text"] == "Native inspection complete."
+    assert model_record["values"]["react"]["toolCallCount"] == 1
+    assert gateway.calls[0].invocation_id == "call-native-receive"
+    assert gateway.calls[0].tool_id == "internal:document.receive_attachment"
+    assert gateway.calls[0].arguments == {
+        "operation": "receive_attachment",
+        "paths": "README.md",
+    }
+    assert model.calls[0]["tool_choice"] == "auto"
 
 
 def test_react_metadata_string_false_does_not_enable_react(tmp_path: Path) -> None:
@@ -1572,7 +1822,13 @@ def test_execution_emits_replan_suggestion_for_empty_node_output(
     )
     assert suggestion_event.payload["operations"][0]["op"] == "retry_node"
     assert suggestion_event.payload["operations"][0]["node_id"] == "content-organize"
+    assert suggestion_event.payload["actions"][0]["kind"] == "retry"
     assert events[-1].type == "task.failed"
+    failure_record = RunJournal(
+        project_path=request.project_path,
+        run_id=request.run_id,
+    ).read_node("content-organize")
+    assert failure_record["verifierDiagnostics"][0]["code"] == "empty_node_output"
 
 
 def test_execution_fails_when_final_verifier_rejects_output(tmp_path: Path) -> None:
@@ -1659,6 +1915,27 @@ def test_document_flow_exports_markdown_artifact(tmp_path: Path) -> None:
     assert "outline result" in exported_content
     assert "report result" in exported_content
     assert events[-1].type == "task.completed"
+
+
+def test_run_completion_auto_writes_memory_records(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[build_node("task-output", "output", [])],
+        graph_metadata={"memory": {"autoWrite": True}},
+    )
+
+    class OutputExecutor:
+        def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+            return NodeOutput(values={"text": "api_key=sk-secret completed"})
+
+    events = list(run_graph_events(request, executor=OutputExecutor()))
+
+    assert events[-1].type == "task.completed"
+    records = MemoryStore(request.project_path).list()
+    assert [record.kind for record in records] == ["graph_summary"]
+    assert records[0].source_refs == [request.run_id, request.task_id]
+    assert "sk-secret" not in records[0].summary
+
 
 def test_planned_output_node_fails_when_non_planning_dependency_output_is_missing(
     tmp_path: Path,

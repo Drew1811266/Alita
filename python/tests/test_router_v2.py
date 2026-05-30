@@ -99,6 +99,19 @@ def test_how_to_question_with_task_verb_remains_local_inquiry() -> None:
     assert decision.legacy_route["inquiry"]["mode"] == "local"
 
 
+def test_deterministic_route_treats_direct_tool_use_as_task() -> None:
+    decision = deterministic_route(
+        UserMessage(
+            task_id="tool-use-task",
+            content="Use the echo values tool to echo this request.",
+        )
+    )
+
+    assert decision.intent == "task"
+    assert decision.task_type == "unknown"
+    assert decision.legacy_route["intent"]["kind"] == "task"
+
+
 def test_markdown_conversion_with_attachment_remains_task() -> None:
     decision = deterministic_route(
         UserMessage(

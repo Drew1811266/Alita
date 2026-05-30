@@ -6,6 +6,7 @@ from agent_service.context_policy import budget_for_mode, select_memory_for_cont
 from agent_service.memory_store import (
     MemoryRecord,
     MemoryStore,
+    memory_id_for_source,
     memory_dir_for_project,
     sanitize_memory_summary,
 )
@@ -24,6 +25,7 @@ def test_memory_store_appends_and_lists_records(tmp_path: Path) -> None:
         kind="graph_summary",
         summary="Generated a report.",
         source_ref="run-1",
+        source_refs=["run-1", "file-export"],
         created_at="2026-05-29T00:00:00Z",
         tags=["report"],
     )
@@ -93,3 +95,19 @@ def test_context_policy_selects_recent_allowed_memory_records() -> None:
 
     assert [record.memory_id for record in selected] == ["new", "pref"]
     assert budget.max_chars > 0
+
+
+def test_memory_id_for_source_is_stable_and_path_safe() -> None:
+    first = memory_id_for_source(
+        "artifact_summary",
+        r"D:\Project\secret\report.md",
+    )
+    second = memory_id_for_source(
+        "artifact_summary",
+        r"D:\Project\secret\report.md",
+    )
+
+    assert first == second
+    assert first.startswith("artifact_summary-")
+    assert "Project" not in first
+    assert "report.md" not in first

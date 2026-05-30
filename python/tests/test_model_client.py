@@ -6,6 +6,7 @@ import pytest
 
 from agent_service.model_client import (
     AgentModelClientConfig,
+    ChatWithToolsResponse,
     ChatMessage,
     LlamaCppModelClient,
     ModelClientConfig,
@@ -468,6 +469,75 @@ def test_openai_compatible_client_posts_chat_request_with_authorization() -> Non
             {"Authorization": "Bearer sk-test", "Content-Type": "application/json"},
         )
     ]
+
+
+def test_openai_compatible_client_posts_native_tool_payload_and_parses_tool_calls() -> None:
+    calls: list[tuple[str, dict, float, dict[str, str]]] = []
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "internal__file__inspect",
+                "description": "Inspect a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                },
+            },
+        }
+    ]
+
+    def transport(url: str, payload: dict, timeout: float, headers: dict[str, str]) -> dict:
+        calls.append((url, deepcopy(payload), timeout, headers))
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "internal__file__inspect",
+                                    "arguments": '{"path":"README.md"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4.1",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+            supports_native_tool_calls=True,
+        ),
+        transport=transport,
+    )
+
+    result = client.chat_with_tools(
+        [ChatMessage(role="user", content="inspect")],
+        tools=tools,
+        tool_choice="auto",
+    )
+
+    assert isinstance(result, ChatWithToolsResponse)
+    assert result.content == ""
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].id == "call_1"
+    assert result.tool_calls[0].name == "internal__file__inspect"
+    assert result.tool_calls[0].arguments == {"path": "README.md"}
+    payload = calls[0][1]
+    assert payload["tools"] == tools
+    assert payload["tool_choice"] == "auto"
+    assert payload["stream"] is False
 
 
 def test_openai_compatible_client_streams_chat_chunks() -> None:

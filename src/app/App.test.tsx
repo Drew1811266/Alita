@@ -5,9 +5,9 @@ import {
   App,
   buildResearchChoiceSubmitPayload,
   buildTemporaryScriptPermissionSubmitPayload,
-  selectAgentAttachments,
   shouldRefreshAsrForPreferencesUpdate,
 } from "./App";
+import { selectAgentAttachments } from "../features/chat/useChatSessionController";
 import type { AgentNode, ChatAttachment, NodeGraph } from "../shared/types";
 import type { PendingResearchChoice } from "./backendEvents";
 import type { PreferencesView } from "../features/preferences/preferencesApi";
@@ -68,12 +68,18 @@ describe("App", () => {
   });
 
   it("composes extracted feature controllers in the workbench shell", () => {
+    expect(appSource).toContain("useProjectController()");
+    expect(appSource).toContain("useChatSessionController()");
     expect(appSource).toContain("useGraphRunController({");
+    expect(appSource).toContain("useGraphRuntimeController()");
+    expect(appSource).toContain("usePermissionController");
     expect(appSource).toContain("useArtifactPreviewController()");
     expect(appSource).toContain("usePreferencesController()");
     expect(appSource).toContain("useVoiceInputController({");
     expect(appSource).not.toContain("const [voiceInput, setVoiceInput]");
     expect(appSource).not.toContain("const [messages, setMessages]");
+    expect(appSource).not.toContain("const [draft, setDraft]");
+    expect(appSource).not.toContain("const [activeProject, setActiveProject]");
   });
 
   it("refreshes ASR status when the speech-to-text assignment changes", () => {

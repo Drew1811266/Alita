@@ -3,8 +3,9 @@ from __future__ import annotations
 import pytest
 
 from agent_service.goal_spec import GoalSpec
+from agent_service.execution_graph import compile_execution_graph
 from agent_service.graph_compiler import compile_task_graph_to_node_graph
-from agent_service.schemas import RunGraph
+from agent_service.schemas import RunGraph, RunGraphRequest
 from agent_service.task_graph import (
     TaskGraph,
     TaskNode,
@@ -120,6 +121,31 @@ def test_compile_document_task_graph_to_existing_node_graph_shape() -> None:
     assert "toolRef" not in nodes_by_id["file-export"]
     assert "modelRef" not in nodes_by_id["file-export"]
     assert set(node_graph) == {"graphId", "nodes", "edges"}
+
+
+def test_compile_document_graph_runtime_bindings_include_manifest_operations() -> None:
+    task_graph = build_document_task_graph("task-document-runtime", _document_goal_spec())
+    node_graph = compile_task_graph_to_node_graph(task_graph)
+    run_graph = RunGraph.model_validate(node_graph)
+    request = RunGraphRequest(
+        task_id="task-document-runtime",
+        project_path="D:\\Project\\demo.alita",
+        graph=run_graph,
+    )
+
+    execution_graph = compile_execution_graph(request)
+
+    parse_binding = execution_graph.node_by_id("document-parse").tool_binding
+    typst_binding = execution_graph.node_by_id("typst-export").tool_binding
+    assert parse_binding is not None
+    assert parse_binding.operation == "convert_local_file"
+    assert parse_binding.expected_artifacts[0].name == "markdown"
+    assert typst_binding is not None
+    assert typst_binding.operation == "compile_report_pdf"
+    assert [artifact.name for artifact in typst_binding.expected_artifacts] == [
+        "typst_source",
+        "pdf",
+    ]
 
 
 def test_compile_task_graph_requires_node_ui() -> None:

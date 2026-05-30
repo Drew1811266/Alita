@@ -135,13 +135,18 @@ def test_model_tool_call_executes_through_gateway_provider() -> None:
             task_id="task-1",
             tool_id=tool.id,
             arguments={},
-            allowed_roots=[],
+            project_path="D:\\Project\\demo.alita",
+            allowed_roots=["D:\\Project"],
             requested_permissions=[],
         ),
     )
 
     assert results[0].ok is True
-    assert results[0].metadata == {"tool": "internal:document.markitdown_convert"}
+    assert results[0].metadata == {
+        "tool": "internal:document.markitdown_convert",
+        "authority": "allowed",
+        "authorityCode": "allowed",
+    }
 
 
 def test_safe_observation_payload_omits_secret_values_and_uses_artifact_names() -> None:
