@@ -4,7 +4,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from agent_service.context_policy import budget_for_mode, select_memory_for_context
 from agent_service.goal_spec import GoalSpec, TaskType
+from agent_service.memory_store import MemoryRecord, sanitize_memory_summary
 from agent_service.schemas import UserMessage
 from agent_service.tool_gateway import UnifiedToolGateway
 from agent_service.tool_protocol import UnifiedToolDefinition
@@ -39,6 +41,7 @@ class ContextBundle(BaseModel):
     attachments: list[AttachmentContext] = Field(default_factory=list)
     available_tools: list[ToolCapability] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
+    memory_summaries: list[str] = Field(default_factory=list)
 
 
 def build_context_bundle(
@@ -48,8 +51,12 @@ def build_context_bundle(
     tool_registry: ToolRegistry,
     tool_gateway: UnifiedToolGateway | None = None,
     disabled_tool_ids: list[str] | None = None,
+    memory_records: list[MemoryRecord] | None = None,
+    context_mode: str = "planning",
 ) -> ContextBundle:
     project_file = Path(project_path)
+    budget = budget_for_mode(context_mode)
+    selected_memory = select_memory_for_context(memory_records or [], budget)
     available_tools = (
         _tool_capabilities_from_unified_catalog(
             resolve_tools_for_task(
@@ -79,6 +86,10 @@ def build_context_bundle(
         ],
         available_tools=available_tools,
         constraints=list(goal_spec.constraints),
+        memory_summaries=[
+            sanitize_memory_summary(record.summary, max_chars=budget.max_chars)
+            for record in selected_memory
+        ],
     )
 
 

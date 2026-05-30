@@ -108,6 +108,10 @@ def _run_typst(invocation: ToolInvocation) -> ToolResult:
     )
 
 
+def _run_receive_attachment(invocation: ToolInvocation) -> ToolResult:
+    return ToolResult(values={"paths": str(invocation.arguments.get("paths", ""))})
+
+
 class ToolExecutor:
     def __init__(
         self,
@@ -119,6 +123,10 @@ class ToolExecutor:
             _default_tool_packages_root()
         )
         self.adapters: dict[ToolAdapterKey, ToolAdapter] = {
+            (
+                "document.receive_attachment",
+                "receive_attachment",
+            ): _run_receive_attachment,
             ("document.markitdown_convert", "convert_local_file"): _run_markitdown,
             ("document.typst_compile", "compile_report_pdf"): _run_typst,
         }

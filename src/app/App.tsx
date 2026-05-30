@@ -1,6 +1,6 @@
 import "./app.css";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { NodeCanvas } from "../features/canvas/NodeCanvas";
 import { ArtifactPreviewPanel } from "../features/artifacts/ArtifactPreviewPanel";
@@ -9,45 +9,26 @@ import {
   openArtifact,
   readArtifactText,
   revealArtifact,
-  type ArtifactTextPreview,
 } from "../features/artifacts/artifactApi";
 import { resolvePreviewArtifactForNode } from "../features/artifacts/artifactPreview";
 import {
   detectArtifactPreviewKind,
   shouldReadArtifactText,
 } from "../features/artifacts/artifactPreviewKind";
+import { useArtifactPreviewController } from "../features/artifacts/useArtifactPreviewController";
 import { pickChatAttachments } from "../features/chat/attachmentApi";
 import { ChatPanel } from "../features/chat/ChatPanel";
-import {
-  getAsrStatus,
-  transcribeVoiceAudio,
-} from "../features/voice/asrApi";
-import {
-  buildLevelBuckets,
-  encodeWav,
-  MAX_RECORDING_SECONDS,
-} from "../features/voice/audioCapture";
 import {
   insertTranscriptIntoDraft,
   type DraftSelection,
 } from "../features/voice/draftInsertion";
-import {
-  createInitialVoiceInput,
-  voiceFailed,
-  voiceRecording,
-  voiceTranscribing,
-} from "../features/voice/voiceSession";
-import {
-  canStartVoiceRecording,
-  canStopVoiceRecording,
-} from "../features/voice/voiceRecordingGuards";
+import { useVoiceInputController } from "../features/voice/useVoiceInputController";
 import {
   addModelFile,
   addSpeechToTextModelDirectory,
   deleteApiProviderConfig,
   deleteMcpToolProviderConfig,
   fetchApiProviderModels,
-  getPreferences,
   importModelFile,
   pickModelDirectory,
   pickModelFile,
@@ -71,6 +52,7 @@ import {
   type SaveMcpToolProviderPayload,
 } from "../features/preferences/preferencesApi";
 import { PreferencesDialog } from "../features/preferences/PreferencesDialog";
+import { usePreferencesController } from "../features/preferences/usePreferencesController";
 import {
   createProject,
   openProject,
@@ -93,9 +75,12 @@ import {
   type TemporaryScriptPermissionDecision,
   type TemporaryScriptPermissionPayload,
 } from "../features/task/useTaskEvents";
+import {
+  reduceGraphRunControllerEvents,
+  useGraphRunController,
+} from "../features/task/useGraphRunController";
 import { WorkbenchTopBar } from "../features/workbench/WorkbenchTopBar";
 import {
-  reduceBackendEvents,
   toGraphOverwriteSubmitChoice,
   type PendingGraphOverwriteChoice,
   type PendingResearchChoice,
@@ -150,6 +135,12 @@ function createMessage(
   };
 }
 
+function resolveLocalStateAction<T>(action: LocalStateAction<T>, current: T): T {
+  return typeof action === "function"
+    ? (action as (current: T) => T)(current)
+    : action;
+}
+
 export const createAgentSession = async (): Promise<string | null> => {
   try {
     return await prepareAgentModelSession();
@@ -168,6 +159,8 @@ type SubmitUserMessageWithStreamFallbackArgs = {
   submitFallback: (payload: SubmitMessagePayload) => Promise<BackendEvent[]>;
   onEvent: (event: BackendEvent) => void;
 };
+
+type LocalStateAction<T> = T | ((current: T) => T);
 
 async function submitUserMessageWithStreamFallback({
   payload,
@@ -209,109 +202,205 @@ export function App() {
   const [activeProject, setActiveProject] = useState<AlitaProject | null>(
     null,
   );
-  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  const graphRunController = useGraphRunController({
+    messages: initialMessages,
+  });
+  const {
+    messages,
+    graph,
+    runHistory,
+    artifacts,
+    pendingResearchChoice,
+    pendingGraphOverwriteChoice,
+    activeRunId,
+    dirty,
+  } = graphRunController.state;
+  const setGraphRunState = graphRunController.setState;
   const messagesRef = useRef<ChatMessage[]>(initialMessages);
   const [draft, setDraft] = useState("");
-  const [voiceInput, setVoiceInput] = useState(() =>
-    createInitialVoiceInput(null),
+  const handleVoiceTranscript = useCallback(
+    (transcript: string, selection: DraftSelection | null) => {
+      setDraft((currentDraft) =>
+        insertTranscriptIntoDraft({
+          currentDraft,
+          transcript,
+          selection,
+        }),
+      );
+    },
+    [],
   );
-  const lastDraftSelectionRef = useRef<DraftSelection | null>(null);
-  const recordingStreamRef = useRef<MediaStream | null>(null);
-  const recordingStartingRef = useRef(false);
-  const recordingStoppingRef = useRef(false);
-  const recordingChunksRef = useRef<Float32Array[]>([]);
-  const recordingSampleRateRef = useRef(16_000);
-  const recordingStartedAtRef = useRef(0);
-  const recordingTimerRef = useRef<number | null>(null);
-  const recordingAudioContextRef = useRef<AudioContext | null>(null);
-  const recordingProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const voiceInputController = useVoiceInputController({
+    onTranscript: handleVoiceTranscript,
+  });
+  const { voiceInput } = voiceInputController.state;
+  const {
+    handleDraftSelectionChange,
+    handleVoiceToggle,
+    refreshVoiceInputAvailability,
+  } = voiceInputController;
   const [pendingAttachments, setPendingAttachments] = useState<
     ChatAttachment[]
   >([]);
   const [contextAttachments, setContextAttachments] = useState<
     ChatAttachment[]
   >([]);
-  const [graph, setGraph] = useState<NodeGraph | null>(null);
   const graphRef = useRef<NodeGraph | null>(null);
   const [projectWarnings, setProjectWarnings] = useState<ProjectOpenWarning[]>(
     [],
   );
   const [projectError, setProjectError] = useState<string | null>(null);
-  const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [graphRunning, setGraphRunning] = useState(false);
   const [graphCancelling, setGraphCancelling] = useState(false);
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const activeRunIdRef = useRef<string | null>(null);
-  const [runHistory, setRunHistory] = useState<RunHistoryEntry[]>([]);
   const runHistoryRef = useRef<RunHistoryEntry[]>([]);
-  const [artifacts, setArtifacts] = useState<ArtifactRef[]>([]);
   const artifactsRef = useRef<ArtifactRef[]>([]);
-  const [pendingResearchChoice, setPendingResearchChoice] =
-    useState<PendingResearchChoice | null>(null);
   const pendingResearchChoiceRef = useRef<PendingResearchChoice | null>(null);
-  const [pendingGraphOverwriteChoice, setPendingGraphOverwriteChoice] =
-    useState<PendingGraphOverwriteChoice | null>(null);
   const pendingGraphOverwriteChoiceRef =
     useRef<PendingGraphOverwriteChoice | null>(null);
-  const [selectedCanvasNodeId, setSelectedCanvasNodeId] = useState<
-    string | null
-  >(null);
-  const [artifactPreview, setArtifactPreview] =
-    useState<ArtifactTextPreview | null>(null);
-  const [artifactPreviewLoading, setArtifactPreviewLoading] = useState(false);
-  const [artifactPreviewError, setArtifactPreviewError] = useState<
-    string | null
-  >(null);
-  const [preferencesView, setPreferencesView] =
-    useState<PreferencesView | null>(null);
-  const [preferencesLoading, setPreferencesLoading] = useState(false);
-  const [preferencesError, setPreferencesError] = useState<string | null>(null);
+  const artifactPreviewController = useArtifactPreviewController();
+  const {
+    clearPreview,
+    setArtifactPreview,
+    setPreviewError,
+    setPreviewLoading,
+    startPreviewLoad,
+  } = artifactPreviewController;
+  const {
+    artifactPreview,
+    loading: artifactPreviewLoading,
+    error: artifactPreviewError,
+  } = artifactPreviewController.state;
+  const preferencesController = usePreferencesController();
+  const {
+    preferences: preferencesView,
+    loading: preferencesLoading,
+    error: preferencesError,
+  } = preferencesController.state;
+  const {
+    reloadPreferences,
+    setPreferences,
+    setPreferencesError,
+  } = preferencesController;
   const [recentProjects, setRecentProjects] = useState<string[]>([]);
 
-  const stopRecordingStream = () => {
-    if (recordingTimerRef.current !== null) {
-      window.clearInterval(recordingTimerRef.current);
-      recordingTimerRef.current = null;
-    }
+  const setMessages = useCallback(
+    (action: LocalStateAction<ChatMessage[]>) => {
+      setGraphRunState((current) => {
+        const messages = resolveLocalStateAction(action, current.messages);
+        messagesRef.current = messages;
+        return { ...current, messages };
+      });
+    },
+    [setGraphRunState],
+  );
 
-    recordingProcessorRef.current?.disconnect();
-    recordingProcessorRef.current = null;
+  const setGraph = useCallback(
+    (action: LocalStateAction<NodeGraph | null>) => {
+      setGraphRunState((current) => {
+        const graph = resolveLocalStateAction(action, current.graph);
+        graphRef.current = graph;
+        return { ...current, graph };
+      });
+    },
+    [setGraphRunState],
+  );
 
-    const audioContext = recordingAudioContextRef.current;
-    recordingAudioContextRef.current = null;
-    void audioContext?.close();
+  const setRunHistory = useCallback(
+    (action: LocalStateAction<RunHistoryEntry[]>) => {
+      setGraphRunState((current) => {
+        const runHistory = resolveLocalStateAction(action, current.runHistory);
+        runHistoryRef.current = runHistory;
+        return { ...current, runHistory };
+      });
+    },
+    [setGraphRunState],
+  );
 
-    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-    recordingStreamRef.current = null;
-  };
+  const setArtifacts = useCallback(
+    (action: LocalStateAction<ArtifactRef[]>) => {
+      setGraphRunState((current) => {
+        const artifacts = resolveLocalStateAction(action, current.artifacts);
+        artifactsRef.current = artifacts;
+        return { ...current, artifacts };
+      });
+    },
+    [setGraphRunState],
+  );
+
+  const setPendingResearchChoice = useCallback(
+    (action: LocalStateAction<PendingResearchChoice | null>) => {
+      setGraphRunState((current) => {
+        const pendingResearchChoice = resolveLocalStateAction(
+          action,
+          current.pendingResearchChoice,
+        );
+        pendingResearchChoiceRef.current = pendingResearchChoice;
+        return { ...current, pendingResearchChoice };
+      });
+    },
+    [setGraphRunState],
+  );
+
+  const setPendingGraphOverwriteChoice = useCallback(
+    (action: LocalStateAction<PendingGraphOverwriteChoice | null>) => {
+      setGraphRunState((current) => {
+        const pendingGraphOverwriteChoice = resolveLocalStateAction(
+          action,
+          current.pendingGraphOverwriteChoice,
+        );
+        pendingGraphOverwriteChoiceRef.current = pendingGraphOverwriteChoice;
+        return { ...current, pendingGraphOverwriteChoice };
+      });
+    },
+    [setGraphRunState],
+  );
+
+  const setActiveRunId = useCallback(
+    (action: LocalStateAction<string | null>) => {
+      setGraphRunState((current) => {
+        const activeRunId = resolveLocalStateAction(
+          action,
+          current.activeRunId,
+        );
+        activeRunIdRef.current = activeRunId;
+        return { ...current, activeRunId };
+      });
+    },
+    [setGraphRunState],
+  );
+
+  const setDirty = useCallback(
+    (action: LocalStateAction<boolean>) => {
+      setGraphRunState((current) => ({
+        ...current,
+        dirty: resolveLocalStateAction(action, current.dirty),
+      }));
+    },
+    [setGraphRunState],
+  );
+
+  const setSelectedCanvasNode = useCallback(
+    (node: AgentNode | null) => {
+      setGraphRunState((current) => ({
+        ...current,
+        selectedCanvasNode: node
+          ? current.graph?.nodes.find(
+              (candidate) => candidate.nodeId === node.nodeId,
+            ) ?? node
+          : null,
+      }));
+    },
+    [setGraphRunState],
+  );
 
   useEffect(() => {
-    getPreferences()
+    reloadPreferences()
       .then((view) => setRecentProjects(view.preferences.recentProjects))
       .catch(() => setRecentProjects([]));
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    getAsrStatus().then((status) => {
-      if (!cancelled) {
-        setVoiceInput(createInitialVoiceInput(status));
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      stopRecordingStream();
-    };
-  }, []);
+  }, [reloadPreferences]);
 
   useEffect(() => {
     graphRef.current = graph;
@@ -343,8 +432,11 @@ export function App() {
 
   const selectedCanvasNode = useMemo<AgentNode | null>(
     () =>
-      graph?.nodes.find((node) => node.nodeId === selectedCanvasNodeId) ?? null,
-    [graph, selectedCanvasNodeId],
+      graph?.nodes.find(
+        (node) =>
+          node.nodeId === graphRunController.state.selectedCanvasNode?.nodeId,
+      ) ?? null,
+    [graph, graphRunController.state.selectedCanvasNode],
   );
 
   const selectedPreviewArtifact = useMemo(
@@ -364,17 +456,13 @@ export function App() {
     let cancelled = false;
 
     if (!selectedPreviewPath || !shouldReadArtifactText(selectedPreviewKind)) {
-      setArtifactPreview(null);
-      setArtifactPreviewError(null);
-      setArtifactPreviewLoading(false);
+      clearPreview();
       return () => {
         cancelled = true;
       };
     }
 
-    setArtifactPreview(null);
-    setArtifactPreviewError(null);
-    setArtifactPreviewLoading(true);
+    startPreviewLoad();
     readArtifactText(selectedPreviewPath)
       .then((preview) => {
         if (!cancelled) {
@@ -383,19 +471,27 @@ export function App() {
       })
       .catch((error) => {
         if (!cancelled) {
-          setArtifactPreviewError(String(error));
+          setPreviewError(String(error));
         }
       })
       .finally(() => {
         if (!cancelled) {
-          setArtifactPreviewLoading(false);
+          setPreviewLoading(false);
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [selectedPreviewKind, selectedPreviewPath]);
+  }, [
+    clearPreview,
+    selectedPreviewKind,
+    selectedPreviewPath,
+    setArtifactPreview,
+    setPreviewError,
+    setPreviewLoading,
+    startPreviewLoad,
+  ]);
 
   const applyProjectOpenResult = (result: ProjectOpenResult) => {
     const projectMessages =
@@ -408,7 +504,7 @@ export function App() {
     runHistoryRef.current = result.project.runHistory;
     setArtifacts([]);
     artifactsRef.current = [];
-    setSelectedCanvasNodeId(null);
+    setSelectedCanvasNode(null);
     setActiveRunId(null);
     activeRunIdRef.current = null;
     setPendingResearchChoice(null);
@@ -505,42 +601,32 @@ export function App() {
     event: BackendEvent,
     submittedPayload?: SubmitMessagePayload,
   ) => {
-    setMessages((current) => {
-      const result = reduceBackendEvents(
-        {
-          messages: current,
-          graph: graphRef.current,
-          dirty: false,
-          pendingResearchChoice: pendingResearchChoiceRef.current,
-          pendingGraphOverwriteChoice: pendingGraphOverwriteChoiceRef.current,
-          activeRunId: activeRunIdRef.current,
-          runHistory: runHistoryRef.current,
-          artifacts: artifactsRef.current,
-        },
+    setGraphRunState((current) => {
+      const result = reduceGraphRunControllerEvents(
+        current,
         [event],
         (eventContent) => createMessage("assistant", eventContent),
         submittedPayload,
       );
+      const selectedNodeId = current.selectedCanvasNode?.nodeId;
+      const next = {
+        ...result,
+        selectedCanvasNode: selectedNodeId
+          ? result.graph?.nodes.find((node) => node.nodeId === selectedNodeId) ??
+            null
+          : null,
+        dirty: current.dirty || result.dirty,
+      };
 
-      graphRef.current = result.graph;
-      setGraph(result.graph);
-      pendingResearchChoiceRef.current = result.pendingResearchChoice ?? null;
+      graphRef.current = next.graph;
+      pendingResearchChoiceRef.current = next.pendingResearchChoice ?? null;
       pendingGraphOverwriteChoiceRef.current =
-        result.pendingGraphOverwriteChoice ?? null;
-      activeRunIdRef.current = result.activeRunId ?? null;
-      runHistoryRef.current = result.runHistory ?? runHistoryRef.current;
-      artifactsRef.current = result.artifacts ?? artifactsRef.current;
-      setActiveRunId(activeRunIdRef.current);
-      setPendingResearchChoice(pendingResearchChoiceRef.current);
-      setPendingGraphOverwriteChoice(pendingGraphOverwriteChoiceRef.current);
-      setRunHistory(runHistoryRef.current);
-      setArtifacts(artifactsRef.current);
-      if (result.dirty) {
-        setDirty(true);
-      }
-
-      messagesRef.current = result.messages;
-      return result.messages;
+        next.pendingGraphOverwriteChoice ?? null;
+      activeRunIdRef.current = next.activeRunId ?? null;
+      runHistoryRef.current = next.runHistory;
+      artifactsRef.current = next.artifacts;
+      messagesRef.current = next.messages;
+      return next;
     });
   };
 
@@ -588,8 +674,7 @@ export function App() {
     let view = preferencesView;
     if (!view) {
       try {
-        view = await getPreferences();
-        setPreferencesView(view);
+        view = await reloadPreferences();
         setRecentProjects(view.preferences.recentProjects);
       } catch {
         return [];
@@ -700,166 +785,7 @@ export function App() {
   };
 
   const handleNodeSelect = (node: AgentNode | null) => {
-    setSelectedCanvasNodeId(node?.nodeId ?? null);
-  };
-
-  const handleDraftSelectionChange = (selection: DraftSelection | null) => {
-    lastDraftSelectionRef.current = selection;
-  };
-
-  const startVoiceRecording = async () => {
-    if (
-      !canStartVoiceRecording({
-        starting: recordingStartingRef.current,
-        stopping: recordingStoppingRef.current,
-        hasActiveStream: recordingStreamRef.current !== null,
-      })
-    ) {
-      return;
-    }
-
-    recordingStartingRef.current = true;
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      recordingStreamRef.current = stream;
-
-      const audioContext = new AudioContext();
-      const source = audioContext.createMediaStreamSource(stream);
-      const analyser = audioContext.createAnalyser();
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
-      const monitorGain = audioContext.createGain();
-
-      monitorGain.gain.value = 0;
-      analyser.fftSize = 64;
-      recordingChunksRef.current = [];
-      recordingSampleRateRef.current = audioContext.sampleRate;
-      recordingStartedAtRef.current = Date.now();
-      recordingAudioContextRef.current = audioContext;
-      recordingProcessorRef.current = processor;
-
-      processor.onaudioprocess = (event) => {
-        const input = event.inputBuffer.getChannelData(0);
-        recordingChunksRef.current.push(new Float32Array(input));
-      };
-
-      source.connect(analyser);
-      source.connect(processor);
-      processor.connect(monitorGain);
-      monitorGain.connect(audioContext.destination);
-
-      setVoiceInput((current) => voiceRecording(current));
-
-      const levelData = new Uint8Array(analyser.frequencyBinCount);
-      recordingTimerRef.current = window.setInterval(() => {
-        analyser.getByteTimeDomainData(levelData);
-        const elapsedSeconds = Math.min(
-          MAX_RECORDING_SECONDS,
-          Math.floor((Date.now() - recordingStartedAtRef.current) / 1000),
-        );
-
-        setVoiceInput((current) =>
-          voiceRecording(
-            current,
-            buildLevelBuckets(levelData, 32),
-            elapsedSeconds,
-          ),
-        );
-
-        if (elapsedSeconds >= MAX_RECORDING_SECONDS) {
-          void stopVoiceRecording(lastDraftSelectionRef.current);
-        }
-      }, 250);
-    } catch (error) {
-      stopRecordingStream();
-      setVoiceInput((current) =>
-        voiceFailed(current, `麦克风不可用：${formatUnknownError(error)}`),
-      );
-    } finally {
-      recordingStartingRef.current = false;
-    }
-  };
-
-  const stopVoiceRecording = async (selection?: DraftSelection | null) => {
-    if (recordingStoppingRef.current) {
-      return;
-    }
-
-    if (recordingStreamRef.current === null) {
-      return;
-    }
-
-    recordingStoppingRef.current = true;
-
-    const capturedSelection = selection ?? lastDraftSelectionRef.current;
-    const chunks = [...recordingChunksRef.current];
-    const sampleRate = recordingSampleRateRef.current;
-
-    if (
-      !canStopVoiceRecording({
-        stopping: false,
-        hasActiveStream: recordingStreamRef.current !== null,
-        chunkCount: chunks.length,
-      })
-    ) {
-      stopRecordingStream();
-      recordingChunksRef.current = [];
-      setVoiceInput((current) => ({
-        ...current,
-        available: true,
-        status: "idle",
-        message: "语音模型已就绪",
-        elapsedSeconds: 0,
-        levels: [],
-      }));
-      recordingStoppingRef.current = false;
-      return;
-    }
-
-    stopRecordingStream();
-    recordingChunksRef.current = [];
-    setVoiceInput((current) => voiceTranscribing(current));
-
-    try {
-      const samples = concatenateFloat32Arrays(chunks);
-      const transcript = await transcribeVoiceAudio(encodeWav(samples, sampleRate));
-
-      setDraft((currentDraft) =>
-        insertTranscriptIntoDraft({
-          currentDraft,
-          transcript: transcript.text,
-          selection: capturedSelection,
-        }),
-      );
-      setVoiceInput((current) => ({
-        ...current,
-        available: true,
-        status: "idle",
-        message: "语音模型已就绪",
-        elapsedSeconds: 0,
-        levels: [],
-      }));
-    } catch (error) {
-      setVoiceInput((current) =>
-        voiceFailed(current, `语音转写失败：${formatUnknownError(error)}`),
-      );
-    } finally {
-      recordingChunksRef.current = [];
-      recordingStoppingRef.current = false;
-    }
-  };
-
-  const handleVoiceToggle = async (selection: DraftSelection | null) => {
-    if (!voiceInput.available || voiceInput.status === "transcribing") {
-      return;
-    }
-
-    if (voiceInput.status === "recording") {
-      await stopVoiceRecording(selection);
-      return;
-    }
-
-    await startVoiceRecording();
+    setSelectedCanvasNode(node);
   };
 
   const submitAgentMessagePayload = async (payload: SubmitMessagePayload) => {
@@ -1035,23 +961,12 @@ export function App() {
 
   const handleOpenPreferences = async () => {
     setPreferencesOpen(true);
-    setPreferencesLoading(true);
-    setPreferencesError(null);
     try {
-      const view = await getPreferences();
-      setPreferencesView(view);
+      const view = await reloadPreferences();
       setRecentProjects(view.preferences.recentProjects);
     } catch (error) {
-      setPreferencesError(String(error));
-    } finally {
-      setPreferencesLoading(false);
+      void error;
     }
-  };
-
-  const refreshVoiceInputAvailability = async () => {
-    setVoiceInput(createInitialVoiceInput(null));
-    const status = await getAsrStatus();
-    setVoiceInput(createInitialVoiceInput(status));
   };
 
   const applyPreferencesView = (view: PreferencesView) => {
@@ -1059,7 +974,7 @@ export function App() {
       preferencesView,
       view,
     );
-    setPreferencesView(view);
+    setPreferences(view);
     setRecentProjects(view.preferences.recentProjects);
     if (shouldRefreshAsr) {
       void refreshVoiceInputAvailability();
@@ -1072,7 +987,7 @@ export function App() {
       return;
     }
     try {
-      setPreferencesView(await addModelFile(path));
+      setPreferences(await addModelFile(path));
     } catch (error) {
       setPreferencesError(String(error));
     }
@@ -1098,7 +1013,7 @@ export function App() {
     }
     try {
       setPreferencesError(null);
-      setPreferencesView(await importModelFile(path));
+      setPreferences(await importModelFile(path));
     } catch (error) {
       setPreferencesError(String(error));
     }
@@ -1110,7 +1025,7 @@ export function App() {
       return;
     }
     try {
-      setPreferencesView(await scanModelDirectory(path));
+      setPreferences(await scanModelDirectory(path));
     } catch (error) {
       setPreferencesError(String(error));
     }
@@ -1123,7 +1038,7 @@ export function App() {
     }
     try {
       setPreferencesError(null);
-      setPreferencesView(await setModelStorageDirectory(path));
+      setPreferences(await setModelStorageDirectory(path));
     } catch (error) {
       setPreferencesError(String(error));
     }
@@ -1132,7 +1047,7 @@ export function App() {
   const handleSetDefaultModel = async (modelId: string) => {
     try {
       setPreferencesError(null);
-      setPreferencesView(await setDefaultModel(modelId));
+      setPreferences(await setDefaultModel(modelId));
     } catch (error) {
       setPreferencesError(String(error));
     }
@@ -1245,7 +1160,7 @@ export function App() {
 
   const handleSetToolEnabled = async (toolId: string, enabled: boolean) => {
     try {
-      setPreferencesView(await setToolEnabled(toolId, enabled));
+      setPreferences(await setToolEnabled(toolId, enabled));
     } catch (error) {
       setPreferencesError(String(error));
     }
@@ -1459,19 +1374,6 @@ function lastRunHistoryEntry(
   runHistory: RunHistoryEntry[],
 ): RunHistoryEntry | undefined {
   return runHistory.length > 0 ? runHistory[runHistory.length - 1] : undefined;
-}
-
-function concatenateFloat32Arrays(chunks: Float32Array[]): Float32Array {
-  const totalLength = chunks.reduce((total, chunk) => total + chunk.length, 0);
-  const samples = new Float32Array(totalLength);
-  let offset = 0;
-
-  for (const chunk of chunks) {
-    samples.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  return samples;
 }
 
 function formatUnknownError(error: unknown): string {

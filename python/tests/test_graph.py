@@ -6,16 +6,22 @@ import pytest
 from pydantic import ValidationError
 
 import agent_service.graph as graph_module
+from agent_service.agent_run_state import AgentRunState
 from agent_service.graph import (
     _classify_message,
     _node,
     build_graph,
     run_agent,
+    run_agent_from_state,
     stream_agent_events,
+    stream_agent_events_from_state,
 )
+from agent_service.graph_compiler import compile_task_graph_to_node_graph
+from agent_service.goal_spec import parse_goal_spec
 from agent_service.intent import IntentKind, classify_route
 from agent_service.model_client import ChatMessage
 from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
+from agent_service.router_v2 import STRUCTURED_ROUTER_ENV
 from agent_service.schemas import Attachment, GraphNode, RunGraph, UserMessage
 from agent_service.task_graph import build_document_task_graph
 from agent_service.web_search import SearchResponse, SearchResult
@@ -220,7 +226,275 @@ def test_graph_state_preserves_structured_route_decision_for_inquiries() -> None
         "reason": "question requests current or external factual data",
         "missing_inputs": [],
     }
+    assert result["structured_route_decision"]["intent"] == "web_simple_inquiry"
+    assert result["structured_route_decision"]["taskType"] == "research"
+    assert result["structured_route_decision"]["missingInputs"] == []
+    assert result["structured_route_decision"]["source"] == "deterministic"
+    assert result["run_state"].structured_route_decision == result["structured_route_decision"]
     assert result["events"][0].type == "message.created"
+
+
+def test_graph_state_updates_agent_run_state_with_routing_metadata() -> None:
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Python release",
+                    url="https://www.python.org/downloads/",
+                    snippet="Latest Python release.",
+                )
+            ]
+        )
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-run-state-route",
+            content="What is the latest Python release?",
+        )
+    )
+    app = build_graph(search_provider=provider)
+
+    result = app.invoke(
+        {
+            "run_state": run_state,
+            "message": run_state.message,
+            "events": [],
+        }
+    )
+
+    updated = result["run_state"]
+    assert isinstance(updated, AgentRunState)
+    assert updated.task_id == "task-run-state-route"
+    assert updated.intent == "web_simple_inquiry"
+    assert updated.goal_spec is not None
+    assert updated.goal_spec.needs_web is True
+    assert updated.route_decision == {
+        "intent": {"kind": "inquiry"},
+        "inquiry": {"mode": "web_simple", "requires_web": True},
+        "reason": "question requests current or external factual data",
+        "missing_inputs": [],
+    }
+    assert updated.structured_route_decision is not None
+    assert updated.structured_route_decision["intent"] == "web_simple_inquiry"
+    assert updated.structured_route_decision["taskType"] == "research"
+    assert result["structured_route_decision"] == updated.structured_route_decision
+    assert result["intent"] == "web_simple_inquiry"
+
+
+def test_medium_confidence_structured_model_route_requests_clarification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
+    client = FakeModelClient(
+        (
+            '{"intent":"task","confidence":0.61,"task_type":"code_task",'
+            '"reason":"model selected task but needs confirmation"}'
+        )
+    )
+
+    events = run_agent(
+        UserMessage(task_id="medium-model-route", content="Please handle the Python thing."),
+        model_client=client,
+    )
+
+    assert [event.type for event in events] == ["input.required"]
+    assert events[0].payload["missing"] == ["clarification"]
+    assert "确认" in events[0].payload["prompt"]
+    assert len(client.calls) == 1
+    assert client.temperatures == [0.0]
+    assert client.max_tokens == [512]
+
+
+def test_structured_model_router_is_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(STRUCTURED_ROUTER_ENV, raising=False)
+    model_reply = (
+        '{"intent":"task","confidence":0.95,"task_type":"code_task",'
+        '"reason":"model route should be ignored"}'
+    )
+    client = FakeModelClient(model_reply)
+
+    events = run_agent(
+        UserMessage(task_id="default-router-off", content="hello"),
+        model_client=client,
+    )
+
+    assert [event.type for event in events] == ["message.created"]
+    assert events[0].payload["message"]["content"] == model_reply
+    assert len(client.calls) == 1
+    assert client.calls[0][0].role == "system"
+    assert "本地 AI 助手" in client.calls[0][0].content
+    assert client.calls[0][1] == ChatMessage(role="user", content="hello")
+    assert client.temperatures == [None]
+    assert client.max_tokens == [None]
+
+
+def test_graph_state_records_effective_route_decision_for_quick_answer_choice() -> None:
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Packaging tools",
+                    url="https://packaging.python.org/",
+                    snippet="Python packaging tools guide.",
+                )
+            ]
+        )
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-effective-route",
+            content="Research and compare current Python packaging tools",
+        ),
+        inquiry_choice="quick_answer",
+    )
+    app = build_graph(search_provider=provider)
+
+    result = app.invoke(
+        {
+            "run_state": run_state,
+            "message": run_state.message,
+            "events": [],
+        }
+    )
+
+    updated = result["run_state"]
+    assert updated.intent == "web_simple_inquiry"
+    assert updated.route_decision["inquiry"]["mode"] == "web_simple"
+    assert result["route_decision"]["inquiry"]["mode"] == "web_simple"
+    assert updated.structured_route_decision["intent"] == "web_simple_inquiry"
+    assert result["structured_route_decision"] == updated.structured_route_decision
+
+
+def test_build_graph_still_accepts_legacy_state_without_run_state() -> None:
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Python release",
+                    url="https://www.python.org/downloads/",
+                    snippet="Latest Python release.",
+                )
+            ]
+        )
+    )
+    message = UserMessage(
+        task_id="task-legacy-route",
+        content="What is the latest Python release?",
+    )
+    app = build_graph(search_provider=provider)
+
+    result = app.invoke({"message": message, "events": []})
+
+    assert isinstance(result["run_state"], AgentRunState)
+    assert result["run_state"].task_id == "task-legacy-route"
+    assert result["run_state"].intent == "web_simple_inquiry"
+    assert result["intent"] == "web_simple_inquiry"
+
+
+def test_run_agent_from_state_matches_public_research_choice_behavior() -> None:
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="complex-web-from-state",
+            content="Research and compare current Python packaging tools",
+        )
+    )
+
+    events = run_agent_from_state(run_state)
+
+    assert [event.type for event in events] == ["research.choice_required"]
+    assert events[0].payload["taskId"] == "complex-web-from-state"
+    assert [choice["id"] for choice in events[0].payload["choices"]] == [
+        "quick_answer",
+        "research_flow",
+    ]
+
+
+def test_stream_agent_events_from_state_matches_public_stream_behavior() -> None:
+    client = FakeModelClient()
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-chat-from-state", content="hello")
+    )
+
+    events = list(stream_agent_events_from_state(run_state, model_client=client))
+
+    assert [event.type for event in events] == [
+        "message.started",
+        "message.delta",
+        "message.delta",
+        "message.completed",
+    ]
+    message = events[0].payload["message"]
+    assert events[1].payload == {
+        "messageId": message["messageId"],
+        "delta": "你好",
+    }
+    assert events[2].payload == {
+        "messageId": message["messageId"],
+        "delta": "，本地模型",
+    }
+    assert events[3].payload == {"messageId": message["messageId"]}
+    assert client.calls
+
+
+def test_stream_agent_events_from_state_routes_non_chat_through_router_v2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original_classify_route = graph_module.classify_route
+
+    def counting_classify_route(message: UserMessage):
+        nonlocal calls
+        calls += 1
+        return original_classify_route(message)
+
+    monkeypatch.setattr(graph_module, "classify_route", counting_classify_route)
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="stream-quick-answer-once",
+            content="Research and compare current Python packaging tools",
+        ),
+        inquiry_choice="quick_answer",
+    )
+    provider = FakeSearchProvider(
+        SearchResponse(
+            results=[
+                SearchResult(
+                    title="Packaging tools",
+                    url="https://packaging.python.org/",
+                    snippet="Python packaging tools guide.",
+                )
+            ]
+        )
+    )
+
+    events = list(stream_agent_events_from_state(run_state, search_provider=provider))
+
+    assert calls == 0
+    assert [event.type for event in events] == ["message.created"]
+
+
+def test_graph_feedback_guard_still_uses_legacy_classifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original_classify_route = graph_module.classify_route
+
+    def counting_classify_route(message: UserMessage):
+        nonlocal calls
+        calls += 1
+        return original_classify_route(message)
+
+    monkeypatch.setattr(graph_module, "classify_route", counting_classify_route)
+
+    events = run_agent(
+        UserMessage(task_id="task-feedback-guard", content="hello"),
+        current_graph=_existing_graph(),
+    )
+
+    assert calls == 1
+    assert [event.type for event in events] == ["message.created"]
 
 
 def test_web_simple_route_auto_searches_and_returns_sources_without_graph() -> None:
@@ -577,6 +851,24 @@ def test_research_graph_records_deep_reasoning_policy_metadata() -> None:
     assert graph["metadata"].get("modelPolicy") == ModelCallProfile.DEEP_REASONING.value
 
 
+def test_research_graph_records_structured_route_decision_metadata() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="complex-web",
+            content="Research and compare current Python packaging tools",
+        ),
+        inquiry_choice="research_flow",
+    )
+
+    created_event = next(event for event in events if event.type == "node_graph.created")
+    graph = created_event.payload["graph"]
+    route_decision = graph["metadata"]["routeDecision"]
+    assert route_decision["intent"] == "web_complex_research_flow"
+    assert route_decision["source"] == "deterministic"
+    assert route_decision["taskType"] == "research"
+    assert graph["metadata"]["kind"] == "research"
+
+
 def test_chinese_github_research_with_context_attachment_asks_for_research_choice() -> None:
     events = run_agent(
         UserMessage(
@@ -711,37 +1003,52 @@ def test_attachment_document_task_route_decision_matches_document_graph_route() 
     ]
 
 
-def test_attachment_document_task_graph_uses_planner_v2_shape(monkeypatch) -> None:
+def test_attachment_document_task_graph_uses_planner_chain_shape(monkeypatch) -> None:
     planner_calls: list[dict[str, object]] = []
 
-    class RecordingPlanner:
+    class RecordingPlannerChain:
         def __init__(self, *, tool_registry) -> None:
             self.tool_registry = tool_registry
 
-        def plan(self, *, task_id, goal_spec, context):
+        def plan(self, request):
             planner_calls.append(
                 {
-                    "task_id": task_id,
-                    "goal_spec": goal_spec,
-                    "context": context,
+                    "task_id": request.task_id,
+                    "goal_spec": request.goal_spec,
+                    "context": request.context,
+                    "route": request.route,
                     "tool_registry": self.tool_registry,
                 }
             )
-            return SimpleNamespace(
-                task_graph=build_document_task_graph(task_id, goal_spec)
+            graph_payload = compile_task_graph_to_node_graph(
+                build_document_task_graph(request.task_id, request.goal_spec)
             )
+            graph_payload["metadata"] = {
+                "plannerChain": {
+                    "version": "planner_chain.v1",
+                    "planner": "template.document.v1",
+                    "strategy": "document_template",
+                    "routeIntent": request.route.intent,
+                    "taskType": request.route.task_type,
+                    "routeSource": request.route.source,
+                    "routeConfidence": request.route.confidence,
+                    "toolCandidates": list(request.route.tool_candidates),
+                    "requiredPermissions": list(request.route.required_permissions),
+                }
+            }
+            return SimpleNamespace(graph_payload=graph_payload)
 
-    monkeypatch.setattr(graph_module, "PlannerV2", RecordingPlanner)
+    monkeypatch.setattr(graph_module, "PlannerChain", RecordingPlannerChain)
 
     events = run_agent(
         UserMessage(
-            task_id="task-planner-v2",
+            task_id="task-planner-chain",
             content="summarize this document as a PDF report",
             attachments=[
                 Attachment(
-                    attachment_id="a-planner-v2",
-                    name="planner-v2.docx",
-                    path="workspace/inputs/planner-v2.docx",
+                    attachment_id="a-planner-chain",
+                    name="planner-chain.docx",
+                    path="workspace/inputs/planner-chain.docx",
                     size_bytes=100,
                     mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
@@ -750,10 +1057,13 @@ def test_attachment_document_task_graph_uses_planner_v2_shape(monkeypatch) -> No
     )
 
     assert planner_calls
+    assert planner_calls[0]["route"].task_type == "document_processing"
     assert len(events) == 1
     assert events[0].type == "node_graph.created"
     graph = events[0].payload["graph"]
-    assert graph["graphId"] == "task-planner-v2-graph"
+    assert graph["graphId"] == "task-planner-chain-graph"
+    assert graph["metadata"]["plannerChain"]["strategy"] == "document_template"
+    assert graph["metadata"]["modelPolicy"] == ModelCallProfile.DEEP_REASONING.value
     assert [edge["id"] for edge in graph["edges"]] == [
         "document-input-document-parse",
         "document-parse-content-organize",
@@ -860,6 +1170,153 @@ def test_task_graph_records_deep_reasoning_policy_metadata() -> None:
     created_event = next(event for event in events if event.type == "node_graph.created")
     graph = created_event.payload["graph"]
     assert graph["metadata"].get("modelPolicy") == ModelCallProfile.DEEP_REASONING.value
+
+
+def test_task_graph_records_structured_route_decision_metadata() -> None:
+    events = list(
+        stream_agent_events(
+            UserMessage(
+                task_id="task-general",
+                content="Can you create a Python script that counts rows in a CSV file?",
+            )
+        )
+    )
+
+    created_event = next(event for event in events if event.type == "node_graph.created")
+    graph = created_event.payload["graph"]
+    route_decision = graph["metadata"]["routeDecision"]
+    assert route_decision["intent"] == "task"
+    assert route_decision["source"] == "deterministic"
+    assert route_decision["confidence"] >= 0.75
+    assert route_decision["taskType"]
+
+
+def test_task_graph_records_planner_chain_metadata() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="planner-chain-code",
+            content="Create a Python script that counts rows in a CSV file.",
+        )
+    )
+
+    graph = events[0].payload["graph"]
+    planner_chain = graph["metadata"]["plannerChain"]
+    assert planner_chain["version"] == "planner_chain.v1"
+    assert planner_chain["planner"] == "legacy.task_planner.v1"
+    assert planner_chain["strategy"] == "legacy_task_planner"
+    assert planner_chain["routeIntent"] == "task"
+    assert planner_chain["taskType"] == "code_task"
+    assert graph["metadata"]["routeDecision"]["intent"] == "task"
+
+
+def test_planner_chain_metadata_does_not_change_node_graph_event_shape() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="planner-chain-event-shape",
+            content="Create a Python script that counts rows in a CSV file.",
+        )
+    )
+
+    assert [event.type for event in events] == ["node_graph.created"]
+    event = events[0]
+    assert set(event.payload.keys()) == {"graph"}
+    graph = event.payload["graph"]
+    assert "plannerChain" in graph["metadata"]
+    assert "routeDecision" in graph["metadata"]
+
+
+def test_prerouted_task_state_without_structured_route_records_route_metadata() -> None:
+    message = UserMessage(
+        task_id="pre-routed-task",
+        content="Create a Python script that counts rows in a CSV file.",
+    )
+    run_state = AgentRunState.from_user_message(message).model_copy(
+        update={
+            "intent": "task",
+            "goal_spec": parse_goal_spec(message),
+        }
+    )
+
+    events = run_agent_from_state(run_state)
+
+    graph = events[0].payload["graph"]
+    assert graph["metadata"]["plannerChain"]["routeSource"] == "deterministic"
+    assert graph["metadata"]["routeDecision"]["source"] == "deterministic"
+    assert graph["metadata"]["routeDecision"]["taskType"] == "code_task"
+
+
+def test_prerouted_task_route_decision_metadata_scrubs_structured_route_paths() -> None:
+    message = UserMessage(
+        task_id="pre-routed-task-paths",
+        content="Create a Python script that counts rows in a CSV file.",
+    )
+    structured_route_decision = {
+        "intent": "task",
+        "confidence": 0.88,
+        "taskType": "code_task",
+        "missingInputs": [],
+        "requiredPermissions": [r"D:\Software Project\Alita\secret.docx"],
+        "toolCandidates": [r"D:\secret.docx"],
+        "reason": r"Need D:\Software Project\Alita\secret.docx",
+        "source": "deterministic",
+        "shouldClarify": False,
+        "clarificationPrompt": None,
+    }
+    run_state = AgentRunState.from_user_message(message).model_copy(
+        update={
+            "intent": "task",
+            "goal_spec": parse_goal_spec(message),
+            "structured_route_decision": structured_route_decision,
+        }
+    )
+
+    events = run_agent_from_state(run_state)
+
+    graph = events[0].payload["graph"]
+    route_decision_dump = repr(graph["metadata"]["routeDecision"])
+    assert r"D:\Software Project\Alita\secret.docx" not in route_decision_dump
+    assert r"D:\secret.docx" not in route_decision_dump
+    assert "secret.docx" not in route_decision_dump
+    assert "Software Project" not in route_decision_dump
+    assert graph["metadata"]["plannerChain"]["routeSource"] == (
+        graph["metadata"]["routeDecision"]["source"]
+    )
+    assert graph["metadata"]["plannerChain"]["taskType"] == (
+        graph["metadata"]["routeDecision"]["taskType"]
+    )
+
+
+def test_document_task_graph_records_document_planner_chain_metadata() -> None:
+    events = run_agent(
+        UserMessage(
+            task_id="planner-chain-document",
+            content="summarize this document as a PDF report",
+            attachments=[
+                Attachment(
+                    attachment_id="a-planner-chain",
+                    name="planner-chain.docx",
+                    path="workspace/inputs/planner-chain.docx",
+                    size_bytes=100,
+                    mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            ],
+        )
+    )
+
+    graph = events[0].payload["graph"]
+    planner_chain = graph["metadata"]["plannerChain"]
+    assert planner_chain["version"] == "planner_chain.v1"
+    assert planner_chain["planner"] == "template.document.v1"
+    assert planner_chain["strategy"] == "document_template"
+    assert planner_chain["taskType"] == "document_processing"
+    assert [node["nodeId"] for node in graph["nodes"]] == [
+        "document-input",
+        "document-parse",
+        "content-organize",
+        "report-generate",
+        "typst-export",
+        "file-export",
+    ]
 
 
 def test_temporary_placeholder_node_gets_default_script_review_state() -> None:

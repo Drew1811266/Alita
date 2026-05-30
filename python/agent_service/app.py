@@ -15,8 +15,9 @@ from agent_service.asr import (
     TranscriptionResponse,
     get_asr_status,
 )
+from agent_service.agent_run_state import AgentRunState
 from agent_service.execution import run_graph_events
-from agent_service.graph import run_agent, stream_agent_events
+from agent_service.graph import run_agent_from_state, stream_agent_events_from_state
 from agent_service.model_client import AgentModelClientConfig, create_model_client
 from agent_service.model_sessions import DEFAULT_MODEL_SESSION_REGISTRY
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY
@@ -35,16 +36,29 @@ from agent_service.schemas import (
 from agent_service.script_review import script_review_fingerprint
 
 
+SIDECAR_TOKEN_ENV = "ALITA_SIDECAR_TOKEN"
+SIDECAR_DEV_BYPASS_ENV = "ALITA_SIDECAR_ALLOW_UNAUTHENTICATED_DEV"
+SIDECAR_TOKEN_HEADER = "X-Alita-Sidecar-Token"
+ALLOWED_CORS_ORIGINS = [
+    "http://127.0.0.1:1420",
+    "http://localhost:1420",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+    "http://tauri.localhost",
+    "tauri://localhost",
+]
+
 app = FastAPI(title="Alita Agent Sidecar")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_CORS_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", SIDECAR_TOKEN_HEADER],
 )
 
-SIDECAR_TOKEN_ENV = "ALITA_SIDECAR_TOKEN"
-SIDECAR_TOKEN_HEADER = "X-Alita-Sidecar-Token"
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def require_sidecar_token(
@@ -52,7 +66,9 @@ def require_sidecar_token(
 ) -> None:
     expected_token = os.getenv(SIDECAR_TOKEN_ENV)
     if not expected_token:
-        return
+        if _env_flag_enabled(SIDECAR_DEV_BYPASS_ENV):
+            return
+        raise HTTPException(status_code=401, detail="sidecar token is not configured")
     if sidecar_token != expected_token:
         raise HTTPException(status_code=401, detail="invalid sidecar token")
 
@@ -100,13 +116,8 @@ def agent_message(
     _auth: None = Depends(require_sidecar_token),
 ) -> list[AgentEvent]:
     model_client = _model_client_for_session(request.model_session_id)
-    return run_agent(
-        request.to_user_message(),
-        inquiry_choice=request.inquiry_choice,
-        current_graph=request.currentGraph,
-        has_run_history=bool(request.hasRunHistory),
-        artifact_refs=request.artifactRefs,
-        pending_choice=request.pendingChoice,
+    return run_agent_from_state(
+        AgentRunState.from_message_request(request),
         model_client=model_client,
     )
 
@@ -117,13 +128,8 @@ def research_choose(
     _auth: None = Depends(require_sidecar_token),
 ) -> list[AgentEvent]:
     model_client = _model_client_for_session(request.model_session_id)
-    return run_agent(
-        request.to_user_message(),
-        inquiry_choice=request.inquiry_choice,
-        current_graph=request.currentGraph,
-        has_run_history=bool(request.hasRunHistory),
-        artifact_refs=request.artifactRefs,
-        pending_choice=request.pendingChoice,
+    return run_agent_from_state(
+        AgentRunState.from_message_request(request),
         model_client=model_client,
     )
 
@@ -231,21 +237,19 @@ def _model_client_for_session(model_session_id: str | None):
 
 
 def _serialize_sse_events(request: AgentMessageRequest, *, model_client):
-    for event in stream_agent_events(
-        request.to_user_message(),
-        inquiry_choice=request.inquiry_choice,
-        current_graph=request.currentGraph,
-        has_run_history=bool(request.hasRunHistory),
-        artifact_refs=request.artifactRefs,
-        pending_choice=request.pendingChoice,
+    run_state = AgentRunState.from_message_request(request)
+    for event in stream_agent_events_from_state(
+        run_state,
         model_client=model_client,
     ):
         yield f"data: {event.model_dump_json()}\n\n"
 
 
 def _serialize_graph_sse_events(request: RunGraphRequest, *, model_client):
+    run_state = AgentRunState.from_run_graph_request(request)
     for event in run_graph_events(
         request,
+        run_state=run_state,
         model_client=model_client,
         registry=DEFAULT_RUN_REGISTRY,
     ):

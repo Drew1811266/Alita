@@ -1,0 +1,1 @@
+{"case_id":"research-citation-smoke","category":"research","input":{"task_id":"research-citation-smoke","content":"Research Python packaging."},"expected":{"requiresCitation":true},"tags":["smoke","offline"]}

@@ -4,6 +4,7 @@ from collections.abc import Iterable
 
 from agent_service.harness_errors import HarnessError
 from agent_service.schemas import GraphNode
+from agent_service.tool_protocol import provider_tool_id
 from agent_service.tool_registry import ToolRegistry
 
 
@@ -40,7 +41,9 @@ class PermissionGate:
         permissions = list(node.permissionsRequired)
         if node.toolRef:
             try:
-                permissions.extend(tool_registry.get(node.toolRef).permissions)
+                permissions.extend(
+                    tool_registry.get(provider_tool_id(node.toolRef)).permissions
+                )
             except KeyError:
                 pass
         if node.scriptReview is not None and node.nodeType != "temporary_script":

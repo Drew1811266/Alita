@@ -8,12 +8,11 @@ from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
 
+from agent_service.agent_run_state import AgentRunState
 from agent_service.context_manager import build_context_bundle
 from agent_service.goal_spec import GoalSpec, parse_goal_spec
-from agent_service.graph_compiler import compile_task_graph_to_node_graph
 from agent_service.intent import (
     IntentKind,
-    InquiryMode,
     RouteDecision,
     classify_route,
 )
@@ -33,14 +32,19 @@ from agent_service.plan_feedback import (
     apply_graph_feedback,
     classify_graph_feedback,
 )
-from agent_service.planner_v2 import PlannerV2
-from agent_service.schemas import AgentEvent, RunGraph, UserMessage
-from agent_service.task_planner import (
-    analyze_task,
-    build_task_graph,
-    resolve_tool_gaps,
-    select_tools,
+from agent_service.planner_chain import (
+    PlannerChain,
+    PlannerChainRequest,
+    route_context_from_payload,
 )
+from agent_service.router_v2 import (
+    RouterV2Decision,
+    compatible_intent as router_v2_compatible_intent,
+    deterministic_route,
+    effective_legacy_route_payload,
+    route_message,
+)
+from agent_service.schemas import AgentEvent, RunGraph, UserMessage
 from agent_service.tool_execution import default_tool_packages_root
 from agent_service.tool_providers.weather import WeatherProvider
 from agent_service.tool_registry import ToolRegistry
@@ -87,10 +91,12 @@ class ModelClient(Protocol):
 
 
 class AgentState(TypedDict, total=False):
+    run_state: AgentRunState
     message: UserMessage
     events: list[AgentEvent]
     intent: AgentIntent
     route_decision: dict
+    structured_route_decision: dict
     inquiry_choice: InquiryChoice
     current_graph: RunGraph
     has_run_history: bool
@@ -99,26 +105,114 @@ class AgentState(TypedDict, total=False):
     goal_spec: GoalSpec
 
 
-def classify_intent(state: AgentState) -> AgentState:
-    decision = classify_route(state["message"])
-    goal_spec = parse_goal_spec(state["message"])
+def _run_state_from_agent_state(state: AgentState) -> AgentRunState:
+    if "run_state" in state:
+        return state["run_state"]
+    return AgentRunState.from_user_message(
+        state["message"],
+        inquiry_choice=state.get("inquiry_choice"),
+        current_graph=state.get("current_graph"),
+        has_run_history=state.get("has_run_history", False),
+        artifact_refs=state.get("artifact_refs"),
+        pending_choice=state.get("pending_choice"),
+    )
+
+
+def _agent_state_from_run_state(run_state: AgentRunState) -> AgentState:
+    state: AgentState = {
+        "run_state": run_state,
+        "message": run_state.message,
+        "events": [],
+    }
+    if run_state.inquiry_choice is not None:
+        state["inquiry_choice"] = run_state.inquiry_choice
+    if run_state.current_graph is not None:
+        state["current_graph"] = run_state.current_graph
+    state["has_run_history"] = run_state.has_run_history
+    state["artifact_refs"] = list(run_state.artifact_refs)
+    if run_state.pending_choice is not None:
+        state["pending_choice"] = run_state.pending_choice
+    if run_state.intent is not None:
+        state["intent"] = run_state.intent
+    if run_state.route_decision is not None:
+        state["route_decision"] = run_state.route_decision
+    if run_state.structured_route_decision is not None:
+        state["structured_route_decision"] = run_state.structured_route_decision
+    if run_state.goal_spec is not None:
+        state["goal_spec"] = run_state.goal_spec
+    return state
+
+
+def classify_intent(
+    state: AgentState,
+    *,
+    model_client: ModelClient | None = None,
+) -> AgentState:
+    run_state = _run_state_from_agent_state(state)
+    routed_run_state = _route_run_state(
+        run_state,
+        inquiry_choice=state.get("inquiry_choice") or run_state.inquiry_choice,
+        model_client=model_client,
+    )
     return {
         **state,
-        "intent": _compatible_intent(
-            state["message"],
-            decision,
-            inquiry_choice=state.get("inquiry_choice"),
-            goal_spec=goal_spec,
-        ),
-        "route_decision": decision.to_payload(),
-        "goal_spec": goal_spec,
+        "run_state": routed_run_state,
+        "message": routed_run_state.message,
+        "intent": routed_run_state.intent,
+        "route_decision": routed_run_state.route_decision,
+        "structured_route_decision": routed_run_state.structured_route_decision,
+        "goal_spec": routed_run_state.goal_spec,
     }
+
+
+def _route_run_state(
+    run_state: AgentRunState,
+    *,
+    inquiry_choice: InquiryChoice | None = None,
+    model_client: ModelClient | None = None,
+) -> AgentRunState:
+    effective_inquiry_choice = inquiry_choice or run_state.inquiry_choice
+    message = run_state.message
+    router_decision = route_message(
+        message,
+        inquiry_choice=effective_inquiry_choice,
+        model_client=model_client,
+    )
+    goal_spec = parse_goal_spec(message)
+    intent = router_decision.intent
+    routed_run_state = run_state
+    if effective_inquiry_choice != run_state.inquiry_choice:
+        routed_run_state = routed_run_state.model_copy(
+            update={"inquiry_choice": effective_inquiry_choice}
+        )
+    return routed_run_state.with_routing(
+        intent=intent,
+        route_decision=router_decision.legacy_route,
+        goal_spec=goal_spec,
+        structured_route_decision=router_decision.to_payload(),
+    )
+
+
+def _effective_route_payload(
+    decision: RouteDecision | RouterV2Decision,
+    intent: AgentIntent | None = None,
+) -> dict:
+    return effective_legacy_route_payload(decision, intent)
 
 
 def request_required_inputs(state: AgentState) -> AgentState:
     missing_inputs = state.get("route_decision", {}).get("missing_inputs", [])
     if "document_file" in missing_inputs:
         prompt = "请把需要处理的文件添加到聊天框里。"
+    elif "clarification" in missing_inputs:
+        structured_decision = state.get("structured_route_decision")
+        if structured_decision is None and "run_state" in state:
+            structured_decision = state["run_state"].structured_route_decision
+        prompt = (
+            structured_decision.get("clarificationPrompt")
+            if isinstance(structured_decision, dict)
+            else None
+        ) or "请先输入你想让我处理的问题或任务。"
     else:
         prompt = "请先输入你想让我处理的问题或任务。"
 
@@ -138,9 +232,18 @@ def request_required_inputs(state: AgentState) -> AgentState:
 
 def plan_task_graph(state: AgentState) -> AgentState:
     message = state["message"]
+    run_state = _run_state_with_structured_route_for_planning(
+        message,
+        state.get("run_state"),
+    )
     graph_payload = _graph_payload_for_task(
         message,
         goal_spec=state.get("goal_spec"),
+        run_state=run_state,
+    )
+    graph_payload = _with_route_decision_metadata(
+        graph_payload,
+        run_state,
     )
     return {
         **state,
@@ -157,18 +260,53 @@ def _graph_payload_for_task(
     message: UserMessage,
     *,
     goal_spec: GoalSpec | None = None,
+    run_state: AgentRunState | None = None,
 ) -> dict:
     spec = goal_spec or parse_goal_spec(message)
-    if spec.task_type == "document_processing" and not _is_markdown_conversion_only(
-        message.content
-    ):
-        graph_payload = _create_document_graph(message.task_id, spec, message)
-    else:
-        graph_payload = _build_task_graph_payload(message)
-
+    tool_registry = ToolRegistry.from_packages_root(default_tool_packages_root())
+    route_payload = _structured_route_payload_for_planning(message, run_state)
+    context = build_context_bundle(
+        message=message,
+        goal_spec=spec,
+        project_path="project.alita",
+        tool_registry=tool_registry,
+    )
+    result = PlannerChain(tool_registry=tool_registry).plan(
+        PlannerChainRequest(
+            task_id=message.task_id,
+            message=message,
+            goal_spec=spec,
+            route=route_context_from_payload(route_payload),
+            context=context,
+        )
+    )
     return _with_model_policy_metadata(
-        graph_payload,
+        result.graph_payload,
         DEEP_REASONING_POLICY.profile.value,
+    )
+
+
+def _structured_route_payload_for_planning(
+    message: UserMessage,
+    run_state: AgentRunState | None,
+) -> dict:
+    if run_state is not None and run_state.structured_route_decision is not None:
+        return dict(run_state.structured_route_decision)
+    return deterministic_route(message).to_payload()
+
+
+def _run_state_with_structured_route_for_planning(
+    message: UserMessage,
+    run_state: AgentRunState | None,
+) -> AgentRunState | None:
+    if run_state is None or run_state.structured_route_decision is not None:
+        return run_state
+    decision = deterministic_route(message)
+    return run_state.with_routing(
+        intent=run_state.intent or decision.intent,
+        route_decision=run_state.route_decision or decision.legacy_route,
+        goal_spec=run_state.goal_spec or parse_goal_spec(message),
+        structured_route_decision=decision.to_payload(),
     )
 
 
@@ -178,19 +316,17 @@ def _with_model_policy_metadata(graph_payload: dict, policy_name: str) -> dict:
     return {**graph_payload, "metadata": metadata}
 
 
-def _build_task_graph_payload(message: UserMessage) -> dict:
-    task_plan = analyze_task(message.content, message.attachments)
-    task_plan.task_id = message.task_id
-    registry = ToolRegistry.from_packages_root(default_tool_packages_root())
-    task_plan.selected_tools = select_tools(
-        task_plan.requirements,
-        registry.enabled_tools(),
-    )
-    task_plan.tool_gaps = resolve_tool_gaps(
-        task_plan.requirements,
-        task_plan.selected_tools,
-    )
-    return build_task_graph(task_plan)
+def _with_route_decision_metadata(
+    graph_payload: dict,
+    run_state: AgentRunState | None,
+) -> dict:
+    if run_state is None or run_state.structured_route_decision is None:
+        return graph_payload
+    metadata = dict(graph_payload.get("metadata") or {})
+    metadata["routeDecision"] = route_context_from_payload(
+        run_state.structured_route_decision
+    ).safe_payload()
+    return {**graph_payload, "metadata": metadata}
 
 
 def _task_planning_progress_events(
@@ -262,12 +398,16 @@ def plan_research_graph(state: AgentState) -> AgentState:
 
 
 def _research_graph_payload(state: AgentState) -> dict:
-    return _with_model_policy_metadata(
+    graph_payload = _with_model_policy_metadata(
         build_research_graph(
             state["message"],
             state.get("route_decision", {}),
         ),
         DEEP_REASONING_POLICY.profile.value,
+    )
+    return _with_route_decision_metadata(
+        graph_payload,
+        state.get("run_state"),
     )
 
 
@@ -285,7 +425,8 @@ def build_graph(
             {
                 **state,
                 "inquiry_choice": state.get("inquiry_choice") or inquiry_choice,
-            }
+            },
+            model_client=model_client,
         ),
     )
     graph.add_node("request_required_inputs", request_required_inputs)
@@ -375,6 +516,36 @@ def answer_with_web(
     }
 
 
+def _events_for_routed_run_state(
+    run_state: AgentRunState,
+    *,
+    model_client: ModelClient | None = None,
+    search_provider: SearchProvider | None = None,
+    weather_provider: WeatherProvider | None = None,
+) -> list[AgentEvent]:
+    state = _agent_state_from_run_state(run_state)
+    intent = run_state.intent
+    if intent == "chat" or intent == "local_inquiry":
+        result = answer_with_model(state, model_client=model_client)
+    elif intent == "web_simple_inquiry":
+        result = answer_with_web(
+            state,
+            search_provider=search_provider,
+            weather_provider=weather_provider,
+        )
+    elif intent == "web_complex_choice":
+        result = choose_research_mode(state)
+    elif intent == "web_complex_research_flow":
+        result = plan_research_graph(state)
+    elif intent == "missing_input":
+        result = request_required_inputs(state)
+    elif intent == "task":
+        result = plan_task_graph(state)
+    else:
+        raise ValueError("AgentRunState must be routed before dispatching events")
+    return result["events"]
+
+
 def run_agent(
     message: UserMessage,
     *,
@@ -387,30 +558,60 @@ def run_agent(
     artifact_refs: list[str] | None = None,
     pending_choice: dict | None = None,
 ) -> list[AgentEvent]:
+    run_state = AgentRunState.from_user_message(
+        message,
+        inquiry_choice=inquiry_choice,
+        current_graph=current_graph,
+        has_run_history=has_run_history,
+        artifact_refs=artifact_refs,
+        pending_choice=pending_choice,
+    )
+    return run_agent_from_state(
+        run_state,
+        model_client=model_client,
+        search_provider=search_provider,
+        weather_provider=weather_provider,
+    )
+
+
+def run_agent_from_state(
+    run_state: AgentRunState,
+    *,
+    model_client: ModelClient | None = None,
+    search_provider: SearchProvider | None = None,
+    weather_provider: WeatherProvider | None = None,
+) -> list[AgentEvent]:
+    message = run_state.message
     if _should_handle_graph_feedback(
         message,
-        current_graph,
-        pending_choice=pending_choice,
+        run_state.current_graph,
+        pending_choice=run_state.pending_choice,
     ):
         return [
             apply_graph_feedback(
                 message,
-                current_graph,
-                has_run_history=has_run_history,
-                artifact_refs=artifact_refs,
-                pending_choice=pending_choice,
+                run_state.current_graph,
+                has_run_history=run_state.has_run_history,
+                artifact_refs=run_state.artifact_refs,
+                pending_choice=run_state.pending_choice,
             )
         ]
+
+    if run_state.intent is not None:
+        return _events_for_routed_run_state(
+            run_state,
+            model_client=model_client,
+            search_provider=search_provider,
+            weather_provider=weather_provider,
+        )
 
     app = build_graph(
         model_client=model_client,
         search_provider=search_provider,
         weather_provider=weather_provider,
-        inquiry_choice=inquiry_choice,
+        inquiry_choice=run_state.inquiry_choice,
     )
-    result = app.invoke(
-        {"message": message, "events": [], "inquiry_choice": inquiry_choice}
-    )
+    result = app.invoke(_agent_state_from_run_state(run_state))
     return result["events"]
 
 
@@ -426,52 +627,71 @@ def stream_agent_events(
     artifact_refs: list[str] | None = None,
     pending_choice: dict | None = None,
 ) -> Iterator[AgentEvent]:
+    run_state = AgentRunState.from_user_message(
+        message,
+        inquiry_choice=inquiry_choice,
+        current_graph=current_graph,
+        has_run_history=has_run_history,
+        artifact_refs=artifact_refs,
+        pending_choice=pending_choice,
+    )
+    yield from stream_agent_events_from_state(
+        run_state,
+        model_client=model_client,
+        search_provider=search_provider,
+        weather_provider=weather_provider,
+    )
+
+
+def stream_agent_events_from_state(
+    run_state: AgentRunState,
+    *,
+    model_client: ModelClient | None = None,
+    search_provider: SearchProvider | None = None,
+    weather_provider: WeatherProvider | None = None,
+) -> Iterator[AgentEvent]:
+    message = run_state.message
     if _should_handle_graph_feedback(
         message,
-        current_graph,
-        pending_choice=pending_choice,
+        run_state.current_graph,
+        pending_choice=run_state.pending_choice,
     ):
         yield apply_graph_feedback(
             message,
-            current_graph,
-            has_run_history=has_run_history,
-            artifact_refs=artifact_refs,
-            pending_choice=pending_choice,
+            run_state.current_graph,
+            has_run_history=run_state.has_run_history,
+            artifact_refs=run_state.artifact_refs,
+            pending_choice=run_state.pending_choice,
         )
         return
 
-    decision = classify_route(message)
-    goal_spec = parse_goal_spec(message)
-    intent = _compatible_intent(
-        message,
-        decision,
-        inquiry_choice=inquiry_choice,
-        goal_spec=goal_spec,
-    )
-    if intent == "task":
+    run_state = _route_run_state(run_state, model_client=model_client)
+    if run_state.intent == "task":
+        run_state = _run_state_with_structured_route_for_planning(message, run_state)
         graph_payload = _graph_payload_for_task(
             message,
-            goal_spec=goal_spec,
+            goal_spec=run_state.goal_spec,
+            run_state=run_state,
         )
         yield from _task_planning_progress_events(message, graph_payload)
+        graph_payload = _with_route_decision_metadata(graph_payload, run_state)
         yield AgentEvent(
             type="node_graph.created",
             payload={"graph": graph_payload},
         )
         return
 
-    if intent not in {"chat", "local_inquiry"}:
-        yield from run_agent(
-            message,
+    if run_state.intent not in {"chat", "local_inquiry"}:
+        yield from _events_for_routed_run_state(
+            run_state,
             model_client=model_client,
             search_provider=search_provider,
             weather_provider=weather_provider,
-            inquiry_choice=inquiry_choice,
         )
         return
 
     client = model_client or LlamaCppModelClient()
-    policy = policy_for_agent_intent(intent)
+    policy = policy_for_agent_intent(run_state.intent)
     assistant_message = _assistant_message("")
     message_id = assistant_message["messageId"]
     yield AgentEvent(
@@ -590,42 +810,12 @@ def _compatible_intent(
     inquiry_choice: InquiryChoice | None = None,
     goal_spec: GoalSpec | None = None,
 ) -> AgentIntent:
-    if (
-        goal_spec is not None
-        and goal_spec.task_type == "document_processing"
-        and not _looks_like_external_web_request(message.content)
-    ):
-        if goal_spec.missing_inputs:
-            return "missing_input"
-        return "task"
-
-    if decision.intent.kind == IntentKind.NEED_INPUT:
-        return "missing_input"
-
-    if decision.intent.kind == IntentKind.TASK:
-        return "task"
-
-    if decision.intent.kind == IntentKind.INQUIRY and decision.inquiry is not None:
-        if decision.inquiry.mode == InquiryMode.LOCAL:
-            return "local_inquiry"
-        if decision.inquiry.mode == InquiryMode.WEB_SIMPLE:
-            return "web_simple_inquiry"
-        if decision.inquiry.mode == InquiryMode.WEB_COMPLEX:
-            if inquiry_choice == "quick_answer":
-                return "web_simple_inquiry"
-            if inquiry_choice == "research_flow":
-                return "web_complex_research_flow"
-            return "web_complex_choice"
-
-    return "chat"
-
-
-def _is_markdown_conversion_only(content: str) -> bool:
-    normalized = content.lower()
-    wants_markdown = "markdown" in normalized or "md" in normalized
-    wants_conversion = "convert" in normalized or "转换" in content or "转" in content
-    wants_report = "report" in normalized or "pdf" in normalized or "报告" in content
-    return wants_markdown and wants_conversion and not wants_report
+    return router_v2_compatible_intent(
+        message,
+        decision,
+        inquiry_choice=inquiry_choice,
+        goal_spec=goal_spec,
+    )
 
 
 def _looks_like_external_web_request(content: str) -> bool:
@@ -675,24 +865,6 @@ def _assistant_message(content: str) -> dict:
         "attachments": [],
         "createdAt": created_at,
     }
-
-
-def _create_document_graph(
-    task_id: str, goal_spec: GoalSpec, message: UserMessage
-) -> dict:
-    tool_registry = ToolRegistry.from_packages_root(default_tool_packages_root())
-    context = build_context_bundle(
-        message=message,
-        goal_spec=goal_spec,
-        project_path="project.alita",
-        tool_registry=tool_registry,
-    )
-    plan = PlannerV2(tool_registry=tool_registry).plan(
-        task_id=task_id,
-        goal_spec=goal_spec,
-        context=context,
-    )
-    return compile_task_graph_to_node_graph(plan.task_graph)
 
 
 def _node(

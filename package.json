@@ -1,13 +1,13 @@
 {
   "name": "alita",
   "private": true,
-  "version": "0.28.0",
+  "version": "0.29.0",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
     "check:desktop-prereqs": "powershell -ExecutionPolicy Bypass -File scripts/check-windows-tauri-prereqs.ps1",
-    "sidecar:dev": "python -m uvicorn agent_service.app:app --host 127.0.0.1 --port 8765",
+    "sidecar:dev": "powershell -ExecutionPolicy Bypass -File scripts/dev-sidecar.ps1",
     "llama:install": "powershell -ExecutionPolicy Bypass -File scripts/install-llama-cpp.ps1",
     "desktop:dev": "powershell -ExecutionPolicy Bypass -File scripts/dev-desktop.ps1",
     "desktop:build": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-app.ps1",

@@ -13,7 +13,13 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from agent_service.agent_run_state import AgentRunState
 from agent_service.final_verifier import FinalVerifier
+from agent_service.execution_graph import (
+    ExecutionGraph,
+    compile_execution_graph,
+    validate_execution_graph_bindings,
+)
 from agent_service.goal_spec import GoalSpec
 from agent_service.harness_errors import HarnessError, harness_error_payload
 from agent_service.model_client import (
@@ -26,6 +32,14 @@ from agent_service.node_output import NodeOutput
 from agent_service.permission_gate import PermissionGate
 from agent_service.privacy import sanitize_for_web_search
 from agent_service.replan import FailureReplanner
+from agent_service.react_controller import ReActController, ReActPolicy
+from agent_service.research_evidence import (
+    ResearchEvidenceSet,
+    attach_read_content,
+    evidence_from_search_results,
+    normalize_source_url,
+    validate_citation_coverage,
+)
 from agent_service.result_verifier import ResultVerifier
 from agent_service.run_journal import RunJournal
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY, RunRegistry
@@ -35,15 +49,25 @@ from agent_service.schemas import (
     RunGraphRequest,
     ScriptReviewState,
 )
+from agent_service.sandbox import SandboxRequest, run_sandboxed_python
 from agent_service.script_review import script_review_fingerprint
 from agent_service.task_graph import build_document_task_graph
 from agent_service.tool_execution import (
     ToolExecutor,
-    ToolInvocation,
     default_tool_packages_root,
 )
+from agent_service.tool_gateway import (
+    UnifiedToolGateway,
+    default_unified_tool_gateway,
+)
 from agent_service.tool_providers.web_search import default_search_provider
-from agent_service.tool_protocol import equivalent_tool_ids, provider_tool_id
+from agent_service.tool_protocol import (
+    UnifiedToolDefinition,
+    UnifiedToolInvocation,
+    equivalent_tool_ids,
+    normalize_tool_id,
+    provider_tool_id,
+)
 from agent_service.tool_registry import ToolRegistry
 from agent_service.web_research import (
     REPORT_SECTION_ORDER,
@@ -90,6 +114,12 @@ DOCUMENT_FLOW_NODE_IDS = {
     "report-generate",
     "typst-export",
     "file-export",
+}
+
+DOCUMENT_FLOW_RUNTIME_TOOL_BINDINGS = {
+    "document-input": "document.receive_attachment",
+    "document-parse": "document.markitdown_convert",
+    "typst-export": "document.typst_compile",
 }
 
 DATA_DEPENDENT_NODE_IDS = {
@@ -142,14 +172,23 @@ class DocumentFlowExecutor:
         self,
         request: RunGraphRequest,
         *,
+        run_state: AgentRunState | None = None,
         model_client: ModelClient | None = None,
         model_runtime: ModelRuntime | None = None,
+        tool_gateway: UnifiedToolGateway | None = None,
         tool_executor: ToolExecutor | None = None,
+        tool_registry: ToolRegistry | None = None,
     ) -> None:
         self.request = request
+        self.run_state = run_state or AgentRunState.from_run_graph_request(request)
         self.model_client = model_client or LlamaCppModelClient()
         self.model_runtime = model_runtime or ModelRuntime(model_client=self.model_client)
-        self.tool_executor = tool_executor or ToolExecutor()
+        self.tool_registry = tool_registry or _default_tool_registry()
+        self.tool_gateway = tool_gateway or _default_tool_gateway(
+            tool_executor=tool_executor,
+            tool_registry=self.tool_registry,
+        )
+        self.nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
         self.project_dir = Path(request.project_path).parent
         self.artifact_dir = self.project_dir / "artifacts"
         self.task_graph = build_document_task_graph(
@@ -170,12 +209,12 @@ class DocumentFlowExecutor:
         if node_id == "document-input":
             if not self.request.attachments:
                 raise ValueError("缺少可执行的文档附件")
-            return NodeOutput(
-                values={
-                    "paths": "\n".join(
-                        attachment.path for attachment in self.request.attachments
-                    )
-                }
+            paths = "\n".join(attachment.path for attachment in self.request.attachments)
+            return self._call_tool(
+                "document-input",
+                tool_id="document.receive_attachment",
+                operation="receive_attachment",
+                arguments={"paths": paths},
             )
 
         if node_id == "document-parse":
@@ -184,22 +223,19 @@ class DocumentFlowExecutor:
             for index, attachment in enumerate(self.request.attachments):
                 input_path = Path(attachment.path)
                 output_path = self._converted_output_path(index, input_path)
-                result = self.tool_executor.run(
-                    ToolInvocation(
-                        tool_id="document.markitdown_convert",
-                        operation="convert_local_file",
-                        arguments={
-                            "input_path": attachment.path,
-                            "output_path": str(output_path),
-                        },
-                        project_path=self.request.project_path,
-                        allowed_roots=self._allowed_roots(),
-                    )
+                output = self._call_tool(
+                    "document-parse",
+                    tool_id="document.markitdown_convert",
+                    operation="convert_local_file",
+                    arguments={
+                        "input_path": attachment.path,
+                        "output_path": str(output_path),
+                    },
                 )
-                text = result.values.get("text", "")
+                text = str(output.values.get("text", ""))
                 if text:
                     texts.append(text)
-                artifacts.extend(result.artifacts)
+                artifacts.extend(output.artifacts)
             return NodeOutput(artifacts=artifacts, values={"text": "\n\n".join(texts)})
 
         if node_id == "content-organize":
@@ -218,26 +254,23 @@ class DocumentFlowExecutor:
             outline = _first_input_value(inputs, "outline")
             report = _first_input_value(inputs, "report")
             output_stem = f"report-{uuid4().hex[:8]}"
-            result = self.tool_executor.run(
-                ToolInvocation(
-                    tool_id="document.typst_compile",
-                    operation="compile_report_pdf",
-                    arguments={
-                        "title": Path(self.request.project_path).stem or "Alita Report",
-                        "outline": outline,
-                        "report": report,
-                        "source_output_path": str(
-                            self.artifact_dir / "typst" / f"{output_stem}.typ"
-                        ),
-                        "pdf_output_path": str(
-                            self.artifact_dir / "typst" / f"{output_stem}.pdf"
-                        ),
-                    },
-                    project_path=self.request.project_path,
-                    allowed_roots=self._allowed_roots(),
-                )
+            output = self._call_tool(
+                "typst-export",
+                tool_id="document.typst_compile",
+                operation="compile_report_pdf",
+                arguments={
+                    "title": Path(self.request.project_path).stem or "Alita Report",
+                    "outline": outline,
+                    "report": report,
+                    "source_output_path": str(
+                        self.artifact_dir / "typst" / f"{output_stem}.typ"
+                    ),
+                    "pdf_output_path": str(
+                        self.artifact_dir / "typst" / f"{output_stem}.pdf"
+                    ),
+                },
             )
-            return NodeOutput(artifacts=result.artifacts, values=result.values)
+            return output
 
         if node_id == "file-export":
             compiled_artifact = _first_input_value(inputs, "artifact")
@@ -269,6 +302,47 @@ class DocumentFlowExecutor:
 
         raise ValueError(f"未支持的节点: {node_id}")
 
+    def _call_tool(
+        self,
+        node_id: str,
+        *,
+        tool_id: str,
+        operation: str,
+        arguments: dict[str, object],
+    ) -> NodeOutput:
+        node = self.nodes_by_id.get(node_id)
+        _ensure_document_flow_runtime_tool_binding(
+            node,
+            node_id=node_id,
+            runtime_tool_id=tool_id,
+        )
+        permissions = (
+            _required_permissions_for_tool_node(
+                node,
+                tool_registry=self.tool_registry,
+            )
+            if node is not None
+            else []
+        )
+        result = self.tool_gateway.call_tool(
+            UnifiedToolInvocation(
+                invocation_id=(
+                    f"{self.run_state.run_id or self.request.run_id}-"
+                    f"{node_id}-{operation}"
+                ),
+                run_id=self.run_state.run_id or self.request.run_id,
+                task_id=self.run_state.task_id,
+                node_id=node_id,
+                tool_id=normalize_tool_id(tool_id),
+                arguments={"operation": operation, **arguments},
+                project_path=self.run_state.project_path or self.request.project_path,
+                allowed_roots=self._allowed_roots(),
+                requested_permissions=permissions,
+                model_session_id=self.run_state.message.model_session_id,
+            )
+        )
+        return _node_output_from_unified_result(result)
+
     def _allowed_roots(self) -> list[str]:
         roots = {str(self.project_dir)}
         roots.update(str(Path(attachment.path).parent) for attachment in self.request.attachments)
@@ -294,20 +368,157 @@ class PlannedTaskExecutor:
         self,
         request: RunGraphRequest,
         *,
+        run_state: AgentRunState | None = None,
         model_client: ModelClient | None = None,
+        tool_gateway: UnifiedToolGateway | None = None,
         tool_executor: ToolExecutor | None = None,
+        tool_registry: ToolRegistry | None = None,
+        execution_graph: ExecutionGraph | None = None,
     ) -> None:
         self.request = request
+        self.run_state = run_state or AgentRunState.from_run_graph_request(request)
         self.nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
+        self.execution_graph = execution_graph or compile_execution_graph(request)
         self.model_client = model_client or LlamaCppModelClient()
+        self.tool_registry = tool_registry or _default_tool_registry()
+        self.tool_gateway = tool_gateway or _default_tool_gateway(
+            tool_executor=tool_executor,
+            tool_registry=self.tool_registry,
+        )
         self.document_executor = DocumentFlowExecutor(
             request,
+            run_state=self.run_state,
             model_client=model_client,
+            tool_gateway=self.tool_gateway,
             tool_executor=tool_executor,
+            tool_registry=self.tool_registry,
+        )
+
+    def _call_tool(
+        self,
+        node: GraphNode,
+        *,
+        operation: str,
+        arguments: dict[str, object],
+    ) -> NodeOutput:
+        if not node.toolRef:
+            raise HarnessError(
+                "unsupported_runtime",
+                f"tool node {node.nodeId} has no bound runtime: <missing>",
+            )
+        result = self.tool_gateway.call_tool(
+            UnifiedToolInvocation(
+                invocation_id=(
+                    f"{self.run_state.run_id or self.request.run_id}-"
+                    f"{node.nodeId}-{operation}"
+                ),
+                run_id=self.run_state.run_id or self.request.run_id,
+                task_id=self.run_state.task_id,
+                node_id=node.nodeId,
+                tool_id=normalize_tool_id(node.toolRef),
+                arguments={"operation": operation, **arguments},
+                project_path=self.run_state.project_path or self.request.project_path,
+                allowed_roots=self.document_executor._allowed_roots(),
+                requested_permissions=_required_permissions_for_tool_node(
+                    node,
+                    tool_registry=self.tool_registry,
+                ),
+                model_session_id=self.run_state.message.model_session_id,
+            )
+        )
+        return _node_output_from_unified_result(result)
+
+    def _run_fixed_tool_node(
+        self,
+        node: GraphNode,
+        inputs: dict[str, NodeOutput],
+    ) -> NodeOutput:
+        execution_node = self.execution_graph.node_by_id(node.nodeId)
+        if execution_node.tool_binding is None:
+            raise HarnessError(
+                "unsupported_binding",
+                f"fixed_tool node {node.nodeId} has no tool binding",
+            )
+        tool_id = execution_node.tool_binding.tool_id
+
+        if tool_id == "document.receive_attachment":
+            if not self.request.attachments:
+                raise HarnessError(
+                    "missing_input",
+                    f"tool node {node.nodeId} requires at least one attachment",
+                )
+            paths = "\n".join(attachment.path for attachment in self.request.attachments)
+            return self._call_tool(
+                node,
+                operation="receive_attachment",
+                arguments={"paths": paths},
+            )
+
+        if tool_id == "document.markitdown_convert":
+            if not self.request.attachments:
+                raise HarnessError(
+                    "missing_input",
+                    f"tool node {node.nodeId} requires at least one attachment",
+                )
+            texts: list[str] = []
+            artifacts: list[str] = []
+            for index, attachment in enumerate(self.request.attachments):
+                input_path = Path(attachment.path)
+                output_path = self.document_executor._converted_output_path(
+                    index,
+                    input_path,
+                )
+                output = self._call_tool(
+                    node,
+                    operation="convert_local_file",
+                    arguments={
+                        "input_path": attachment.path,
+                        "output_path": str(output_path),
+                    },
+                )
+                text = str(output.values.get("text", ""))
+                if text:
+                    texts.append(text)
+                artifacts.extend(output.artifacts)
+            return NodeOutput(
+                artifacts=artifacts,
+                values={"text": "\n\n".join(texts)},
+            )
+
+        if tool_id == "document.typst_compile":
+            outline = _first_input_value(inputs, "outline")
+            report = _first_input_value(inputs, "report")
+            output_stem = f"report-{uuid4().hex[:8]}"
+            return self._call_tool(
+                node,
+                operation="compile_report_pdf",
+                arguments={
+                    "title": Path(self.request.project_path).stem or "Alita Report",
+                    "outline": outline,
+                    "report": report,
+                    "source_output_path": str(
+                        self.document_executor.artifact_dir
+                        / "typst"
+                        / f"{output_stem}.typ"
+                    ),
+                    "pdf_output_path": str(
+                        self.document_executor.artifact_dir
+                        / "typst"
+                        / f"{output_stem}.pdf"
+                    ),
+                },
+            )
+
+        raise HarnessError(
+            "unsupported_runtime",
+            f"tool node {node.nodeId} has no bound runtime: {node.toolRef or '<missing>'}",
         )
 
     def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
         node = self.nodes_by_id[node_id]
+
+        if node.nodeType == "fixed_tool":
+            return self._run_fixed_tool_node(node, inputs)
 
         if node_id in DOCUMENT_FLOW_NODE_IDS:
             return self.document_executor.run(node_id, inputs)
@@ -328,6 +539,43 @@ class PlannedTaskExecutor:
                     "permission_required",
                     f"temporary script requires approval before execution: {node_id}",
                 )
+            script = review.codePreview if review is not None else None
+            if script and review is not None and review.riskLevel == "low":
+                result = run_sandboxed_python(
+                    SandboxRequest(
+                        script=script,
+                        arguments={
+                            "inputs": {
+                                input_node_id: output.values
+                                for input_node_id, output in inputs.items()
+                            }
+                        },
+                        project_path=(
+                            self.run_state.project_path or self.request.project_path
+                        ),
+                        allowed_roots=[str(Path(self.request.project_path).parent)],
+                        artifact_dir=str(self.document_executor.artifact_dir),
+                        timeout_seconds=10.0,
+                    )
+                )
+                if not result.ok:
+                    raise HarnessError(
+                        result.error_code or "sandbox_failed",
+                        result.stderr or "temporary script sandbox failed",
+                    )
+                return NodeOutput(
+                    artifacts=result.artifacts,
+                    values={
+                        "mode": "planned_task",
+                        "nodeType": node.nodeType,
+                        "summary": node.summary,
+                        "scriptStatus": "executed",
+                        "riskLevel": (
+                            review.riskLevel if review is not None else "low"
+                        ),
+                        **result.values,
+                    },
+                )
             return NodeOutput(
                 values={
                     "mode": "planned_task",
@@ -339,46 +587,105 @@ class PlannedTaskExecutor:
             )
 
         if node.nodeType == "model":
-            if node.modelRef not in SUPPORTED_PLANNED_MODEL_REFS:
+            execution_node = self.execution_graph.node_by_id(node_id)
+            model_binding = execution_node.model_binding
+            if (
+                model_binding is None
+                or model_binding.model_ref not in SUPPORTED_PLANNED_MODEL_REFS
+            ):
+                runtime_ref = (
+                    model_binding.model_ref
+                    if model_binding is not None
+                    else "<missing>"
+                )
                 raise HarnessError(
                     "unsupported_runtime",
-                    f"model node {node_id} has no bound runtime: {node.modelRef or '<missing>'}",
+                    f"model node {node_id} has no bound runtime: {runtime_ref}",
                 )
-            content = self.model_client.chat(
-                [
-                    ModelChatMessage(
-                        role="system",
-                        content=(
-                            "Execute the planned model step. Return only the useful "
-                            "task result, not a description of the plan."
+            messages = [
+                ModelChatMessage(
+                    role="system",
+                    content=(
+                        "Execute the planned model step. Return only the useful "
+                        "task result, not a description of the plan."
+                    ),
+                ),
+                ModelChatMessage(
+                    role="user",
+                    content=_planned_model_prompt(node, inputs),
+                ),
+            ]
+            model_policy = policy_for_graph_node(
+                node,
+                graph_metadata=self.request.graph.metadata,
+            )
+            react_policy = _react_policy_from_graph_metadata(
+                self.request.graph.metadata
+            )
+            if react_policy.enabled:
+                result = ReActController(
+                    model_client=self.model_client,
+                    gateway=self.tool_gateway,
+                ).run(
+                    messages=messages,
+                    tools=self.tool_gateway.list_tools(),
+                    base_invocation=UnifiedToolInvocation(
+                        invocation_id=(
+                            f"{self.run_state.run_id or self.request.run_id}-"
+                            f"{node.nodeId}-react-base"
                         ),
+                        run_id=self.run_state.run_id or self.request.run_id,
+                        task_id=self.run_state.task_id,
+                        node_id=node.nodeId,
+                        tool_id=f"react:{node.nodeId}",
+                        arguments={},
+                        project_path=(
+                            self.run_state.project_path or self.request.project_path
+                        ),
+                        allowed_roots=self.document_executor._allowed_roots(),
+                        requested_permissions=list(
+                            react_policy.allowed_permissions
+                        ),
+                        model_session_id=self.run_state.message.model_session_id,
                     ),
-                    ModelChatMessage(
-                        role="user",
-                        content=_planned_model_prompt(node, inputs),
-                    ),
-                ],
+                    policy=react_policy,
+                    model_policy=model_policy,
+                )
+                if not result.ok:
+                    raise HarnessError(
+                        result.error_code or "react_failed",
+                        "react controller failed",
+                    )
+                return NodeOutput(
+                    values={
+                        "mode": "planned_task",
+                        "nodeType": node.nodeType,
+                        "summary": node.summary,
+                        "modelRef": model_binding.model_ref,
+                        "text": result.text,
+                        "react": {
+                            "ok": result.ok,
+                            "toolCallCount": result.tool_call_count,
+                            "observations": result.observations,
+                            "errorCode": result.error_code,
+                        },
+                    }
+                )
+
+            content = self.model_client.chat(
+                messages,
                 temperature=0.2,
                 max_tokens=1536,
-                policy=policy_for_graph_node(
-                    node,
-                    graph_metadata=self.request.graph.metadata,
-                ),
+                policy=model_policy,
             )
             return NodeOutput(
                 values={
                     "mode": "planned_task",
                     "nodeType": node.nodeType,
                     "summary": node.summary,
-                    "modelRef": node.modelRef or "",
+                    "modelRef": model_binding.model_ref,
                     "text": content,
                 }
-            )
-
-        if node.nodeType == "fixed_tool":
-            raise HarnessError(
-                "unsupported_runtime",
-                f"tool node {node_id} has no bound runtime: {node.toolRef or '<missing>'}",
             )
 
         if node.nodeType == "output":
@@ -552,10 +859,12 @@ class ResearchFlowExecutor:
             ]
             accepted_sources = [source for source in sources if source["accepted"]]
             rejected_sources = [source for source in sources if not source["accepted"]]
+            evidence_set = evidence_from_search_results(question, sources)
             return NodeOutput(
                 values={
                     "acceptedSources": accepted_sources,
                     "rejectedSources": rejected_sources,
+                    "evidenceSet": evidence_set.model_dump(),
                     "sourceCount": len(sources),
                 }
             )
@@ -617,10 +926,21 @@ class ResearchFlowExecutor:
                     }
                 )
 
+            evidence_payload = _input_value(inputs, "evidenceSet")
+            evidence_set = attach_read_content(
+                evidence_payload
+                or evidence_from_search_results(
+                    self._question(),
+                    [*accepted_sources, *rejected_sources],
+                ),
+                enriched_sources,
+                failed_reads,
+            )
             return NodeOutput(
                 values={
                     "acceptedSources": enriched_sources,
                     "rejectedSources": rejected_sources,
+                    "evidenceSet": evidence_set.model_dump(),
                     "sourceContents": source_contents,
                     "readSourceCount": sum(
                         1 for source in enriched_sources
@@ -635,6 +955,9 @@ class ResearchFlowExecutor:
             rejected_sources = list(_input_value(inputs, "rejectedSources") or [])
             failed_source_reads = list(_input_value(inputs, "failedSourceReads") or [])
             read_source_count = int(_input_value(inputs, "readSourceCount") or 0)
+            evidence_set = _research_evidence_from_value(
+                _input_value(inputs, "evidenceSet")
+            )
             summary = self._summary(accepted_sources)
             markdown = _synthesize_research_markdown(
                 self._question(),
@@ -642,6 +965,7 @@ class ResearchFlowExecutor:
                 accepted_sources,
                 rejected_sources,
                 self._section_order(),
+                evidence_set=evidence_set,
             )
             return NodeOutput(
                 values={
@@ -649,6 +973,7 @@ class ResearchFlowExecutor:
                     "summary": summary,
                     "acceptedSources": accepted_sources,
                     "rejectedSources": rejected_sources,
+                    "evidenceSet": evidence_set.model_dump() if evidence_set else {},
                     "readSourceCount": read_source_count,
                     "failedSourceReads": failed_source_reads,
                     "sectionOrder": self._section_order(),
@@ -660,13 +985,24 @@ class ResearchFlowExecutor:
             accepted_sources = list(_input_value(inputs, "acceptedSources") or [])
             rejected_sources = list(_input_value(inputs, "rejectedSources") or [])
             failed_source_reads = list(_input_value(inputs, "failedSourceReads") or [])
-            issues = _research_quality_issues(markdown, accepted_sources)
+            evidence_set = _research_evidence_from_value(
+                _input_value(inputs, "evidenceSet")
+            )
+            quality_sources = _sources_with_evidence_refs(
+                accepted_sources,
+                evidence_set,
+            )
+            issues = _research_quality_issues(markdown, quality_sources)
+            if evidence_set is not None:
+                issues.extend(validate_citation_coverage(markdown, evidence_set))
+            issues = _dedupe_issue_codes(issues)
             return NodeOutput(
                 values={
                     "markdown": markdown,
                     "summary": _input_value(inputs, "summary") or "",
                     "acceptedSources": accepted_sources,
                     "rejectedSources": rejected_sources,
+                    "evidenceSet": evidence_set.model_dump() if evidence_set else {},
                     "readSourceCount": _input_value(inputs, "readSourceCount") or 0,
                     "failedSourceReads": failed_source_reads,
                     "qualityStatus": "passed" if not issues else "needs_review",
@@ -687,6 +1023,7 @@ class ResearchFlowExecutor:
                     "summary": _input_value(inputs, "summary") or "",
                     "acceptedSources": _input_value(inputs, "acceptedSources") or [],
                     "rejectedSources": _input_value(inputs, "rejectedSources") or [],
+                    "evidenceSet": _input_value(inputs, "evidenceSet") or {},
                     "readSourceCount": _input_value(inputs, "readSourceCount") or 0,
                     "failedSourceReads": _input_value(inputs, "failedSourceReads") or [],
                     "qualityStatus": _input_value(inputs, "qualityStatus") or "",
@@ -741,8 +1078,10 @@ class ResearchFlowExecutor:
 def run_graph_events(
     request: RunGraphRequest,
     *,
+    run_state: AgentRunState | None = None,
     executor: NodeExecutor | None = None,
     model_client: ModelClient | None = None,
+    tool_gateway: UnifiedToolGateway | None = None,
     tool_executor: ToolExecutor | None = None,
     search_provider: SearchProvider | None = None,
     source_fetcher: SourceContentFetcher | None = None,
@@ -753,11 +1092,41 @@ def run_graph_events(
     final_verifier: FinalVerifier | None = None,
     failure_replanner: FailureReplanner | None = None,
 ) -> Iterator[AgentEvent]:
+    run_state = run_state or AgentRunState.from_run_graph_request(request)
+    mismatch = _run_state_mismatch(request, run_state)
+    if mismatch is not None:
+        yield AgentEvent(
+            type="task.failed",
+            payload={
+                "taskId": request.task_id,
+                "runId": request.run_id,
+                "error": {
+                    "code": "run_state_mismatch",
+                    "message": mismatch,
+                },
+            },
+        )
+        return
+
     replanner = failure_replanner or FailureReplanner()
     try:
         ordered_nodes = _topological_nodes(request)
+        execution_graph = compile_execution_graph(request)
+        # Binding validation belongs to the internal planned-task executor path.
+        # Injected executors and document/research flows keep their existing
+        # runtime binding semantics.
+        if (
+            executor is None
+            and _is_planned_task_graph(request)
+            and not _is_research_graph(request)
+        ):
+            validate_execution_graph_bindings(execution_graph)
         effective_tool_registry = tool_registry or _default_tool_registry()
-        _validate_graph_tools(request, effective_tool_registry)
+        effective_tool_gateway = tool_gateway or _default_tool_gateway(
+            tool_executor=tool_executor,
+            tool_registry=effective_tool_registry,
+        )
+        _validate_graph_tools(request, effective_tool_gateway.list_tools())
     except (ValueError, HarnessError) as error:
         payload = harness_error_payload(error)
         failed_node = _unsupported_tool_node(request, error)
@@ -797,14 +1166,21 @@ def run_graph_events(
     elif _is_planned_task_graph(request):
         node_executor = PlannedTaskExecutor(
             request,
+            run_state=run_state,
             model_client=model_client,
+            tool_gateway=effective_tool_gateway,
             tool_executor=tool_executor,
+            tool_registry=effective_tool_registry,
+            execution_graph=execution_graph,
         )
     else:
         node_executor = DocumentFlowExecutor(
             request,
+            run_state=run_state,
             model_client=model_client,
+            tool_gateway=effective_tool_gateway,
             tool_executor=tool_executor,
+            tool_registry=effective_tool_registry,
         )
     verifier = result_verifier or ResultVerifier()
     graph_verifier = final_verifier or FinalVerifier()
@@ -1313,6 +1689,23 @@ def _topological_nodes(request: RunGraphRequest) -> list[GraphNode]:
     return ordered
 
 
+def _run_state_mismatch(
+    request: RunGraphRequest,
+    run_state: AgentRunState,
+) -> str | None:
+    if run_state.task_id != request.task_id:
+        return (
+            "AgentRunState task_id does not match RunGraphRequest task_id: "
+            f"{run_state.task_id} != {request.task_id}"
+        )
+    if run_state.run_id != request.run_id:
+        return (
+            "AgentRunState run_id does not match RunGraphRequest run_id: "
+            f"{run_state.run_id} != {request.run_id}"
+        )
+    return None
+
+
 def is_executable_node(node: GraphNode) -> bool:
     if node.nodeType == "planning":
         return False
@@ -1441,7 +1834,77 @@ def _default_tool_registry() -> ToolRegistry:
     return ToolRegistry.from_packages_root(default_tool_packages_root())
 
 
-def _validate_graph_tools(request: RunGraphRequest, registry: ToolRegistry) -> None:
+def _default_tool_gateway(
+    *,
+    tool_executor: ToolExecutor | None = None,
+    tool_registry: ToolRegistry | None = None,
+) -> UnifiedToolGateway:
+    return default_unified_tool_gateway(
+        registry=tool_registry,
+        internal_executor=tool_executor,
+    )
+
+
+def _node_output_from_unified_result(result) -> NodeOutput:
+    if not result.ok:
+        error = result.error
+        raise HarnessError(
+            error.code if error is not None else "tool_failed",
+            error.message if error is not None else "tool failed",
+        )
+    return NodeOutput(
+        values=dict(result.structured_content or {}),
+        artifacts=list(result.artifacts),
+    )
+
+
+def _required_permissions_for_tool_node(
+    node: GraphNode,
+    *,
+    tool_registry: ToolRegistry,
+) -> list[str]:
+    permissions = list(node.permissionsRequired)
+    if node.toolRef:
+        try:
+            permissions.extend(tool_registry.get(provider_tool_id(node.toolRef)).permissions)
+        except KeyError:
+            pass
+    return _dedupe(permissions)
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _validate_graph_tools(
+    request: RunGraphRequest,
+    available_tools: list[UnifiedToolDefinition],
+) -> None:
+    if not _is_planned_task_graph(request) and not _is_research_graph(request):
+        nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
+        for node_id, runtime_tool_id in DOCUMENT_FLOW_RUNTIME_TOOL_BINDINGS.items():
+            node = nodes_by_id.get(node_id)
+            if node is None:
+                continue
+            _ensure_document_flow_runtime_tool_binding(
+                node,
+                node_id=node_id,
+                runtime_tool_id=runtime_tool_id,
+            )
+
+    available_tool_ids: set[str] = set()
+    for tool in available_tools:
+        if not tool.enabled:
+            continue
+        available_tool_ids.update(equivalent_tool_ids(tool.id))
+
     for node in request.graph.nodes:
         if node.nodeType != "fixed_tool" or not node.toolRef:
             continue
@@ -1450,14 +1913,35 @@ def _validate_graph_tools(request: RunGraphRequest, registry: ToolRegistry) -> N
             "web.fetch.sources",
         }:
             continue
-        registry_tool_id = provider_tool_id(node.toolRef)
-        try:
-            registry.get(registry_tool_id)
-        except KeyError as error:
+        if not (equivalent_tool_ids(node.toolRef) & available_tool_ids):
             raise HarnessError(
                 "unsupported_tool",
                 f"unsupported tool: {node.toolRef}",
-            ) from error
+            )
+
+
+def _ensure_document_flow_runtime_tool_binding(
+    node: GraphNode | None,
+    *,
+    node_id: str,
+    runtime_tool_id: str,
+) -> None:
+    if node is not None and node.nodeType == "fixed_tool" and node.toolRef:
+        if equivalent_tool_ids(node.toolRef) & equivalent_tool_ids(runtime_tool_id):
+            return
+
+    actual = "<missing>"
+    if node is not None:
+        actual = node.toolRef or "<missing>"
+        if node.nodeType != "fixed_tool":
+            actual = f"{node.nodeType}:{actual}"
+    raise HarnessError(
+        "unsupported_tool",
+        (
+            f"unsupported tool: {node_id} binding must be fixed_tool "
+            f"{runtime_tool_id}; got {actual}"
+        ),
+    )
 
 
 def _unsupported_tool_node(
@@ -1502,9 +1986,22 @@ def _is_research_graph(request: RunGraphRequest) -> bool:
 
 
 def _is_planned_task_graph(request: RunGraphRequest) -> bool:
-    if request.graph.metadata.get("taskKind"):
+    if request.graph.metadata.get("taskKind") or request.graph.metadata.get(
+        "plannerChain"
+    ):
         return True
     return any(node.nodeType == "planning" for node in request.graph.nodes)
+
+
+def _react_policy_from_graph_metadata(metadata: dict) -> ReActPolicy:
+    react = dict(metadata.get("react") or {})
+    return ReActPolicy(
+        enabled=react.get("enabled") is True,
+        max_steps=int(react.get("maxSteps", 4)),
+        max_tool_calls=int(react.get("maxToolCalls", 3)),
+        allowed_tool_ids=list(react.get("allowedToolIds") or []),
+        allowed_permissions=list(react.get("allowedPermissions") or []),
+    )
 
 
 def _selected_nodes_for_mode(
@@ -1853,17 +2350,20 @@ def _synthesize_research_markdown(
     accepted_sources: list[dict[str, Any]],
     rejected_sources: list[dict[str, Any]],
     section_order: list[str],
+    *,
+    evidence_set: ResearchEvidenceSet | None = None,
 ) -> str:
+    cited_sources = _sources_with_evidence_refs(accepted_sources, evidence_set)
     section_renderers = {
         "summary": lambda: f"## Summary\n\n{summary}\n",
-        "key_findings": lambda: _key_findings_section(accepted_sources),
-        "project_summaries": lambda: _project_summaries_section(accepted_sources),
-        "source_review": lambda: _source_review_section(accepted_sources, rejected_sources),
+        "key_findings": lambda: _key_findings_section(cited_sources),
+        "project_summaries": lambda: _project_summaries_section(cited_sources),
+        "source_review": lambda: _source_review_section(cited_sources, rejected_sources),
         "open_questions": lambda: (
             "## Open Questions\n\n"
             "- Validate whether newer source material appeared after this run.\n"
         ),
-        "references": lambda: _references_section(accepted_sources),
+        "references": lambda: _references_section(cited_sources),
     }
     sections = [
         f"# Research Report\n\nQuestion: {question.strip()}\n",
@@ -1881,7 +2381,7 @@ def _key_findings_section(accepted_sources: list[dict[str, Any]]) -> str:
         lines.append("- No accepted sources were available for synthesis.")
     else:
         for source in accepted_sources:
-            ref = source.get("ref") or "[-]"
+            ref = _source_citation_ref(source)
             lines.append(
                 f"- {ref} {source['title']}: {source.get('snippet') or 'No snippet available.'}"
             )
@@ -1894,7 +2394,7 @@ def _project_summaries_section(accepted_sources: list[dict[str, Any]]) -> str:
         lines.append("- No accepted source content was available for project summaries.")
     else:
         for source in accepted_sources:
-            ref = source.get("ref") or "[-]"
+            ref = _source_citation_ref(source)
             excerpt = _source_excerpt(source)
             lines.append(f"- {ref} {source['title']}: {excerpt}")
     return "\n".join(lines) + "\n"
@@ -1908,7 +2408,7 @@ def _source_review_section(
     lines.append(f"- Accepted sources: {len(accepted_sources)}")
     lines.append(f"- Rejected sources: {len(rejected_sources)}")
     for source in accepted_sources:
-        ref = source.get("ref") or "[-]"
+        ref = _source_citation_ref(source)
         lines.append(f"- Accepted {ref} {source['title']}: {source.get('sourceType')}")
     for source in rejected_sources:
         ref = source.get("ref") or "[-]"
@@ -1924,9 +2424,39 @@ def _references_section(accepted_sources: list[dict[str, Any]]) -> str:
         lines.append("- No accepted references.")
     else:
         for source in accepted_sources:
-            ref = source.get("ref") or "-"
+            ref = str(source.get("citationId") or source.get("ref") or "-")
             lines.append(f"- {ref} {source['title']} - {source['url']}")
     return "\n".join(lines) + "\n"
+
+
+def _sources_with_evidence_refs(
+    accepted_sources: list[dict[str, Any]],
+    evidence_set: ResearchEvidenceSet | None,
+) -> list[dict[str, Any]]:
+    if evidence_set is None:
+        return [dict(source) for source in accepted_sources]
+
+    evidence_by_url = {
+        normalize_source_url(source.url): source
+        for source in evidence_set.accepted_sources
+    }
+    cited_sources: list[dict[str, Any]] = []
+    for source in accepted_sources:
+        enriched = dict(source)
+        evidence_source = evidence_by_url.get(
+            normalize_source_url(str(source.get("url") or ""))
+        )
+        if evidence_source is not None:
+            enriched["citationId"] = evidence_source.source_id
+            enriched["citationRef"] = f"[{evidence_source.source_id}]"
+            if not str(enriched.get("sourceContent") or "").strip():
+                enriched["sourceContent"] = evidence_source.content_excerpt
+        cited_sources.append(enriched)
+    return cited_sources
+
+
+def _source_citation_ref(source: dict[str, Any]) -> str:
+    return str(source.get("citationRef") or source.get("ref") or "[-]")
 
 
 def _source_excerpt(source: dict[str, Any]) -> str:
@@ -1990,9 +2520,10 @@ def _research_quality_issues(
         issues.append("missing_references_section")
 
     missing_refs = [
-        str(source.get("ref"))
+        _source_citation_ref(source)
         for source in accepted_sources
-        if source.get("ref") and str(source.get("ref")) not in markdown
+        if _source_citation_ref(source) != "[-]"
+        and _source_citation_ref(source) not in markdown
     ]
     if missing_refs:
         issues.append("missing_source_references:" + ",".join(missing_refs))
@@ -2003,6 +2534,25 @@ def _research_quality_issues(
     ):
         issues.append("no_read_source_content")
     return issues
+
+
+def _research_evidence_from_value(value: Any) -> ResearchEvidenceSet | None:
+    if not value:
+        return None
+    if isinstance(value, ResearchEvidenceSet):
+        return value
+    return ResearchEvidenceSet.model_validate(value)
+
+
+def _dedupe_issue_codes(issues: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for issue in issues:
+        if issue in seen:
+            continue
+        deduped.append(issue)
+        seen.add(issue)
+    return deduped
 
 
 def _now_iso() -> str:

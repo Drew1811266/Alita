@@ -7,9 +7,10 @@
 1. 启动 Python Agent sidecar：
 
    ```powershell
-   cd python
-   python -m uvicorn agent_service.app:app --host 127.0.0.1 --port 8765
+   npm run sidecar:dev
    ```
+
+   该脚本只会在本地开发启动 sidecar 时设置 `ALITA_SIDECAR_ALLOW_UNAUTHENTICATED_DEV=1`，方便浏览器/Vite 调试；packaged 桌面应用不使用该绕过，而是由 Tauri 提供 `ALITA_SIDECAR_TOKEN`。
 
 2. 启动前端开发服务：
 
