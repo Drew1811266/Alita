@@ -2,7 +2,7 @@
 
 Alita 是一个本地优先的 AI Agent 桌面工作台。它不是单纯的聊天窗口，而是把本地大模型、工程文件、节点化任务流程、文档工具、联网查询工具、语音输入、运行历史和 artifact 预览整合到一个 Windows 桌面应用中。
 
-当前仓库版本为 `0.28.0`。这个阶段的重点是：桌面工程闭环已经成型，Agent 具备 LangGraph 路由、模型调用策略、文档处理流程、复杂研究流程、天气工具节点、搜索 provider chain、多模型 API Provider 配置，以及统一工具协议和 MCP 扩展架构。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
+当前仓库版本为 `0.29.0`。这个阶段的重点是：桌面工程闭环已经成型，并完成 Agent Runtime A-L 阶段优化：Agent 具备运行状态、统一工具网关、结构化路由、规划链、执行图、受控 ReAct、临时脚本沙箱、证据驱动研究、评估基线、项目记忆上下文和前端状态控制器拆分。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
 
 ## 当前阶段
 
@@ -78,7 +78,7 @@ Alita 在模型客户端和 LangGraph 路由结果之间加入了模型调用策
 
 ### 4. 联网工具节点
 
-0.28 版本保留 0.27 的联网工具节点，并加入了模型 API Provider 配置与统一工具协议/MCP 架构。0.27 版本加入了第一阶段联网工具节点。
+0.29 版本保留 0.28 的模型 API Provider 配置与统一工具协议/MCP 架构，并进一步把工具调用纳入 Agent Runtime 的统一执行、评估和沙箱边界。0.27 版本加入了第一阶段联网工具节点。
 
 天气问题会先经过 `route_tool_for_message()` 检测。如果识别为天气意图，会调用天气 provider，而不是泛搜索：
 
@@ -580,17 +580,20 @@ MVP 验证脚本：
 .\scripts\verify-mvp.ps1
 ```
 
-0.28 发布前的主要验证结果：
+0.29 发布前的主要验证结果：
 
 ```text
 npm run frontend:lint
 passed
 
 npm run frontend:test
-191 passed
+197 passed
 
 python -m pytest
-512 passed
+668 passed
+
+python -m agent_service.eval_harness --cases evals/router_cases.jsonl
+1/1 passed
 
 cargo test --manifest-path src-tauri/Cargo.toml
 passed
