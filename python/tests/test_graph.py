@@ -850,6 +850,10 @@ def test_research_graph_records_deep_reasoning_policy_metadata() -> None:
     created_event = next(event for event in events if event.type == "node_graph.created")
     graph = created_event.payload["graph"]
     assert graph["metadata"].get("modelPolicy") == ModelCallProfile.DEEP_REASONING.value
+    assert graph["metadata"].get("agentRuntime") == {
+        "version": "agent_runtime_graph.v1",
+        "stage": "plan",
+    }
 
 
 def test_research_graph_records_structured_route_decision_metadata() -> None:

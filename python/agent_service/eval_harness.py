@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Literal, Sequence
@@ -40,7 +41,15 @@ from agent_service.web_search import SearchResponse, SearchResult
 
 class EvalCase(BaseModel):
     case_id: str
-    category: Literal["router", "planner", "tool", "research", "recovery", "security"]
+    category: Literal[
+        "router",
+        "planner",
+        "tool",
+        "research",
+        "recovery",
+        "security",
+        "model_loop",
+    ]
     input: dict[str, Any]
     expected: dict[str, Any]
     tags: list[str] = Field(default_factory=list)
@@ -170,6 +179,8 @@ def _run_eval_case(case: EvalCase) -> EvalCaseResult:
             return _run_research_case(case)
         if case.category == "security":
             return _run_security_case(case)
+        if case.category == "model_loop":
+            return _run_model_loop_case(case)
         return EvalCaseResult(
             case_id=case.case_id,
             category=case.category,
@@ -183,6 +194,32 @@ def _run_eval_case(case: EvalCase) -> EvalCaseResult:
             passed=False,
             details={"error": str(error)},
         )
+
+
+def _run_model_loop_case(case: EvalCase) -> EvalCaseResult:
+    if os.getenv("ALITA_MODEL_LOOP_EVAL", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        details = {"skipped": True, "reason": "model loop eval disabled"}
+        return EvalCaseResult(
+            case_id=case.case_id,
+            category=case.category,
+            passed=_expected_subset_matches(details, case.expected),
+            details=details,
+        )
+    details = {
+        "skipped": False,
+        "error": "model loop eval runner is not configured",
+    }
+    return EvalCaseResult(
+        case_id=case.case_id,
+        category=case.category,
+        passed=False,
+        details=details,
+    )
 
 
 def _run_security_case(case: EvalCase) -> EvalCaseResult:

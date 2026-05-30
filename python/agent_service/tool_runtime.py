@@ -10,6 +10,14 @@ from agent_service.tool_registry import ToolManifestSpec
 
 ToolAdapterKey = tuple[str, str]
 ToolRuntime = Callable[[Any], Any]
+SUPPORTED_TOOL_RUNTIMES = {
+    "python_function",
+    "python_script",
+    "cli",
+    "builtin",
+    "mcp",
+    "python_sidecar",
+}
 
 
 class ToolRuntimeLoader:
@@ -25,8 +33,22 @@ class ToolRuntimeLoader:
         return runtime(invocation)
 
     def _runtime_for(self, manifest: ToolManifestSpec, invocation: Any) -> ToolRuntime:
-        if manifest.entrypoint and ":" in manifest.entrypoint:
+        runtime_name = manifest.runtime or "python_sidecar"
+        if runtime_name not in SUPPORTED_TOOL_RUNTIMES:
+            raise HarnessError(
+                "unsupported_runtime",
+                f"unsupported tool runtime: {runtime_name}",
+            )
+        if runtime_name == "python_function" and manifest.entrypoint:
             return _load_python_function_entrypoint(manifest.entrypoint)
+        if runtime_name in {"python_script", "cli", "mcp"}:
+            raise HarnessError(
+                "unsupported_runtime",
+                (
+                    f"tool runtime is not available in internal executor: "
+                    f"{runtime_name} for {manifest.tool_id}"
+                ),
+            )
 
         adapter_key = (manifest.tool_id, str(invocation.operation))
         adapter = self.adapters.get(adapter_key)

@@ -52,6 +52,7 @@ from agent_service.runtime_events import (
     authority_decision_recorded_event,
     checkpoint_recorded_event,
     recovery_action_event,
+    runtime_span_recorded_event,
 )
 from agent_service.runtime_loop import (
     RuntimeCheckpoint,
@@ -59,6 +60,7 @@ from agent_service.runtime_loop import (
     outputs_from_checkpoint_record,
     pending_node_ids_from_checkpoint_record,
 )
+from agent_service.runtime_trace import RuntimeSpan, next_span_id, trace_id_for_run
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY, RunRegistry
 from agent_service.schemas import (
     AgentEvent,
@@ -1414,6 +1416,8 @@ def run_graph_events(
     outputs: dict[str, NodeOutput] = {}
     outputs.update(_source_outputs_for_mode(request))
     recovery_counts: dict[str, int] = {}
+    span_counter = 0
+    trace_id = trace_id_for_run(request.run_id)
 
     started_at = _now_iso()
     disabled_tool_ids = _expanded_tool_ids(request.disabled_tool_ids)
@@ -1439,7 +1443,11 @@ def run_graph_events(
     )
 
     if request.mode.type == "resume_checkpoint":
-        latest_checkpoint = journal.read_latest_checkpoint()
+        latest_checkpoint = (
+            journal.read_checkpoint(request.mode.checkpoint_id)
+            if request.mode.checkpoint_id
+            else journal.read_latest_checkpoint()
+        )
         if latest_checkpoint is None:
             completed_at = _now_iso()
             error = HarnessError(
@@ -1724,6 +1732,8 @@ def run_graph_events(
                 )
                 yield AgentEvent(type="node.running", payload={"nodeId": node.nodeId})
                 node_perf_started = perf_counter()
+                span_counter += 1
+                span_id = next_span_id(span_counter)
                 try:
                     missing_dependencies = _missing_required_dependency_outputs(
                         node,
@@ -1762,10 +1772,42 @@ def run_graph_events(
                         pending_observability_events
                     )
                     verifier.verify(node.nodeId, output)
+                    yield runtime_span_recorded_event(
+                        RuntimeSpan(
+                            trace_id=trace_id,
+                            span_id=span_id,
+                            parent_span_id=None,
+                            run_id=request.run_id,
+                            node_id=node.nodeId,
+                            kind="node_execution",
+                            name=node.nodeId,
+                            status="ok",
+                            started_at=node_started_at,
+                            ended_at=_now_iso(),
+                            duration_ms=int((perf_counter() - node_perf_started) * 1000),
+                        )
+                    )
                     break
                 except Exception as error:
                     yield from _drain_observability_events(
                         pending_observability_events
+                    )
+                    error_payload = harness_error_payload(error)
+                    yield runtime_span_recorded_event(
+                        RuntimeSpan(
+                            trace_id=trace_id,
+                            span_id=span_id,
+                            parent_span_id=None,
+                            run_id=request.run_id,
+                            node_id=node.nodeId,
+                            kind="node_execution",
+                            name=node.nodeId,
+                            status="error",
+                            started_at=node_started_at,
+                            ended_at=_now_iso(),
+                            duration_ms=int((perf_counter() - node_perf_started) * 1000),
+                            metadata={"errorCode": error_payload.get("errorCode")},
+                        )
                     )
                     suggestion = replanner.propose(
                         request=request,
@@ -1817,7 +1859,7 @@ def run_graph_events(
                         continue
 
                     completed_at = _now_iso()
-                    payload = harness_error_payload(error)
+                    payload = error_payload
                     partial_output = (
                         error.output
                         if isinstance(error, PartialNodeOutputError)
@@ -2369,10 +2411,31 @@ def _default_tool_gateway(
 
 
 def _runtime_authority_context(request: RunGraphRequest) -> AuthorityContext:
+    approved_tool_ids: set[str] = set()
+    approved_permissions: set[str] = set(request.approved_permissions)
+    read_roots: set[str] = set(_request_read_roots(request))
+    write_roots: set[str] = set(_request_write_roots(request))
+    network_domains: set[str] = set()
+    runtime_budget_ms: int | None = None
+    for grant in request.authority_grants:
+        approved_tool_ids.update(grant.approved_tool_ids)
+        approved_permissions.update(grant.approved_permissions)
+        read_roots.update(grant.read_roots)
+        write_roots.update(grant.write_roots)
+        network_domains.update(grant.network_domains)
+        if grant.runtime_budget_ms is not None:
+            runtime_budget_ms = (
+                grant.runtime_budget_ms
+                if runtime_budget_ms is None
+                else min(runtime_budget_ms, grant.runtime_budget_ms)
+            )
     return AuthorityContext(
-        approved_permissions=list(request.approved_permissions),
-        read_roots=_request_read_roots(request),
-        write_roots=_request_write_roots(request),
+        approved_tool_ids=sorted(approved_tool_ids),
+        approved_permissions=sorted(approved_permissions),
+        read_roots=sorted(read_roots),
+        write_roots=sorted(write_roots),
+        network_domains=sorted(network_domains),
+        runtime_budget_ms=runtime_budget_ms,
     )
 
 

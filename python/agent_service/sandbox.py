@@ -51,12 +51,19 @@ class SandboxResult(BaseModel):
     error_code: str | None = None
     security_model: str = SANDBOX_SECURITY_MODEL
     security_boundary: str = SANDBOX_SECURITY_BOUNDARY
+    backend: str = "subprocess"
+    is_os_isolated: bool = False
+    is_process_tree_limited: bool = False
 
 
 class SandboxViolation(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def job_object_backend_available() -> bool:
+    return os.name == "nt"
 
 
 def validate_sandbox_path(path: str, allowed_roots: list[str]) -> Path:

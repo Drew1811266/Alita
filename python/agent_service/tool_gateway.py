@@ -58,6 +58,10 @@ class UnifiedToolGateway:
         if not tool.enabled:
             return _error("tool_disabled", f"tool disabled: {invocation.tool_id}")
         timer = ObservationTimer()
+        authority_context = _authority_context_for_invocation(
+            self.authority_context,
+            invocation,
+        )
 
         try:
             validate_json_schema_subset(tool.input_schema, invocation.arguments)
@@ -69,12 +73,11 @@ class UnifiedToolGateway:
                 ok=False,
                 duration_ms=timer.elapsed_ms(),
                 error_code="invalid_tool_input",
+                runtime_budget_ms=authority_context.runtime_budget_ms
+                if authority_context is not None
+                else None,
             )
 
-        authority_context = _authority_context_for_invocation(
-            self.authority_context,
-            invocation,
-        )
         decision = authorize_tool_invocation(invocation, tool, authority_context)
         if self.authority_event_sink is not None:
             self.authority_event_sink(invocation, tool, decision)
@@ -95,6 +98,7 @@ class UnifiedToolGateway:
                 duration_ms=timer.elapsed_ms(),
                 authority_code=decision.code,
                 error_code="authority_denied",
+                runtime_budget_ms=authority_context.runtime_budget_ms,
             )
 
         provider = next(
@@ -111,6 +115,7 @@ class UnifiedToolGateway:
                 duration_ms=timer.elapsed_ms(),
                 authority_code=decision.code,
                 error_code=error_code,
+                runtime_budget_ms=authority_context.runtime_budget_ms,
             )
         return replace(
             result,
@@ -125,6 +130,7 @@ class UnifiedToolGateway:
                     duration_ms=timer.elapsed_ms(),
                     authority_code=decision.code,
                     error_code=None,
+                    runtime_budget_ms=authority_context.runtime_budget_ms,
                 ),
             },
         )
@@ -224,6 +230,7 @@ def _with_observation(
     duration_ms: int,
     authority_code: str | None = None,
     error_code: str | None = None,
+    runtime_budget_ms: int | None = None,
 ) -> UnifiedToolResult:
     return replace(
         result,
@@ -236,6 +243,7 @@ def _with_observation(
                 duration_ms=duration_ms,
                 authority_code=authority_code,
                 error_code=error_code,
+                runtime_budget_ms=runtime_budget_ms,
             ),
         },
     )
