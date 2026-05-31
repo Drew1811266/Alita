@@ -75,7 +75,7 @@ class StdioMcpClient:
             {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "alita", "version": "0.35.0"},
+                "clientInfo": {"name": "alita", "version": "0.35.1"},
             },
         )
         self._initialized = True

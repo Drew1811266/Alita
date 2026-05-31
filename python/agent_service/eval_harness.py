@@ -34,6 +34,7 @@ from agent_service.tool_execution import (
 from agent_service.tool_registry import ToolRegistry
 from agent_service.tool_protocol import (
     ToolResultContent,
+    UnifiedToolError,
     ToolSafetyPolicy,
     UnifiedToolDefinition,
     UnifiedToolInvocation,
@@ -263,12 +264,26 @@ class _ScriptedGateway:
         _ = timeout_ms
         self.calls.append(invocation)
         values = dict(self.response.get("values") or {"text": "tool observation"})
+        ok = bool(self.response.get("ok", True))
+        error_code = self.response.get("error_code")
         return UnifiedToolResult(
-            ok=bool(self.response.get("ok", True)),
+            ok=ok,
             content=[ToolResultContent(type="json", value=values)],
             structured_content=values,
             artifacts=list(self.response.get("artifacts") or []),
             metadata={"runner": "scripted"},
+            error=(
+                UnifiedToolError(
+                    code=str(error_code),
+                    message=str(
+                        self.response.get("error_message") or "scripted tool error"
+                    ),
+                    recoverable=bool(self.response.get("recoverable", True)),
+                    safe_details=dict(self.response.get("safe_details") or {}),
+                )
+                if not ok and error_code is not None
+                else None
+            ),
         )
 
 
@@ -288,11 +303,21 @@ def _run_scripted_model_loop(case: EvalCase) -> dict[str, Any]:
             json.dumps({"kind": "final", "text": "scripted final"}),
         ]
     ]
-    tool = _scripted_tool(tool_id)
+    tool_permissions = case.input.get("tool_permissions", None)
+    tool = _scripted_tool(
+        tool_id,
+        permissions=(
+            None
+            if tool_permissions is None
+            else [str(item) for item in tool_permissions]
+        ),
+    )
     gateway = _ScriptedGateway(
         tool,
         response=dict(case.input.get("tool_response") or {}),
     )
+    allowed_tool_ids = case.input.get("allowed_tool_ids", None)
+    allowed_permissions = case.input.get("allowed_permissions", None)
     result = ReActController(
         model_client=_ScriptedModelClient(replies),
         gateway=gateway,
@@ -317,8 +342,16 @@ def _run_scripted_model_loop(case: EvalCase) -> dict[str, Any]:
             enabled=True,
             max_steps=int(case.input.get("max_steps") or 4),
             max_tool_calls=int(case.input.get("max_tool_calls") or 3),
-            allowed_tool_ids=[tool_id],
-            allowed_permissions=[],
+            allowed_tool_ids=(
+                [tool_id]
+                if allowed_tool_ids is None
+                else [str(item) for item in allowed_tool_ids]
+            ),
+            allowed_permissions=(
+                None
+                if allowed_permissions is None
+                else [str(item) for item in allowed_permissions]
+            ),
             stop_on_first_success=False,
         ),
     )
@@ -329,11 +362,24 @@ def _run_scripted_model_loop(case: EvalCase) -> dict[str, Any]:
         "finalAnswer": result.text,
         "toolCallCount": result.tool_call_count,
         "observationCount": len(result.observations),
+        "observations": result.observations,
+        "observationValues": [
+            dict(observation.get("values") or {}) for observation in result.observations
+        ],
+        "observationOks": [
+            bool(observation.get("ok")) for observation in result.observations
+        ],
+        "observationErrorCodes": [
+            observation.get("error_code") for observation in result.observations
+        ],
         "errorCode": result.error_code,
     }
 
 
-def _scripted_tool(tool_id: str) -> UnifiedToolDefinition:
+def _scripted_tool(
+    tool_id: str,
+    permissions: list[str] | None = None,
+) -> UnifiedToolDefinition:
     return UnifiedToolDefinition(
         id=tool_id,
         source="internal",
@@ -347,7 +393,7 @@ def _scripted_tool(tool_id: str) -> UnifiedToolDefinition:
             "properties": {"message": {"type": "string"}},
         },
         output_schema={"type": "object"},
-        permissions=[],
+        permissions=list(permissions or []),
         safety_policy=ToolSafetyPolicy(
             filesystem="none",
             network="none",
@@ -532,7 +578,62 @@ def _run_router_case(case: EvalCase) -> EvalCaseResult:
 
 def _run_planner_case(case: EvalCase) -> EvalCaseResult:
     message = _message_from_case(case)
-    route_payload = deterministic_route(message).to_payload()
+    inquiry_choice = _inquiry_choice_from_case(case)
+    route_payload = deterministic_route(message, inquiry_choice=inquiry_choice).to_payload()
+    route_intent = route_payload.get("intent")
+    if route_intent == "web_complex_research_flow":
+        graph_payload = build_research_graph(message, route_payload)
+        node_ids = _node_ids_from_graph_payload(graph_payload)
+        details = {
+            "strategy": "research_flow",
+            "planner": "template.research.v1",
+            "routeIntent": route_intent,
+            "routeSource": route_payload.get("source"),
+            "taskType": route_payload.get("taskType"),
+            "nodeIds": node_ids,
+            "nodeCount": len(node_ids),
+            "actionPolicyNodeCount": len(
+                dict(graph_payload.get("metadata", {}).get("actionPolicies") or {})
+            ),
+        }
+        return EvalCaseResult(
+            case_id=case.case_id,
+            category=case.category,
+            passed=_planner_expectation_matches(details, case.expected),
+            details=details,
+        )
+
+    if inquiry_choice == "research_flow":
+        return EvalCaseResult(
+            case_id=case.case_id,
+            category=case.category,
+            passed=False,
+            details={
+                "error": (
+                    "expected research route from inquiry_choice=research_flow, "
+                    f"got {route_intent}"
+                ),
+                "routeIntent": route_intent,
+                "routeSource": route_payload.get("source"),
+                "taskType": route_payload.get("taskType"),
+                "route": route_payload,
+            },
+        )
+
+    if route_intent != "task":
+        return EvalCaseResult(
+            case_id=case.case_id,
+            category=case.category,
+            passed=False,
+            details={
+                "error": f"cannot plan non-task route: {route_intent}",
+                "routeIntent": route_intent,
+                "routeSource": route_payload.get("source"),
+                "taskType": route_payload.get("taskType"),
+                "route": route_payload,
+            },
+        )
+
     goal_spec = parse_goal_spec(message)
     tool_registry = ToolRegistry.from_packages_root(default_tool_packages_root())
     context = build_context_bundle(
@@ -550,15 +651,15 @@ def _run_planner_case(case: EvalCase) -> EvalCaseResult:
             context=context,
         )
     )
-    node_ids = [
-        str(node.get("nodeId"))
-        for node in result.graph_payload.get("nodes", [])
-        if isinstance(node, dict)
-    ]
+    node_ids = _node_ids_from_graph_payload(result.graph_payload)
     details = {
         "strategy": result.strategy,
         "planner": result.planner,
+        "routeIntent": route_intent,
+        "routeSource": route_payload.get("source"),
+        "taskType": route_payload.get("taskType"),
         "nodeIds": node_ids,
+        "nodeCount": len(node_ids),
         "actionPolicyNodeCount": len(
             dict(result.graph_payload.get("metadata", {}).get("actionPolicies") or {})
         ),
@@ -569,6 +670,16 @@ def _run_planner_case(case: EvalCase) -> EvalCaseResult:
         passed=_planner_expectation_matches(details, case.expected),
         details=details,
     )
+
+
+def _node_ids_from_graph_payload(graph_payload: dict[str, Any]) -> list[str]:
+    return [
+        node["nodeId"]
+        for node in graph_payload.get("nodes", [])
+        if isinstance(node, dict)
+        and isinstance(node.get("nodeId"), str)
+        and node["nodeId"].strip()
+    ]
 
 
 def _run_tool_case(case: EvalCase) -> EvalCaseResult:
@@ -662,6 +773,13 @@ def _message_from_case(case: EvalCase) -> UserMessage:
     )
 
 
+def _inquiry_choice_from_case(case: EvalCase) -> Literal["quick_answer", "research_flow"] | None:
+    value = case.input.get("inquiry_choice")
+    if value in {"quick_answer", "research_flow"}:
+        return value
+    return None
+
+
 def _expected_subset_matches(
     actual: dict[str, Any],
     expected: dict[str, Any],
@@ -674,6 +792,9 @@ def _planner_expectation_matches(
     expected: dict[str, Any],
 ) -> bool:
     if expected.get("strategy") and actual.get("strategy") != expected["strategy"]:
+        return False
+    min_node_count = expected.get("minNodeCount")
+    if min_node_count is not None and len(actual.get("nodeIds", [])) < int(min_node_count):
         return False
     expected_node_ids = [str(value) for value in expected.get("nodeIds", [])]
     actual_node_ids = set(str(value) for value in actual.get("nodeIds", []))

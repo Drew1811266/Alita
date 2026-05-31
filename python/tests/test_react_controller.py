@@ -319,3 +319,23 @@ def test_react_controller_rejects_permission_outside_policy() -> None:
     assert result.ok is False
     assert result.error_code == "permission_not_allowed"
     assert result.tool_call_count == 0
+
+
+def test_react_controller_rejects_permission_when_explicitly_allowed_none() -> None:
+    model = SequencedModel(
+        ['{"kind":"tool","tool_id":"internal:file.inspect","arguments":{}}']
+    )
+    result = ReActController(model_client=model, gateway=RecordingGateway()).run(
+        messages=[ChatMessage(role="user", content="Use a tool.")],
+        tools=[_tool()],
+        base_invocation=_base_invocation(),
+        policy=ReActPolicy(
+            enabled=True,
+            allowed_tool_ids=["internal:file.inspect"],
+            allowed_permissions=[],
+        ),
+    )
+
+    assert result.ok is False
+    assert result.error_code == "permission_not_allowed"
+    assert result.tool_call_count == 0

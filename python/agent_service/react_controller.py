@@ -55,7 +55,9 @@ class ReActPolicy(BaseModel):
     max_tool_calls: int = 3
     max_runtime_ms: int = 30000
     allowed_tool_ids: list[str] = Field(default_factory=list)
-    allowed_permissions: list[str] = Field(default_factory=list)
+    # None means do not apply an additional permission allowlist. An explicit
+    # empty list means no permissions are allowed.
+    allowed_permissions: list[str] | None = None
     stop_on_first_success: bool = True
 
 
@@ -334,8 +336,9 @@ def _tool_policy_error(
 ) -> str | None:
     if tool is None or tool_id not in set(policy.allowed_tool_ids):
         return "tool_not_allowed"
-    if policy.allowed_permissions and not set(tool.permissions).issubset(
-        set(policy.allowed_permissions)
+    if (
+        policy.allowed_permissions is not None
+        and not set(tool.permissions).issubset(set(policy.allowed_permissions))
     ):
         return "permission_not_allowed"
     return None

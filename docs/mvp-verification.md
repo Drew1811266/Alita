@@ -64,6 +64,7 @@
 脚本会执行：
 
 - 前端 TypeScript 类型检查：`npm run frontend:lint`
+- 前端生产构建：`npm run frontend:build`，覆盖 lazy-loaded artifact preview chunks，并验证 PDF worker path 能被 Vite 构建解析
 - Python 测试：在 `python` 目录运行 `python -m pytest`
 - Agent deterministic eval gate：`python -m agent_service.eval_harness --cases-dir evals --output ..\.codex-run\evals`
 - 如果 Rust 测试需要而 sidecar binary 不存在，会先运行 `scripts\build-sidecar.ps1`
@@ -71,13 +72,15 @@
 - Rust 格式检查：`cargo fmt --check`
 - Rust 测试：`cargo test`
 
+GitHub Actions 当前把快速门禁拆成 frontend、python 和 rust 三个 job；本地全量门禁仍由 `verify-mvp.ps1` 串联前端、Python、Agent eval 与 Rust/Tauri 验证。
+
 也可以单独运行 Agent eval：
 
 ```powershell
 npm run agent:eval
 ```
 
-该命令会执行 router、planner、tool、research、security 五类 deterministic eval，并在任一 case 失败时返回非零退出码。
+该命令会执行 router、planner、tool、research、security、model_loop 六类 deterministic eval；当前基线共 87 个 case，并在任一 case 失败时返回非零退出码。
 
 当前机器如果未安装 Visual Studio Build Tools 的 C++ 工具链和 Windows SDK，Rust 测试会因为缺少 `link.exe` 被阻塞。这个结果代表本机编译环境不完整，不代表 Rust 源码测试断言失败。
 
@@ -96,6 +99,8 @@ npm run desktop:dev
 ```
 
 预期结果：应用以标题为 `Alita` 的 Windows 独立窗口打开，而不是要求用户手动打开浏览器地址。
+
+候选版本发布前还必须执行 `docs/release-smoke/alita-v035-release-smoke.md` 中的 manual release smoke checklist，并保存证据目录。
 
 构建安装包：
 
