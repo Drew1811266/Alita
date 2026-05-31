@@ -2,7 +2,7 @@
 
 Alita 是一个本地优先的 AI Agent 桌面工作台。它不是单纯的聊天窗口，而是把本地大模型、工程文件、节点化任务流程、文档工具、联网查询工具、语音输入、运行历史和 artifact 预览整合到一个 Windows 桌面应用中。
 
-当前仓库版本为 `0.34.0`。这个阶段的重点是：桌面工程闭环已经成型，并完成 Agent Runtime Mainline 优化：Agent 具备运行状态、统一工具网关、结构化路由、规划链、执行图、显式权限授权、manifest 驱动工具入口、受控 ReAct、运行 checkpoint、指定 checkpoint resume、低风险恢复继续、trace store、MCP lifecycle handoff、schema-aware tool planning、证据驱动研究、评估基线、项目记忆上下文和前后端 runtime 观测事件。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
+当前仓库版本为 `0.35.0`。这个阶段的重点是：桌面工程闭环已经成型，并完成 Agent Runtime Mainline 优化：Agent 具备运行状态、统一工具网关、结构化路由、规划链、执行图、显式权限授权、manifest 驱动工具入口、受控 ReAct、运行 checkpoint、指定 checkpoint resume、低风险恢复继续、trace store、MCP lifecycle handoff、schema-aware tool planning、证据驱动研究、评估基线、项目记忆上下文和前后端 runtime 观测事件。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
 
 ## 当前阶段
 

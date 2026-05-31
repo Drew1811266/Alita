@@ -325,7 +325,7 @@ def test_graph_tool_validation_rejects_disabled_gateway_catalog_tool_before_runn
                 )
             ]
 
-        def call_tool(self, invocation):
+        def call_tool(self, invocation, *, timeout_ms=None):
             raise AssertionError(f"disabled tool should not run: {invocation.tool_id}")
 
     source = tmp_path / "input.docx"

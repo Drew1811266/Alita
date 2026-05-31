@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import hashlib
 import socket
-from collections.abc import Iterator
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -17,6 +17,26 @@ from uuid import uuid4
 from agent_service.agent_run_state import AgentRunState
 from agent_service.authority import AuthorityContext
 from agent_service.final_verifier import FinalVerifier
+from agent_service.flow_templates.document import (
+    CONTENT_ORGANIZE_NODE_ID,
+    DOCUMENT_DATA_DEPENDENT_NODE_IDS,
+    DOCUMENT_FLOW_NODE_IDS,
+    DOCUMENT_INPUT_NODE_ID,
+    DOCUMENT_PARSE_NODE_ID,
+    FILE_EXPORT_NODE_ID,
+    REPORT_GENERATE_NODE_ID,
+    TYPST_EXPORT_NODE_ID,
+)
+from agent_service.flow_templates.research import (
+    RESEARCH_DATA_DEPENDENT_NODE_IDS,
+    RESEARCH_MARKDOWN_OUTPUT_NODE_ID,
+    RESEARCH_PARALLEL_SEARCH_NODE_ID,
+    RESEARCH_QUERY_PLAN_NODE_ID,
+    RESEARCH_REPORT_QUALITY_CHECK_NODE_ID,
+    RESEARCH_REPORT_SYNTHESIS_NODE_ID,
+    RESEARCH_SOURCE_READING_NODE_ID,
+    RESEARCH_SOURCE_REVIEW_NODE_ID,
+)
 from agent_service.execution_graph import (
     ExecutionGraph,
     ExecutionInputMapping,
@@ -130,28 +150,13 @@ class SourceContentFetcher(Protocol):
         ...
 
 
-DOCUMENT_FLOW_NODE_IDS = {
-    "document-input",
-    "document-parse",
-    "content-organize",
-    "report-generate",
-    "typst-export",
-    "file-export",
-}
-
 DATA_DEPENDENT_NODE_IDS = {
-    *DOCUMENT_FLOW_NODE_IDS.difference({"document-input"}),
-    "research-privacy-guard",
-    "research-query-plan",
-    "research-parallel-search",
-    "research-source-review",
-    "research-source-reading",
-    "research-report-synthesis",
-    "research-report-quality-check",
-    "research-markdown-output",
+    *DOCUMENT_DATA_DEPENDENT_NODE_IDS,
+    *RESEARCH_DATA_DEPENDENT_NODE_IDS,
 }
 SUPPORTED_PLANNED_MODEL_REFS = {"local-task-reasoner"}
 SOURCE_CONTENT_LIMIT = 4000
+TraceSpanSink = Callable[[RuntimeSpan], None]
 
 
 @dataclass(frozen=True)
@@ -195,11 +200,15 @@ class DocumentFlowExecutor:
         tool_gateway: UnifiedToolGateway | None = None,
         tool_executor: ToolExecutor | None = None,
         tool_registry: ToolRegistry | None = None,
+        trace_span_sink: TraceSpanSink | None = None,
     ) -> None:
         self.request = request
         self.run_state = run_state or AgentRunState.from_run_graph_request(request)
         self.model_client = model_client or LlamaCppModelClient()
-        self.model_runtime = model_runtime or ModelRuntime(model_client=self.model_client)
+        self.model_runtime = model_runtime or ModelRuntime(
+            model_client=self.model_client,
+            trace_span_sink=trace_span_sink,
+        )
         self.tool_registry = tool_registry or _default_tool_registry()
         self.nodes_by_id = {node.nodeId: node for node in request.graph.nodes}
         self.project_dir = Path(request.project_path).parent
@@ -208,6 +217,7 @@ class DocumentFlowExecutor:
             tool_executor=tool_executor,
             tool_registry=self.tool_registry,
             authority_context=_runtime_authority_context(request),
+            trace_span_sink=trace_span_sink,
         )
         self.task_graph = build_document_task_graph(
             request.task_id,
@@ -224,25 +234,25 @@ class DocumentFlowExecutor:
         )
 
     def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
-        if node_id == "document-input":
+        if node_id == DOCUMENT_INPUT_NODE_ID:
             if not self.request.attachments:
                 raise ValueError("缺少可执行的文档附件")
             paths = "\n".join(attachment.path for attachment in self.request.attachments)
             return self._call_tool(
-                "document-input",
+                DOCUMENT_INPUT_NODE_ID,
                 tool_id="document.receive_attachment",
                 operation="receive_attachment",
                 arguments={"paths": paths},
             )
 
-        if node_id == "document-parse":
+        if node_id == DOCUMENT_PARSE_NODE_ID:
             texts: list[str] = []
             artifacts: list[str] = []
             for index, attachment in enumerate(self.request.attachments):
                 input_path = Path(attachment.path)
                 output_path = self._converted_output_path(index, input_path)
                 output = self._call_tool(
-                    "document-parse",
+                    DOCUMENT_PARSE_NODE_ID,
                     tool_id="document.markitdown_convert",
                     operation="convert_local_file",
                     arguments={
@@ -256,24 +266,24 @@ class DocumentFlowExecutor:
                 artifacts.extend(output.artifacts)
             return NodeOutput(artifacts=artifacts, values={"text": "\n\n".join(texts)})
 
-        if node_id == "content-organize":
+        if node_id == CONTENT_ORGANIZE_NODE_ID:
             node = self.task_graph.node_by_id(node_id)
             if node.model_binding is None:
                 raise ValueError(f"{node_id} is missing model binding")
-            return self.model_runtime.run(node.model_binding, inputs=inputs)
+            return self._run_model_binding(node_id, node.model_binding, inputs)
 
-        if node_id == "report-generate":
+        if node_id == REPORT_GENERATE_NODE_ID:
             node = self.task_graph.node_by_id(node_id)
             if node.model_binding is None:
                 raise ValueError(f"{node_id} is missing model binding")
-            return self.model_runtime.run(node.model_binding, inputs=inputs)
+            return self._run_model_binding(node_id, node.model_binding, inputs)
 
-        if node_id == "typst-export":
+        if node_id == TYPST_EXPORT_NODE_ID:
             outline = _first_input_value(inputs, "outline")
             report = _first_input_value(inputs, "report")
             output_stem = f"report-{uuid4().hex[:8]}"
             output = self._call_tool(
-                "typst-export",
+                TYPST_EXPORT_NODE_ID,
                 tool_id="document.typst_compile",
                 operation="compile_report_pdf",
                 arguments={
@@ -290,7 +300,7 @@ class DocumentFlowExecutor:
             )
             return output
 
-        if node_id == "file-export":
+        if node_id == FILE_EXPORT_NODE_ID:
             compiled_artifact = _first_input_value(inputs, "artifact")
             if compiled_artifact:
                 return NodeOutput(
@@ -319,6 +329,21 @@ class DocumentFlowExecutor:
             return NodeOutput(artifacts=[exported], values={"artifact": exported})
 
         raise ValueError(f"未支持的节点: {node_id}")
+
+    def _run_model_binding(
+        self,
+        node_id: str,
+        model_binding,
+        inputs: dict[str, NodeOutput],
+    ) -> NodeOutput:
+        if isinstance(self.model_runtime, ModelRuntime):
+            return self.model_runtime.run(
+                model_binding,
+                inputs=inputs,
+                run_id=self.run_state.run_id or self.request.run_id,
+                node_id=node_id,
+            )
+        return self.model_runtime.run(model_binding, inputs=inputs)
 
     def _call_tool(
         self,
@@ -390,6 +415,7 @@ class PlannedTaskExecutor:
         tool_executor: ToolExecutor | None = None,
         tool_registry: ToolRegistry | None = None,
         execution_graph: ExecutionGraph | None = None,
+        trace_span_sink: TraceSpanSink | None = None,
     ) -> None:
         self.request = request
         self.run_state = run_state or AgentRunState.from_run_graph_request(request)
@@ -397,10 +423,12 @@ class PlannedTaskExecutor:
         self.execution_graph = execution_graph or compile_execution_graph(request)
         self.model_client = model_client or LlamaCppModelClient()
         self.tool_registry = tool_registry or _default_tool_registry()
+        self.trace_span_sink = trace_span_sink
         self.tool_gateway = tool_gateway or _default_tool_gateway(
             tool_executor=tool_executor,
             tool_registry=self.tool_registry,
             authority_context=_runtime_authority_context(request),
+            trace_span_sink=trace_span_sink,
         )
         self.document_executor = DocumentFlowExecutor(
             request,
@@ -409,6 +437,7 @@ class PlannedTaskExecutor:
             tool_gateway=self.tool_gateway,
             tool_executor=tool_executor,
             tool_registry=self.tool_registry,
+            trace_span_sink=trace_span_sink,
         )
 
     def _call_tool(
@@ -761,33 +790,62 @@ class PlannedTaskExecutor:
                 node.nodeId,
             )
             if react_policy.enabled:
-                result = ReActController(
-                    model_client=self.model_client,
-                    gateway=self.tool_gateway,
-                ).run(
-                    messages=messages,
-                    tools=self.tool_gateway.list_tools(),
-                    base_invocation=UnifiedToolInvocation(
-                        invocation_id=(
-                            f"{self.run_state.run_id or self.request.run_id}-"
-                            f"{node.nodeId}-react-base"
+                span_started_at = _now_iso()
+                span_start = perf_counter()
+                try:
+                    result = ReActController(
+                        model_client=self.model_client,
+                        gateway=self.tool_gateway,
+                    ).run(
+                        messages=messages,
+                        tools=self.tool_gateway.list_tools(),
+                        base_invocation=UnifiedToolInvocation(
+                            invocation_id=(
+                                f"{self.run_state.run_id or self.request.run_id}-"
+                                f"{node.nodeId}-react-base"
+                            ),
+                            run_id=self.run_state.run_id or self.request.run_id,
+                            task_id=self.run_state.task_id,
+                            node_id=node.nodeId,
+                            tool_id=f"react:{node.nodeId}",
+                            arguments={},
+                            project_path=(
+                                self.run_state.project_path or self.request.project_path
+                            ),
+                            allowed_roots=self.document_executor._allowed_roots(),
+                            requested_permissions=list(
+                                react_policy.allowed_permissions
+                            ),
+                            model_session_id=self.run_state.message.model_session_id,
                         ),
-                        run_id=self.run_state.run_id or self.request.run_id,
-                        task_id=self.run_state.task_id,
-                        node_id=node.nodeId,
-                        tool_id=f"react:{node.nodeId}",
-                        arguments={},
-                        project_path=(
-                            self.run_state.project_path or self.request.project_path
-                        ),
-                        allowed_roots=self.document_executor._allowed_roots(),
-                        requested_permissions=list(
-                            react_policy.allowed_permissions
-                        ),
-                        model_session_id=self.run_state.message.model_session_id,
-                    ),
-                    policy=react_policy,
-                    model_policy=model_policy,
+                        policy=react_policy,
+                        model_policy=model_policy,
+                    )
+                except Exception as error:
+                    self._record_planned_model_span(
+                        node=node,
+                        model_ref=model_binding.model_ref,
+                        policy=model_policy,
+                        status="error",
+                        started_at=span_started_at,
+                        duration_ms=int((perf_counter() - span_start) * 1000),
+                        temperature=model_policy.temperature,
+                        max_tokens=model_policy.max_tokens,
+                        react_enabled=True,
+                        error_code=type(error).__name__,
+                    )
+                    raise
+                self._record_planned_model_span(
+                    node=node,
+                    model_ref=model_binding.model_ref,
+                    policy=model_policy,
+                    status="ok",
+                    started_at=span_started_at,
+                    duration_ms=int((perf_counter() - span_start) * 1000),
+                    temperature=model_policy.temperature,
+                    max_tokens=model_policy.max_tokens,
+                    react_enabled=True,
+                    error_code=None,
                 )
                 if not result.ok:
                     raise HarnessError(
@@ -810,11 +868,40 @@ class PlannedTaskExecutor:
                     }
                 )
 
-            content = self.model_client.chat(
-                messages,
+            span_started_at = _now_iso()
+            span_start = perf_counter()
+            try:
+                content = self.model_client.chat(
+                    messages,
+                    temperature=0.2,
+                    max_tokens=1536,
+                    policy=model_policy,
+                )
+            except Exception as error:
+                self._record_planned_model_span(
+                    node=node,
+                    model_ref=model_binding.model_ref,
+                    policy=model_policy,
+                    status="error",
+                    started_at=span_started_at,
+                    duration_ms=int((perf_counter() - span_start) * 1000),
+                    temperature=0.2,
+                    max_tokens=1536,
+                    react_enabled=False,
+                    error_code=type(error).__name__,
+                )
+                raise
+            self._record_planned_model_span(
+                node=node,
+                model_ref=model_binding.model_ref,
+                policy=model_policy,
+                status="ok",
+                started_at=span_started_at,
+                duration_ms=int((perf_counter() - span_start) * 1000),
                 temperature=0.2,
                 max_tokens=1536,
-                policy=model_policy,
+                react_enabled=False,
+                error_code=None,
             )
             return NodeOutput(
                 values={
@@ -847,6 +934,47 @@ class PlannedTaskExecutor:
                 "nodeType": node.nodeType,
                 "summary": node.summary,
             }
+        )
+
+    def _record_planned_model_span(
+        self,
+        *,
+        node: GraphNode,
+        model_ref: str,
+        policy: ModelCallPolicy,
+        status: str,
+        started_at: str,
+        duration_ms: int,
+        temperature: float | None,
+        max_tokens: int | None,
+        react_enabled: bool,
+        error_code: str | None,
+    ) -> None:
+        if self.trace_span_sink is None:
+            return
+        run_id = self.run_state.run_id or self.request.run_id
+        self.trace_span_sink(
+            RuntimeSpan(
+                trace_id=trace_id_for_run(run_id),
+                span_id="",
+                parent_span_id=None,
+                run_id=run_id,
+                node_id=node.nodeId,
+                kind="model.call",
+                name=model_ref,
+                status=status,
+                started_at=started_at,
+                ended_at=_now_iso(),
+                duration_ms=duration_ms,
+                metadata={
+                    "modelRef": model_ref,
+                    "policyProfile": policy.profile.value,
+                    "temperature": temperature,
+                    "maxTokens": max_tokens,
+                    "reactEnabled": react_enabled,
+                    "errorCode": error_code,
+                },
+            )
         )
 
 
@@ -956,7 +1084,7 @@ class ResearchFlowExecutor:
                 }
             )
 
-        if node_id == "research-query-plan":
+        if node_id == RESEARCH_QUERY_PLAN_NODE_ID:
             sanitized_question = str(_input_value(inputs, "sanitizedQuestion") or "")
             if not sanitized_question.strip():
                 raise HarnessError("empty_node_output", "research query is empty")
@@ -969,7 +1097,7 @@ class ResearchFlowExecutor:
                 }
             )
 
-        if node_id == "research-parallel-search":
+        if node_id == RESEARCH_PARALLEL_SEARCH_NODE_ID:
             query_units = _input_value(inputs, "queries") or []
             results: list[dict[str, Any]] = list(_input_value(inputs, "results") or [])
             failures: list[dict[str, Any]] = list(_input_value(inputs, "failures") or [])
@@ -1038,7 +1166,7 @@ class ResearchFlowExecutor:
                 }
             )
 
-        if node_id == "research-source-review":
+        if node_id == RESEARCH_SOURCE_REVIEW_NODE_ID:
             question = self._question()
             question_type = infer_question_type(question)
             raw_results = _input_value(inputs, "results") or []
@@ -1070,7 +1198,7 @@ class ResearchFlowExecutor:
                 }
             )
 
-        if node_id == "research-source-reading":
+        if node_id == RESEARCH_SOURCE_READING_NODE_ID:
             accepted_sources = [
                 dict(source)
                 for source in (_input_value(inputs, "acceptedSources") or [])
@@ -1151,7 +1279,7 @@ class ResearchFlowExecutor:
                 }
             )
 
-        if node_id == "research-report-synthesis":
+        if node_id == RESEARCH_REPORT_SYNTHESIS_NODE_ID:
             accepted_sources = list(_input_value(inputs, "acceptedSources") or [])
             rejected_sources = list(_input_value(inputs, "rejectedSources") or [])
             failed_source_reads = list(_input_value(inputs, "failedSourceReads") or [])
@@ -1187,7 +1315,7 @@ class ResearchFlowExecutor:
                 }
             )
 
-        if node_id == "research-report-quality-check":
+        if node_id == RESEARCH_REPORT_QUALITY_CHECK_NODE_ID:
             markdown = str(_input_value(inputs, "markdown") or "")
             accepted_sources = list(_input_value(inputs, "acceptedSources") or [])
             rejected_sources = list(_input_value(inputs, "rejectedSources") or [])
@@ -1220,7 +1348,7 @@ class ResearchFlowExecutor:
                 }
             )
 
-        if node_id == "research-markdown-output":
+        if node_id == RESEARCH_MARKDOWN_OUTPUT_NODE_ID:
             markdown = str(_input_value(inputs, "markdown") or "")
             output_path = self.artifact_dir / f"research-report-{uuid4().hex[:8]}.md"
             exported = write_markdown(markdown, str(output_path))
@@ -1320,6 +1448,9 @@ def run_graph_events(
 
     replanner = failure_replanner or FailureReplanner()
     pending_observability_events: list[AgentEvent] = []
+    trace_store = TraceStore(project_path=request.project_path, run_id=request.run_id)
+    trace_id = trace_id_for_run(request.run_id)
+    span_counter = 0
 
     def record_authority_decision(invocation, tool, decision) -> None:
         pending_observability_events.append(
@@ -1329,6 +1460,21 @@ def run_graph_events(
                 decision=decision,
             )
         )
+
+    def persist_runtime_span(span: RuntimeSpan) -> AgentEvent:
+        nonlocal span_counter
+        span_counter += 1
+        recorded_span = replace(
+            span,
+            trace_id=trace_id,
+            span_id=next_span_id(span_counter),
+            run_id=request.run_id,
+        )
+        trace_store.append_span(recorded_span)
+        return runtime_span_recorded_event(recorded_span)
+
+    def record_runtime_span(span: RuntimeSpan) -> None:
+        pending_observability_events.append(persist_runtime_span(span))
 
     try:
         ordered_nodes = _topological_nodes(request)
@@ -1347,6 +1493,7 @@ def run_graph_events(
             tool_registry=effective_tool_registry,
             authority_context=_runtime_authority_context(request),
             authority_event_sink=record_authority_decision,
+            trace_span_sink=record_runtime_span,
         )
         _validate_graph_tools(request, effective_tool_gateway.list_tools())
     except (ValueError, HarnessError) as error:
@@ -1400,6 +1547,7 @@ def run_graph_events(
             tool_executor=tool_executor,
             tool_registry=effective_tool_registry,
             execution_graph=execution_graph,
+            trace_span_sink=record_runtime_span,
         )
     else:
         node_executor = DocumentFlowExecutor(
@@ -1409,18 +1557,16 @@ def run_graph_events(
             tool_gateway=effective_tool_gateway,
             tool_executor=tool_executor,
             tool_registry=effective_tool_registry,
+            trace_span_sink=record_runtime_span,
         )
     verifier = result_verifier or ResultVerifier()
     graph_verifier = final_verifier or FinalVerifier()
     run_registry = registry or DEFAULT_RUN_REGISTRY
     cancel_token = run_registry.start(request.run_id)
     journal = RunJournal(project_path=request.project_path, run_id=request.run_id)
-    trace_store = TraceStore(project_path=request.project_path, run_id=request.run_id)
     outputs: dict[str, NodeOutput] = {}
     outputs.update(_source_outputs_for_mode(request))
     recovery_counts: dict[str, int] = {}
-    span_counter = 0
-    trace_id = trace_id_for_run(request.run_id)
     checkpoint_sequence = 0
     last_checkpoint_id: str | None = None
     graph_hash = _graph_hash(request)
@@ -1758,8 +1904,6 @@ def run_graph_events(
                 )
                 yield AgentEvent(type="node.running", payload={"nodeId": node.nodeId})
                 node_perf_started = perf_counter()
-                span_counter += 1
-                span_id = next_span_id(span_counter)
                 try:
                     missing_dependencies = _missing_required_dependency_outputs(
                         node,
@@ -1800,7 +1944,7 @@ def run_graph_events(
                     verifier.verify(node.nodeId, output)
                     span = RuntimeSpan(
                         trace_id=trace_id,
-                        span_id=span_id,
+                        span_id="",
                         parent_span_id=None,
                         run_id=request.run_id,
                         node_id=node.nodeId,
@@ -1811,8 +1955,7 @@ def run_graph_events(
                         ended_at=_now_iso(),
                         duration_ms=int((perf_counter() - node_perf_started) * 1000),
                     )
-                    trace_store.append_span(span)
-                    yield runtime_span_recorded_event(span)
+                    yield persist_runtime_span(span)
                     break
                 except Exception as error:
                     yield from _drain_observability_events(
@@ -1821,7 +1964,7 @@ def run_graph_events(
                     error_payload = harness_error_payload(error)
                     span = RuntimeSpan(
                         trace_id=trace_id,
-                        span_id=span_id,
+                        span_id="",
                         parent_span_id=None,
                         run_id=request.run_id,
                         node_id=node.nodeId,
@@ -1833,8 +1976,7 @@ def run_graph_events(
                         duration_ms=int((perf_counter() - node_perf_started) * 1000),
                         metadata={"errorCode": error_payload.get("errorCode")},
                     )
-                    trace_store.append_span(span)
-                    yield runtime_span_recorded_event(span)
+                    yield persist_runtime_span(span)
                     suggestion = replanner.propose(
                         request=request,
                         failed_node=node,
@@ -2080,7 +2222,7 @@ def run_graph_events(
 
         completed_at = _now_iso()
         if _is_research_graph(request):
-            final_output = outputs.get("research-markdown-output")
+            final_output = outputs.get(RESEARCH_MARKDOWN_OUTPUT_NODE_ID)
             if final_output is not None:
                 report_artifact_path = str(final_output.values.get("artifact", ""))
                 yield AgentEvent(
@@ -2125,7 +2267,9 @@ def run_graph_events(
             request=request,
             outputs=outputs,
             completed_at=completed_at,
+            trace_span_sink=record_runtime_span,
         )
+        yield from _drain_observability_events(pending_observability_events)
         yield AgentEvent(
             type="task.completed",
             payload={"taskId": request.task_id, "runId": request.run_id},
@@ -2206,61 +2350,131 @@ def _auto_write_memory_records(
     request: RunGraphRequest,
     outputs: dict[str, NodeOutput],
     completed_at: str,
+    trace_span_sink: TraceSpanSink | None = None,
 ) -> None:
-    if not _memory_auto_write_enabled(request):
+    if request.mode.type != "full" or not _memory_auto_write_enabled(request):
         return
 
+    span_started_at = _now_iso()
+    span_start = perf_counter()
+    record_count = 0
+    record_kinds: list[str] = []
     store = MemoryStore(request.project_path)
-    graph_source_ref = f"{request.run_id}:{request.task_id}:graph_summary"
-    store.append(
-        MemoryRecord(
-            memory_id=memory_id_for_source("graph_summary", graph_source_ref),
-            kind="graph_summary",
-            summary=(
-                f"Run {request.run_id} completed task {request.task_id} "
-                f"with {len(outputs)} node output(s)."
-            ),
-            source_ref=request.run_id,
-            source_refs=[request.run_id, request.task_id],
-            created_at=completed_at,
-            tags=["run", request.task_id],
+    try:
+        graph_memory_ref = f"{request.task_id}:graph_summary"
+        store.upsert(
+            MemoryRecord(
+                memory_id=memory_id_for_source("graph_summary", graph_memory_ref),
+                kind="graph_summary",
+                summary=(
+                    f"Run {request.run_id} completed task {request.task_id} "
+                    f"with {len(outputs)} node output(s)."
+                ),
+                source_ref=request.run_id,
+                source_refs=[request.run_id, request.task_id],
+                created_at=completed_at,
+                tags=["run", request.task_id],
+            )
         )
+        record_count += 1
+        record_kinds.append("graph_summary")
+
+        for node_id, output in outputs.items():
+            node = _node_by_id(request.graph.nodes, node_id)
+            if node is not None and node.nodeType == "fixed_tool":
+                source_ref = f"{request.run_id}:{node_id}:success"
+                store.upsert(
+                    MemoryRecord(
+                        memory_id=memory_id_for_source("tool_outcome", source_ref),
+                        kind="tool_outcome",
+                        summary=(
+                            f"Tool node {node_id} completed during run {request.run_id}."
+                        ),
+                        source_ref=source_ref,
+                        source_refs=[request.run_id, node_id, "success"],
+                        created_at=completed_at,
+                        tags=["tool_outcome", "success", node_id],
+                    )
+                )
+                record_count += 1
+                record_kinds.append("tool_outcome")
+            for artifact_path in output.artifacts:
+                artifact_name = Path(artifact_path).name
+                source_ref = f"{request.run_id}:{node_id}:{artifact_name}"
+                store.upsert(
+                    MemoryRecord(
+                        memory_id=memory_id_for_source("artifact_summary", source_ref),
+                        kind="artifact_summary",
+                        summary=(
+                            f"Node {node_id} produced artifact {artifact_name} "
+                            f"during run {request.run_id}."
+                        ),
+                        source_ref=source_ref,
+                        source_refs=[request.run_id, node_id, artifact_name],
+                        created_at=completed_at,
+                        tags=["artifact", node_id],
+                    )
+                )
+                record_count += 1
+                record_kinds.append("artifact_summary")
+    except Exception as error:
+        _record_memory_write_span(
+            trace_span_sink,
+            request=request,
+            status="error",
+            started_at=span_started_at,
+            duration_ms=int((perf_counter() - span_start) * 1000),
+            record_count=record_count,
+            record_kinds=record_kinds,
+            error_code=type(error).__name__,
+        )
+        raise
+    _record_memory_write_span(
+        trace_span_sink,
+        request=request,
+        status="ok",
+        started_at=span_started_at,
+        duration_ms=int((perf_counter() - span_start) * 1000),
+        record_count=record_count,
+        record_kinds=record_kinds,
+        error_code=None,
     )
 
-    for node_id, output in outputs.items():
-        node = _node_by_id(request.graph.nodes, node_id)
-        if node is not None and node.nodeType == "fixed_tool":
-            source_ref = f"{request.run_id}:{node_id}:success"
-            store.append(
-                MemoryRecord(
-                    memory_id=memory_id_for_source("tool_outcome", source_ref),
-                    kind="tool_outcome",
-                    summary=(
-                        f"Tool node {node_id} completed during run {request.run_id}."
-                    ),
-                    source_ref=source_ref,
-                    source_refs=[request.run_id, node_id, "success"],
-                    created_at=completed_at,
-                    tags=["tool_outcome", "success", node_id],
-                )
-            )
-        for artifact_path in output.artifacts:
-            artifact_name = Path(artifact_path).name
-            source_ref = f"{request.run_id}:{node_id}:{artifact_name}"
-            store.append(
-                MemoryRecord(
-                    memory_id=memory_id_for_source("artifact_summary", source_ref),
-                    kind="artifact_summary",
-                    summary=(
-                        f"Node {node_id} produced artifact {artifact_name} "
-                        f"during run {request.run_id}."
-                    ),
-                    source_ref=source_ref,
-                    source_refs=[request.run_id, node_id, artifact_name],
-                    created_at=completed_at,
-                    tags=["artifact", node_id],
-                )
-            )
+
+def _record_memory_write_span(
+    trace_span_sink: TraceSpanSink | None,
+    *,
+    request: RunGraphRequest,
+    status: str,
+    started_at: str,
+    duration_ms: int,
+    record_count: int,
+    record_kinds: list[str],
+    error_code: str | None,
+) -> None:
+    if trace_span_sink is None:
+        return
+    trace_span_sink(
+        RuntimeSpan(
+            trace_id=trace_id_for_run(request.run_id),
+            span_id="",
+            parent_span_id=None,
+            run_id=request.run_id,
+            node_id="memory-store",
+            kind="memory.write",
+            name="memory.auto_write",
+            status=status,
+            started_at=started_at,
+            ended_at=_now_iso(),
+            duration_ms=duration_ms,
+            metadata={
+                "recordCount": record_count,
+                "recordKinds": sorted(set(record_kinds)),
+                "autoWriteEnabled": True,
+                "errorCode": error_code,
+            },
+        )
+    )
 
 
 def _auto_write_tool_failure_memory(
@@ -2273,7 +2487,7 @@ def _auto_write_tool_failure_memory(
     if not _memory_auto_write_enabled(request) or node.nodeType != "fixed_tool":
         return
     source_ref = f"{request.run_id}:{node.nodeId}:failure"
-    MemoryStore(request.project_path).append(
+    MemoryStore(request.project_path).upsert(
         MemoryRecord(
             memory_id=memory_id_for_source("tool_outcome", source_ref),
             kind="tool_outcome",
@@ -2430,12 +2644,14 @@ def _default_tool_gateway(
     tool_registry: ToolRegistry | None = None,
     authority_context: AuthorityContext | None = None,
     authority_event_sink: AuthorityEventSink | None = None,
+    trace_span_sink: TraceSpanSink | None = None,
 ) -> UnifiedToolGateway:
     return default_unified_tool_gateway(
         registry=tool_registry,
         internal_executor=tool_executor,
         authority_context=authority_context,
         authority_event_sink=authority_event_sink,
+        trace_span_sink=trace_span_sink,
     )
 
 

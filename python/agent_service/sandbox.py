@@ -54,6 +54,13 @@ class SandboxResult(BaseModel):
     backend: str = "subprocess"
     is_os_isolated: bool = False
     is_process_tree_limited: bool = False
+    backend_capabilities: dict[str, bool] = Field(
+        default_factory=lambda: {
+            "windows_job_object_available": job_object_backend_available(),
+            "process_tree_limited": False,
+            "os_isolated": False,
+        }
+    )
 
 
 class SandboxViolation(ValueError):
@@ -64,6 +71,14 @@ class SandboxViolation(ValueError):
 
 def job_object_backend_available() -> bool:
     return os.name == "nt"
+
+
+def sandbox_backend_capabilities() -> dict[str, bool]:
+    return {
+        "windows_job_object_available": job_object_backend_available(),
+        "process_tree_limited": False,
+        "os_isolated": False,
+    }
 
 
 def validate_sandbox_path(path: str, allowed_roots: list[str]) -> Path:

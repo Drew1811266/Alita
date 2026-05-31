@@ -63,6 +63,7 @@ class ToolInvocation:
     arguments: dict[str, object]
     project_path: str
     allowed_roots: list[str] = field(default_factory=list)
+    timeout_ms: int | None = None
 
 
 @dataclass(frozen=True)

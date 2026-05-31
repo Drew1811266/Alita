@@ -260,6 +260,36 @@ def test_planner_chain_uses_legacy_task_planner_for_code_task() -> None:
     ]
 
 
+def test_planner_chain_records_planner_call_span_without_message_payload() -> None:
+    message = UserMessage(
+        task_id="task-planner-span",
+        content="Create a Python script that summarizes secret-value.",
+    )
+    request = _request_for(
+        message,
+        _route_payload(taskType="code_task", toolCandidates=[]),
+    )
+    spans = []
+
+    result = PlannerChain(
+        tool_registry=_tool_registry(),
+        trace_span_sink=spans.append,
+    ).plan(request)
+
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.kind == "planner.call"
+    assert span.name == result.planner
+    assert span.run_id == "task-planner-span"
+    assert span.node_id == "planner-chain"
+    assert span.status == "ok"
+    assert span.metadata["strategy"] == result.strategy
+    assert span.metadata["taskType"] == "code_task"
+    assert span.metadata["routeSource"] == "deterministic"
+    assert span.metadata["graphNodeCount"] == len(result.graph_payload["nodes"])
+    assert "secret-value" not in str(span.to_record())
+
+
 def test_planner_chain_emits_bounded_react_policy_for_tool_exploration() -> None:
     message = UserMessage(
         task_id="task-react-plan",

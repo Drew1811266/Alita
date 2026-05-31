@@ -192,6 +192,67 @@ def test_tool_catalog_planner_chains_schema_compatible_tools() -> None:
     ]
 
 
+def test_tool_catalog_planner_builds_three_step_schema_compatible_dag() -> None:
+    attachment = Attachment(
+        attachment_id="att-dag",
+        name="source.docx",
+        path=str(PROJECT_ROOT / "inputs" / "source.docx"),
+        size_bytes=12,
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+    message = UserMessage(
+        task_id="task-convert-echo-typst",
+        content=(
+            "Use markitdown convert, echo values, and typst compile to convert "
+            "this attachment, echo the extracted text, then compile a PDF."
+        ),
+        attachments=[attachment],
+    )
+    registry = ToolRegistry.from_packages_root(TOOL_PACKAGES_ROOT)
+    goal_spec = parse_goal_spec(message)
+    context = build_context_bundle(
+        message,
+        goal_spec,
+        str(PROJECT_ROOT / "project.alita"),
+        registry,
+    )
+
+    result = ToolCatalogPlanner(tool_registry=registry).plan(
+        ToolCatalogPlanningRequest(
+            task_id=message.task_id,
+            message=message,
+            goal_spec=goal_spec,
+            context=context,
+        )
+    )
+
+    assert result.planned is True
+    assert result.diagnostics == []
+    assert result.graph_payload is not None
+    RunGraph.model_validate(result.graph_payload)
+    assert [node["nodeId"] for node in result.graph_payload["nodes"]] == [
+        "tool-document-markitdown-convert",
+        "tool-test-echo-values",
+        "tool-document-typst-compile",
+        "task-output",
+    ]
+    echo_node = result.graph_payload["nodes"][1]
+    typst_node = result.graph_payload["nodes"][2]
+    assert echo_node["dependencies"] == ["tool-document-markitdown-convert"]
+    assert echo_node["toolBinding"]["argumentsTemplate"]["values"]["source_text"] == (
+        "{tool-document-markitdown-convert.text}"
+    )
+    assert typst_node["dependencies"] == ["tool-test-echo-values"]
+    typst_values = typst_node["toolBinding"]["argumentsTemplate"]["values"]
+    assert typst_values["outline"] == "{tool-test-echo-values.source_text}"
+    assert typst_values["report"] == "{tool-test-echo-values.source_text}"
+    assert result.graph_payload["metadata"]["toolCatalogPlanner"]["toolIds"] == [
+        "internal:document.markitdown_convert",
+        "internal:test.echo_values",
+        "internal:document.typst_compile",
+    ]
+
+
 def test_tool_catalog_planner_reports_unbound_required_argument(tmp_path: Path) -> None:
     package_root = tmp_path / "tool-packages"
     tool_root = package_root / "strict"

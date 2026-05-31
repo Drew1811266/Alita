@@ -1,8 +1,16 @@
 from pathlib import Path
+import sys
 
 from agent_service.tool_execution import ToolResult
 from agent_service.tool_providers.internal import InternalToolProvider
 from agent_service.authority import AuthorityContext
+from agent_service.tool_protocol import (
+    ToolResultContent,
+    ToolSafetyPolicy,
+    UnifiedToolDefinition,
+    UnifiedToolInvocation,
+    UnifiedToolResult,
+)
 from agent_service.tool_registry import ToolManifestSpec, ToolOperationSpec, ToolRegistry
 from agent_service.tool_providers.mcp import McpProviderConfig
 from tests.test_mcp_tool_provider import FakeMcpClient
@@ -91,6 +99,143 @@ def test_gateway_rejects_unknown_tool() -> None:
     assert result.ok is False
     assert result.error is not None
     assert result.error.code == "unsupported_tool"
+
+
+def test_gateway_records_tool_call_span_for_allowed_call() -> None:
+    from agent_service.tool_gateway import UnifiedToolGateway
+
+    class EchoProvider:
+        provider_id = "test"
+        source = "internal"
+
+        def list_tools(self):
+            return [
+                UnifiedToolDefinition(
+                    id="internal:test.echo",
+                    source="internal",
+                    provider_id="test",
+                    provider_tool_name="test.echo",
+                    display_name="Echo",
+                    description="Echo input.",
+                    capabilities=["echo"],
+                    input_schema={"type": "object"},
+                    output_schema={"type": "object"},
+                    permissions=[],
+                    safety_policy=ToolSafetyPolicy(
+                        filesystem="none",
+                        network="none",
+                        user_approval="never",
+                        secrets="none",
+                        sandbox="not_required",
+                        max_runtime_ms=1000,
+                    ),
+                    timeout_ms=1000,
+                )
+            ]
+
+        def call_tool(self, invocation, *, timeout_ms=None):
+            return UnifiedToolResult(
+                ok=True,
+                content=[ToolResultContent(type="text", text="ok")],
+                structured_content={"text": invocation.arguments.get("message", "")},
+                artifacts=[],
+                metadata={},
+            )
+
+    spans = []
+    gateway = UnifiedToolGateway(
+        providers=[EchoProvider()],
+        trace_span_sink=spans.append,
+    )
+
+    result = gateway.call_tool(
+        UnifiedToolInvocation(
+            invocation_id="inv-span",
+            run_id="run-span",
+            task_id="task-span",
+            tool_id="internal:test.echo",
+            arguments={"message": "hello", "api_key": "secret-value"},
+            allowed_roots=[],
+            requested_permissions=[],
+        )
+    )
+
+    assert result.ok is True
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.kind == "tool.call"
+    assert span.name == "internal:test.echo"
+    assert span.status == "ok"
+    assert span.metadata["toolId"] == "internal:test.echo"
+    assert span.metadata["providerId"] == "test"
+    assert "secret-value" not in str(span.to_record())
+
+
+def test_gateway_passes_effective_runtime_budget_to_provider() -> None:
+    from agent_service.tool_gateway import UnifiedToolGateway
+
+    class BudgetProvider:
+        provider_id = "test"
+        source = "internal"
+
+        def __init__(self) -> None:
+            self.timeout_ms = None
+
+        def list_tools(self):
+            return [
+                UnifiedToolDefinition(
+                    id="internal:test.budget",
+                    source="internal",
+                    provider_id="test",
+                    provider_tool_name="test.budget",
+                    display_name="Budget",
+                    description="Budget test.",
+                    capabilities=["budget"],
+                    input_schema={"type": "object"},
+                    output_schema={"type": "object"},
+                    permissions=[],
+                    safety_policy=ToolSafetyPolicy(
+                        filesystem="none",
+                        network="none",
+                        user_approval="never",
+                        secrets="none",
+                        sandbox="not_required",
+                        max_runtime_ms=5000,
+                    ),
+                    timeout_ms=5000,
+                )
+            ]
+
+        def call_tool(self, invocation, *, timeout_ms=None):
+            self.timeout_ms = timeout_ms
+            return UnifiedToolResult(
+                ok=True,
+                content=[],
+                structured_content={"ok": True},
+                artifacts=[],
+                metadata={},
+            )
+
+    provider = BudgetProvider()
+    gateway = UnifiedToolGateway(
+        providers=[provider],
+        authority_context=AuthorityContext(runtime_budget_ms=2500),
+    )
+
+    result = gateway.call_tool(
+        UnifiedToolInvocation(
+            invocation_id="inv-budget",
+            run_id="run-budget",
+            task_id="task-budget",
+            tool_id="internal:test.budget",
+            arguments={},
+            allowed_roots=[],
+            requested_permissions=[],
+        )
+    )
+
+    assert result.ok is True
+    assert provider.timeout_ms == 2500
 
 
 def test_gateway_validates_input_schema_before_provider_call() -> None:
@@ -421,6 +566,68 @@ def test_default_gateway_uses_safe_mcp_factory_without_custom_factory() -> None:
     assert gateway.list_tools() == []
 
 
+def test_default_gateway_denies_and_allows_stdio_mcp_tool_call() -> None:
+    from agent_service.tool_gateway import default_unified_tool_gateway
+    from agent_service.tool_protocol import UnifiedToolInvocation
+
+    server_path = Path(__file__).parent / "fixtures" / "mcp_stdio_server.py"
+    config = McpProviderConfig(
+        provider_id="fixture",
+        display_name="Fixture MCP",
+        transport="stdio",
+        command=f'"{sys.executable}" "{server_path}"',
+    )
+    denied_gateway = default_unified_tool_gateway(
+        registry=ToolRegistry([]),
+        mcp_provider_configs=[config],
+        authority_context=AuthorityContext(),
+    )
+    allowed_gateway = default_unified_tool_gateway(
+        registry=ToolRegistry([]),
+        mcp_provider_configs=[config],
+        authority_context=AuthorityContext(
+            approved_permissions=["call_external_mcp_tool"],
+            network_domains=["fixture.local"],
+        ),
+    )
+
+    try:
+        denied = denied_gateway.call_tool(
+            UnifiedToolInvocation(
+                invocation_id="inv-mcp-denied",
+                run_id="run-mcp",
+                task_id="task-mcp",
+                tool_id="mcp:fixture:echo",
+                arguments={"message": "hello"},
+                allowed_roots=[],
+                requested_permissions=[],
+            )
+        )
+        allowed = allowed_gateway.call_tool(
+            UnifiedToolInvocation(
+                invocation_id="inv-mcp-allowed",
+                run_id="run-mcp",
+                task_id="task-mcp",
+                tool_id="mcp:fixture:echo",
+                arguments={"message": "hello"},
+                allowed_roots=[],
+                requested_permissions=[],
+                metadata={"networkDomain": "fixture.local"},
+            )
+        )
+    finally:
+        for gateway in (denied_gateway, allowed_gateway):
+            for provider in gateway.providers:
+                if hasattr(provider, "stop"):
+                    provider.stop()
+
+    assert denied.ok is False
+    assert denied.error is not None
+    assert denied.error.code == "authority_denied"
+    assert allowed.ok is True
+    assert allowed.structured_content == {"echo": "hello"}
+
+
 def test_default_unified_tool_gateway_uses_injected_internal_executor() -> None:
     from agent_service.tool_gateway import default_unified_tool_gateway
     from agent_service.tool_protocol import UnifiedToolInvocation
@@ -474,6 +681,7 @@ def test_default_unified_tool_gateway_uses_injected_internal_executor() -> None:
     assert executor.calls
     assert executor.calls[0].tool_id == "document.markitdown_convert"
     assert executor.calls[0].operation == "convert_local_file"
+    assert executor.calls[0].timeout_ms == 120000
 
 
 def test_gateway_denies_sensitive_tool_permission_without_explicit_authority(

@@ -107,7 +107,7 @@ def test_model_tool_call_executes_through_gateway_provider() -> None:
         def list_tools(self):
             return [tool]
 
-        def call_tool(self, invocation):
+        def call_tool(self, invocation, *, timeout_ms=None):
             return UnifiedToolResult(
                 ok=True,
                 content=[],

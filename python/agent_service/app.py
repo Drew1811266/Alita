@@ -16,8 +16,8 @@ from agent_service.asr import (
     get_asr_status,
 )
 from agent_service.agent_run_state import AgentRunState
+from agent_service.agent_runtime_engine import AgentRuntimeEngine
 from agent_service.execution import run_graph_events
-from agent_service.graph import run_agent_from_state, stream_agent_events_from_state
 from agent_service.model_client import AgentModelClientConfig, create_model_client
 from agent_service.model_sessions import DEFAULT_MODEL_SESSION_REGISTRY
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY
@@ -116,10 +116,7 @@ def agent_message(
     _auth: None = Depends(require_sidecar_token),
 ) -> list[AgentEvent]:
     model_client = _model_client_for_session(request.model_session_id)
-    return run_agent_from_state(
-        AgentRunState.from_message_request(request),
-        model_client=model_client,
-    )
+    return _run_message_with_runtime(request, model_client=model_client)
 
 
 @app.post("/agent/research/choose", response_model=list[AgentEvent])
@@ -128,10 +125,7 @@ def research_choose(
     _auth: None = Depends(require_sidecar_token),
 ) -> list[AgentEvent]:
     model_client = _model_client_for_session(request.model_session_id)
-    return run_agent_from_state(
-        AgentRunState.from_message_request(request),
-        model_client=model_client,
-    )
+    return _run_message_with_runtime(request, model_client=model_client)
 
 
 @app.post("/agent/message/stream")
@@ -236,12 +230,30 @@ def _model_client_for_session(model_session_id: str | None):
     )
 
 
+def _runtime_engine() -> AgentRuntimeEngine:
+    return AgentRuntimeEngine()
+
+
+def _run_message_with_runtime(
+    request: AgentMessageRequest,
+    *,
+    model_client,
+) -> list[AgentEvent]:
+    result = _runtime_engine().run_from_state(
+        AgentRunState.from_message_request(request),
+        model_client=model_client,
+    )
+    return _public_agent_events(result.events)
+
+
 def _serialize_sse_events(request: AgentMessageRequest, *, model_client):
     run_state = AgentRunState.from_message_request(request)
-    for event in stream_agent_events_from_state(
+    for event in _runtime_engine().stream_from_state(
         run_state,
         model_client=model_client,
     ):
+        if _is_runtime_control_event(event):
+            continue
         yield f"data: {event.model_dump_json()}\n\n"
 
 
@@ -287,3 +299,11 @@ def _graph_snapshot_event(graph, summary: str) -> AgentEvent:
             "summary": summary,
         },
     )
+
+
+def _public_agent_events(events: list[AgentEvent]) -> list[AgentEvent]:
+    return [event for event in events if not _is_runtime_control_event(event)]
+
+
+def _is_runtime_control_event(event: AgentEvent) -> bool:
+    return event.type in {"runtime.run_started", "runtime.state_delta"}

@@ -52,7 +52,7 @@ class RecordingGateway:
             ),
         ]
 
-    def call_tool(self, invocation):
+    def call_tool(self, invocation, *, timeout_ms=None):
         self.calls.append(invocation)
         if self.fail_code is not None:
             return UnifiedToolResult(

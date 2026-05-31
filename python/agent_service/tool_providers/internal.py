@@ -59,7 +59,12 @@ class InternalToolProvider:
             )
         return tools
 
-    def call_tool(self, invocation: UnifiedToolInvocation) -> UnifiedToolResult:
+    def call_tool(
+        self,
+        invocation: UnifiedToolInvocation,
+        *,
+        timeout_ms: int | None = None,
+    ) -> UnifiedToolResult:
         provider_tool_id = invocation.tool_id.removeprefix("internal:")
         operation = str(invocation.arguments.get("operation", ""))
         arguments = {
@@ -76,6 +81,7 @@ class InternalToolProvider:
                     arguments=arguments,
                     project_path=invocation.project_path or "",
                     allowed_roots=invocation.allowed_roots,
+                    timeout_ms=timeout_ms,
                 )
             )
         except Exception as error:

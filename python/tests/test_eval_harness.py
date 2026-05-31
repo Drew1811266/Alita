@@ -209,27 +209,35 @@ def test_run_eval_cases_handles_security_sandbox_case() -> None:
     assert summary.results[0].details["errorCode"] == "network_import_denied"
 
 
-def test_run_eval_cases_skips_model_loop_case_by_default() -> None:
+def test_run_eval_cases_handles_scripted_model_loop_case_by_default() -> None:
     summary = run_eval_cases(
         [
             EvalCase(
-                case_id="model-loop-planner-binding-smoke",
+                case_id="model-loop-scripted",
                 category="model_loop",
                 input={
-                    "kind": "planner_binding",
-                    "content": "Use the echo tool to summarize this text",
+                    "kind": "react_scripted",
+                    "content": "Inspect README.",
+                    "model_replies": [
+                        '{"kind":"tool","tool_id":"internal:test.echo","arguments":{"message":"README"}}',
+                        '{"kind":"final","text":"README inspected."}',
+                    ],
                 },
-                expected={"skipped": True},
+                expected={
+                    "skipped": False,
+                    "runner": "scripted",
+                    "ok": True,
+                    "toolCallCount": 1,
+                    "observationCount": 1,
+                    "errorCode": None,
+                },
             )
         ]
     )
 
     assert summary.failed == 0
     assert summary.categories["model_loop"].passed == 1
-    assert summary.results[0].details == {
-        "skipped": True,
-        "reason": "model loop eval disabled",
-    }
+    assert summary.results[0].details["finalAnswer"] == "README inspected."
 
 
 def test_model_loop_eval_runs_mock_runner_when_enabled(monkeypatch) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import re
 from typing import Any
 
@@ -14,12 +15,24 @@ from agent_service.tool_graph_planner import (
     ToolActionGraph,
     validate_tool_action_graph,
 )
+from agent_service.tool_ports import compatible_port_types, port_type_for_schema
 from agent_service.tool_protocol import normalize_tool_id, provider_tool_id
 from agent_service.tool_registry import ToolManifestSpec, ToolRegistry
 
 
 TOOL_CATALOG_PLANNER_ID = "tool_catalog.planner.v1"
-CHAIN_TEXT_ARGUMENTS = {"source_text", "text", "input"}
+MAX_TOOL_GRAPH_NODES = 5
+CHAIN_TEXT_ARGUMENTS = {"content", "outline", "report", "source_text", "text", "input"}
+OUTPUT_KEY_PRIORITY = [
+    "text",
+    "source_text",
+    "report",
+    "outline",
+    "echo",
+    "artifact",
+    "artifacts",
+    "source",
+]
 
 
 class ToolCatalogPlanningRequest(BaseModel):
@@ -43,11 +56,18 @@ class _CatalogToolPlan:
     operation: str
     argument_values: dict[str, Any]
     node_id: str
+    missing_arguments: list[str]
 
 
 @dataclass(frozen=True)
 class _GraphStep:
     plan: _CatalogToolPlan
+    dependencies: list[str]
+    argument_values: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _DependencyBinding:
     dependencies: list[str]
     argument_values: dict[str, Any]
 
@@ -67,38 +87,25 @@ class ToolCatalogPlanner:
                 diagnostics=["no catalog tool matched the task"],
             )
 
-        first_plan, diagnostics = self._plan_selected_tool(selected_tools[0], request)
-        if first_plan is None:
+        tool_plans: list[_CatalogToolPlan] = []
+        diagnostics: list[str] = []
+        for selected_tool in selected_tools[:MAX_TOOL_GRAPH_NODES]:
+            plan, plan_diagnostics = self._plan_selected_tool(selected_tool, request)
+            if plan is None:
+                diagnostics.extend(plan_diagnostics)
+                continue
+            tool_plans.append(plan)
+            diagnostics.extend(plan_diagnostics)
+
+        if not tool_plans:
             return ToolCatalogPlanningResult(planned=False, diagnostics=diagnostics)
 
-        graph_steps = [
-            _GraphStep(
-                plan=first_plan,
-                dependencies=[],
-                argument_values=dict(first_plan.argument_values),
+        graph_steps = _best_tool_graph(tool_plans)
+        if not graph_steps:
+            return ToolCatalogPlanningResult(
+                planned=False,
+                diagnostics=diagnostics or _missing_argument_diagnostics(tool_plans[0]),
             )
-        ]
-        for selected_tool in selected_tools[1:]:
-            second_plan, second_diagnostics = self._plan_selected_tool(
-                selected_tool,
-                request,
-            )
-            if (
-                second_plan is not None
-                and not second_diagnostics
-                and _can_chain_tool_plans(first_plan, second_plan)
-            ):
-                target_argument = _chain_target_argument(second_plan)
-                second_arguments = dict(second_plan.argument_values)
-                second_arguments[target_argument] = f"{{{first_plan.node_id}.text}}"
-                graph_steps.append(
-                    _GraphStep(
-                        plan=second_plan,
-                        dependencies=[first_plan.node_id],
-                        argument_values=second_arguments,
-                    )
-                )
-                break
 
         action_graph = ToolActionGraph(
             nodes=[
@@ -126,6 +133,7 @@ class ToolCatalogPlanner:
             for index, step in enumerate(graph_steps)
         ]
         last_node_id = graph_steps[-1].plan.node_id
+        first_plan = graph_steps[0].plan
         graph_payload = {
             "graphId": f"{request.task_id}-graph",
             "nodes": [
@@ -135,14 +143,12 @@ class ToolCatalogPlanner:
             "edges": [
                 *[
                     {
-                        "id": (
-                            f"{graph_steps[index - 1].plan.node_id}-"
-                            f"{graph_steps[index].plan.node_id}"
-                        ),
-                        "source": graph_steps[index - 1].plan.node_id,
-                        "target": graph_steps[index].plan.node_id,
+                        "id": f"{dependency}-{step.plan.node_id}",
+                        "source": dependency,
+                        "target": step.plan.node_id,
                     }
-                    for index in range(1, len(graph_steps))
+                    for step in graph_steps
+                    for dependency in step.dependencies
                 ],
                 {
                     "id": f"{last_node_id}-task-output",
@@ -188,8 +194,6 @@ class ToolCatalogPlanner:
             message=request.message,
             context=request.context,
         )
-        if diagnostics:
-            return None, diagnostics
 
         return (
             _CatalogToolPlan(
@@ -198,9 +202,154 @@ class ToolCatalogPlanner:
                 operation=operation,
                 argument_values=argument_values,
                 node_id=_node_id_for_tool(manifest.tool_id),
+                missing_arguments=_missing_arguments_from_diagnostics(diagnostics),
             ),
-            [],
+            diagnostics,
         )
+
+
+def _best_tool_graph(plans: list[_CatalogToolPlan]) -> list[_GraphStep]:
+    best: list[_GraphStep] = []
+    root_plans = [plan for plan in plans if not plan.missing_arguments]
+    for root_plan in root_plans:
+        root_step = _GraphStep(
+            plan=root_plan,
+            dependencies=[],
+            argument_values=dict(root_plan.argument_values),
+        )
+        best = _extend_tool_graph(
+            steps=[root_step],
+            remaining=[plan for plan in plans if plan is not root_plan],
+            best=best,
+        )
+    return best
+
+
+def _extend_tool_graph(
+    *,
+    steps: list[_GraphStep],
+    remaining: list[_CatalogToolPlan],
+    best: list[_GraphStep],
+) -> list[_GraphStep]:
+    if len(steps) > len(best):
+        best = list(steps)
+    if len(steps) >= MAX_TOOL_GRAPH_NODES:
+        return best
+
+    for plan in remaining:
+        binding = _dependency_binding_for_plan(plan, steps)
+        if binding is None:
+            continue
+        step = _GraphStep(
+            plan=plan,
+            dependencies=binding.dependencies,
+            argument_values={**plan.argument_values, **binding.argument_values},
+        )
+        best = _extend_tool_graph(
+            steps=[*steps, step],
+            remaining=[candidate for candidate in remaining if candidate is not plan],
+            best=best,
+        )
+    return best
+
+
+def _dependency_binding_for_plan(
+    plan: _CatalogToolPlan,
+    previous_steps: list[_GraphStep],
+) -> _DependencyBinding | None:
+    dependencies: list[str] = []
+    argument_values: dict[str, Any] = {}
+    required_arguments = _required_arguments(plan.manifest)
+    candidate_arguments = [
+        argument
+        for argument in required_arguments
+        if argument != "operation"
+        and (argument in plan.missing_arguments or argument in CHAIN_TEXT_ARGUMENTS)
+    ]
+    for argument in candidate_arguments:
+        source = _compatible_source_for_argument(
+            argument=argument,
+            plan=plan,
+            previous_steps=previous_steps,
+        )
+        if source is None:
+            if argument in plan.missing_arguments:
+                return None
+            continue
+        dependency, output_key = source
+        argument_values[argument] = f"{{{dependency}.{output_key}}}"
+        if dependency not in dependencies:
+            dependencies.append(dependency)
+
+    if plan.missing_arguments and not all(
+        argument in argument_values for argument in plan.missing_arguments
+    ):
+        return None
+    if not dependencies:
+        return None
+    return _DependencyBinding(
+        dependencies=dependencies,
+        argument_values=argument_values,
+    )
+
+
+def _compatible_source_for_argument(
+    *,
+    argument: str,
+    plan: _CatalogToolPlan,
+    previous_steps: list[_GraphStep],
+) -> tuple[str, str] | None:
+    argument_schema = _schema_property(plan.manifest.input_schema, argument)
+    argument_type = port_type_for_schema(argument, argument_schema)
+    for step in reversed(previous_steps):
+        output_properties = _schema_properties(step.plan.manifest.output_schema)
+        for output_key in _ordered_output_keys(output_properties):
+            output_type = port_type_for_schema(output_key, output_properties[output_key])
+            if compatible_port_types(output_type, argument_type):
+                return step.plan.node_id, output_key
+    return None
+
+
+def _ordered_output_keys(properties: dict[str, dict[str, Any]]) -> list[str]:
+    return sorted(
+        properties,
+        key=lambda key: (
+            OUTPUT_KEY_PRIORITY.index(key)
+            if key in OUTPUT_KEY_PRIORITY
+            else len(OUTPUT_KEY_PRIORITY),
+            key,
+        ),
+    )
+
+
+def _schema_properties(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    properties = schema.get("properties", {})
+    if not isinstance(properties, dict):
+        return {}
+    return {
+        str(name): dict(property_schema or {})
+        for name, property_schema in properties.items()
+    }
+
+
+def _schema_property(schema: dict[str, Any], name: str) -> dict[str, Any]:
+    return _schema_properties(schema).get(name, {})
+
+
+def _missing_arguments_from_diagnostics(diagnostics: list[str]) -> list[str]:
+    prefix = "missing binding value for required argument: "
+    return [
+        diagnostic.removeprefix(prefix)
+        for diagnostic in diagnostics
+        if diagnostic.startswith(prefix)
+    ]
+
+
+def _missing_argument_diagnostics(plan: _CatalogToolPlan) -> list[str]:
+    return [
+        f"missing binding value for required argument: {argument}"
+        for argument in plan.missing_arguments
+    ]
 
 
 def _select_tool(
@@ -216,7 +365,7 @@ def _select_tools(
     tools: list[ToolCapability],
 ) -> list[ToolCapability]:
     text_tokens = _signal_tokens(content)
-    scored: list[tuple[int, ToolCapability]] = []
+    scored: list[tuple[int, int, ToolCapability]] = []
     for tool in tools:
         haystack = " ".join(
             [
@@ -228,11 +377,29 @@ def _select_tools(
         )
         score = len(text_tokens & _signal_tokens(haystack))
         if score >= 2:
-            scored.append((score, tool))
+            scored.append((_tool_position(content, tool), score, tool))
     if not scored:
         return []
-    scored.sort(key=lambda item: (-item[0], item[1].tool_id))
-    return [tool for _, tool in scored]
+    scored.sort(key=lambda item: (item[0], -item[1], item[2].tool_id))
+    return [tool for _, _, tool in scored]
+
+
+def _tool_position(content: str, tool: ToolCapability) -> int:
+    normalized_content = content.lower()
+    haystack = " ".join(
+        [
+            tool.tool_id,
+            tool.name,
+            " ".join(tool.capabilities),
+            " ".join(tool.operations),
+        ]
+    )
+    positions = [
+        normalized_content.find(token)
+        for token in _signal_tokens(haystack)
+        if normalized_content.find(token) >= 0
+    ]
+    return min(positions) if positions else len(normalized_content)
 
 
 def _signal_tokens(value: str) -> set[str]:
@@ -331,6 +498,8 @@ def _argument_values_for_tool(
                 tool_id=manifest.tool_id,
                 suffix=".pdf",
             )
+        elif argument == "title":
+            values[argument] = Path(context.project_path).stem or message.task_id
         elif argument == "metadata_value":
             values[argument] = "tool_catalog"
         else:
@@ -365,6 +534,7 @@ def _planned_tool_node(
         arguments=dict(argument_values),
         dependencies=list(dependencies),
         required_arguments=_required_arguments(plan.manifest),
+        input_schema=dict(plan.manifest.input_schema),
         output_schema=dict(plan.manifest.output_schema),
     )
 
