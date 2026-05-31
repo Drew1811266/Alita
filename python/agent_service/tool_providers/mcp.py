@@ -29,13 +29,20 @@ class McpProviderConfig:
     transport: str = "stdio"
     command: str | None = None
     url: str | None = None
+    timeout_seconds: float = 5.0
 
 
 class McpClient(Protocol):
     def list_tools(self) -> list[McpToolSpec]:
         raise NotImplementedError
 
-    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        timeout_ms: int | None = None,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
 
@@ -87,11 +94,20 @@ class McpToolProvider:
             for tool in self.client.list_tools()
         ]
 
-    def call_tool(self, invocation: UnifiedToolInvocation) -> UnifiedToolResult:
+    def call_tool(
+        self,
+        invocation: UnifiedToolInvocation,
+        *,
+        timeout_ms: int | None = None,
+    ) -> UnifiedToolResult:
         self._ensure_started()
         name = invocation.tool_id.removeprefix(f"mcp:{self.provider_id}:")
         try:
-            raw = self.client.call_tool(name, invocation.arguments)
+            raw = self.client.call_tool(
+                name,
+                invocation.arguments,
+                timeout_ms=timeout_ms,
+            )
         except Exception:
             return _mcp_error("mcp_call_failed", "MCP tool call failed")
 

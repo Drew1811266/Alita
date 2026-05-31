@@ -15,15 +15,17 @@ from agent_service.execution import run_graph_events
 from agent_service.goal_spec import parse_goal_spec
 from agent_service.harness_errors import HarnessError
 from agent_service.intent import classify_route
+from agent_service.model_client import ChatMessage
 from agent_service.permission_gate import PermissionGate
 from agent_service.planner_chain import (
     PlannerChain,
     PlannerChainRequest,
     route_context_from_payload,
 )
+from agent_service.react_controller import ReActController, ReActPolicy
 from agent_service.router_v2 import deterministic_route
 from agent_service.sandbox import SandboxRequest, run_sandboxed_python
-from agent_service.schemas import GraphNode, RunGraphRequest, UserMessage
+from agent_service.schemas import Attachment, GraphNode, RunGraphRequest, UserMessage
 from agent_service.tool_execution import (
     ToolExecutor,
     ToolInvocation,
@@ -31,9 +33,11 @@ from agent_service.tool_execution import (
 )
 from agent_service.tool_registry import ToolRegistry
 from agent_service.tool_protocol import (
+    ToolResultContent,
     ToolSafetyPolicy,
     UnifiedToolDefinition,
     UnifiedToolInvocation,
+    UnifiedToolResult,
 )
 from agent_service.web_research import build_research_graph
 from agent_service.web_search import SearchResponse, SearchResult
@@ -198,20 +202,6 @@ def _run_eval_case(case: EvalCase) -> EvalCaseResult:
 
 def _run_model_loop_case(case: EvalCase) -> EvalCaseResult:
     mode = os.getenv("ALITA_MODEL_LOOP_EVAL", "").strip().lower()
-    if mode not in {
-        "1",
-        "true",
-        "yes",
-        "on",
-        "mock",
-    }:
-        details = {"skipped": True, "reason": "model loop eval disabled"}
-        return EvalCaseResult(
-            case_id=case.case_id,
-            category=case.category,
-            passed=_expected_subset_matches(details, case.expected),
-            details=details,
-        )
     if mode == "mock":
         details = {
             "skipped": False,
@@ -224,15 +214,149 @@ def _run_model_loop_case(case: EvalCase) -> EvalCaseResult:
             passed=_expected_subset_matches(details, case.expected),
             details=details,
         )
-    details = {
-        "skipped": False,
-        "error": "model loop eval runner is not configured",
-    }
+    if mode in {"real", "live"}:
+        details = {
+            "skipped": False,
+            "error": "real model loop eval runner is not configured",
+        }
+        return EvalCaseResult(
+            case_id=case.case_id,
+            category=case.category,
+            passed=False,
+            details=details,
+        )
+    details = _run_scripted_model_loop(case)
     return EvalCaseResult(
         case_id=case.case_id,
         category=case.category,
-        passed=False,
+        passed=_expected_subset_matches(details, case.expected),
         details=details,
+    )
+
+
+class _ScriptedModelClient:
+    def __init__(self, replies: list[str]) -> None:
+        self.replies = list(replies)
+
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        _ = (messages, temperature, max_tokens, policy)
+        if not self.replies:
+            return '{"kind":"final","text":""}'
+        return self.replies.pop(0)
+
+
+class _ScriptedGateway:
+    def __init__(self, tool: UnifiedToolDefinition, response: dict[str, Any]) -> None:
+        self.tool = tool
+        self.response = response
+        self.calls: list[UnifiedToolInvocation] = []
+
+    def list_tools(self) -> list[UnifiedToolDefinition]:
+        return [self.tool]
+
+    def call_tool(
+        self,
+        invocation: UnifiedToolInvocation,
+        *,
+        timeout_ms: int | None = None,
+    ) -> UnifiedToolResult:
+        _ = timeout_ms
+        self.calls.append(invocation)
+        values = dict(self.response.get("values") or {"text": "tool observation"})
+        return UnifiedToolResult(
+            ok=bool(self.response.get("ok", True)),
+            content=[ToolResultContent(type="json", value=values)],
+            structured_content=values,
+            artifacts=list(self.response.get("artifacts") or []),
+            metadata={"runner": "scripted"},
+        )
+
+
+def _run_scripted_model_loop(case: EvalCase) -> dict[str, Any]:
+    tool_id = str(case.input.get("tool_id") or "internal:test.echo")
+    replies = [
+        str(reply)
+        for reply in case.input.get("model_replies")
+        or [
+            json.dumps(
+                {
+                    "kind": "tool",
+                    "tool_id": tool_id,
+                    "arguments": {"message": case.input.get("content", "")},
+                }
+            ),
+            json.dumps({"kind": "final", "text": "scripted final"}),
+        ]
+    ]
+    tool = _scripted_tool(tool_id)
+    gateway = _ScriptedGateway(
+        tool,
+        response=dict(case.input.get("tool_response") or {}),
+    )
+    result = ReActController(
+        model_client=_ScriptedModelClient(replies),
+        gateway=gateway,
+    ).run(
+        messages=[
+            ChatMessage(
+                role="user",
+                content=str(case.input.get("content") or ""),
+            )
+        ],
+        tools=[tool],
+        base_invocation=UnifiedToolInvocation(
+            invocation_id=f"{case.case_id}-base",
+            run_id=f"{case.case_id}-run",
+            task_id=case.case_id,
+            tool_id=tool_id,
+            arguments={},
+            allowed_roots=[],
+            requested_permissions=[],
+        ),
+        policy=ReActPolicy(
+            enabled=True,
+            max_steps=int(case.input.get("max_steps") or 4),
+            max_tool_calls=int(case.input.get("max_tool_calls") or 3),
+            allowed_tool_ids=[tool_id],
+            allowed_permissions=[],
+            stop_on_first_success=False,
+        ),
+    )
+    return {
+        "skipped": False,
+        "runner": "scripted",
+        "ok": result.ok,
+        "finalAnswer": result.text,
+        "toolCallCount": result.tool_call_count,
+        "observationCount": len(result.observations),
+        "errorCode": result.error_code,
+    }
+
+
+def _scripted_tool(tool_id: str) -> UnifiedToolDefinition:
+    return UnifiedToolDefinition(
+        id=tool_id,
+        source="internal",
+        provider_id="internal",
+        provider_tool_name=tool_id.removeprefix("internal:"),
+        display_name="Scripted Tool",
+        description="Deterministic scripted eval tool.",
+        capabilities=["scripted"],
+        input_schema={
+            "type": "object",
+            "properties": {"message": {"type": "string"}},
+        },
+        output_schema={"type": "object"},
+        permissions=[],
+        safety_policy=ToolSafetyPolicy(
+            filesystem="none",
+            network="none",
+            user_approval="never",
+            secrets="none",
+            sandbox="not_required",
+            max_runtime_ms=1000,
+        ),
+        timeout_ms=1000,
     )
 
 
@@ -530,6 +654,11 @@ def _message_from_case(case: EvalCase) -> UserMessage:
     return UserMessage(
         task_id=str(case.input.get("task_id") or case.case_id),
         content=str(case.input.get("content") or ""),
+        attachments=[
+            Attachment.model_validate(attachment)
+            for attachment in case.input.get("attachments") or []
+            if isinstance(attachment, dict)
+        ],
     )
 
 

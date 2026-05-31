@@ -75,7 +75,7 @@ class FakeProvider:
             high_risk_tool(),
         ]
 
-    def call_tool(self, invocation):
+    def call_tool(self, invocation, *, timeout_ms=None):
         return UnifiedToolResult(
             ok=True,
             content=[],

@@ -54,6 +54,66 @@ def test_memory_store_sanitizes_summary_before_persisting(tmp_path: Path) -> Non
     assert "secret.docx" not in stored_summary
 
 
+def test_memory_store_upsert_replaces_existing_record_by_id(tmp_path: Path) -> None:
+    store = MemoryStore(str(tmp_path / "demo.alita"))
+    store.append(
+        MemoryRecord(
+            memory_id="same",
+            kind="graph_summary",
+            summary="Old summary.",
+            source_ref="run-old",
+            created_at="2026-05-29T00:00:00Z",
+        )
+    )
+
+    store.upsert(
+        MemoryRecord(
+            memory_id="same",
+            kind="graph_summary",
+            summary="New summary.",
+            source_ref="run-new",
+            created_at="2026-05-30T00:00:00Z",
+            updated_at="2026-05-30T00:00:00Z",
+        )
+    )
+
+    records = store.list()
+    assert len(records) == 1
+    assert records[0].summary == "New summary."
+    assert records[0].source_ref == "run-new"
+
+
+def test_memory_store_filters_expired_records_and_marks_used(tmp_path: Path) -> None:
+    store = MemoryStore(str(tmp_path / "demo.alita"))
+    store.append(
+        MemoryRecord(
+            memory_id="expired",
+            kind="graph_summary",
+            summary="Expired.",
+            source_ref="run-old",
+            created_at="2026-05-29T00:00:00Z",
+            expires_at="2026-05-30T00:00:00Z",
+        )
+    )
+    store.append(
+        MemoryRecord(
+            memory_id="active",
+            kind="graph_summary",
+            summary="Active.",
+            source_ref="run-new",
+            created_at="2026-05-30T00:00:00Z",
+        )
+    )
+
+    assert [record.memory_id for record in store.list(now="2026-05-31T00:00:00Z")] == [
+        "active"
+    ]
+
+    store.mark_used(["active"], used_at="2026-05-31T01:00:00Z")
+
+    assert store.list()[1].last_used_at == "2026-05-31T01:00:00Z"
+
+
 def test_memory_record_v2_defaults_are_backward_compatible() -> None:
     record = MemoryRecord(
         memory_id="memory-1",

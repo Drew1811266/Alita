@@ -64,7 +64,12 @@ class RecordingGateway:
     def list_tools(self) -> list[UnifiedToolDefinition]:
         return [_tool()]
 
-    def call_tool(self, invocation: UnifiedToolInvocation) -> UnifiedToolResult:
+    def call_tool(
+        self,
+        invocation: UnifiedToolInvocation,
+        *,
+        timeout_ms=None,
+    ) -> UnifiedToolResult:
         self.calls.append(invocation)
         return UnifiedToolResult(
             ok=True,

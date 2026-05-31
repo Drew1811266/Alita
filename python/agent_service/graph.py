@@ -273,13 +273,15 @@ def _graph_payload_for_task(
         if run_state is not None and run_state.project_path
         else "project.alita"
     )
+    memory_store = MemoryStore(project_path)
     context = build_context_bundle(
         message=message,
         goal_spec=spec,
         project_path=project_path,
         tool_registry=tool_registry,
         external_tools=external_tools,
-        memory_records=MemoryStore(project_path).list(),
+        memory_records=memory_store.list(),
+        memory_store=memory_store,
     )
     result = PlannerChain(tool_registry=tool_registry).plan(
         PlannerChainRequest(

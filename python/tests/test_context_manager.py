@@ -4,7 +4,7 @@ from pathlib import Path
 
 from agent_service.context_manager import ToolCapability, build_context_bundle
 from agent_service.goal_spec import GoalSpec, parse_goal_spec
-from agent_service.memory_store import MemoryRecord
+from agent_service.memory_store import MemoryRecord, MemoryStore
 from agent_service.schemas import Attachment, UserMessage
 from agent_service.tool_gateway import UnifiedToolGateway
 from agent_service.tool_providers.internal import InternalToolProvider
@@ -137,6 +137,75 @@ def test_context_bundle_includes_selected_memory_summaries(tmp_path: Path) -> No
     )
 
     assert bundle.memory_summaries == ["Previous run summarized the PDF."]
+
+
+def test_context_bundle_records_memory_search_span_without_message_payload(
+    tmp_path: Path,
+) -> None:
+    message = UserMessage(
+        task_id="task-memory-span",
+        content="Continue the report using secret-value.",
+    )
+    goal_spec = parse_goal_spec(message)
+    registry = ToolRegistry([])
+    memory_records = [
+        MemoryRecord(
+            memory_id="m-secret",
+            kind="graph_summary",
+            summary="Previous run captured secret-value.",
+            source_ref="run-1",
+            created_at="2026-05-29T00:00:00Z",
+        )
+    ]
+    spans = []
+
+    build_context_bundle(
+        message,
+        goal_spec,
+        str(tmp_path / "project.alita"),
+        registry,
+        memory_records=memory_records,
+        trace_span_sink=spans.append,
+    )
+
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.kind == "memory.search"
+    assert span.name == "context.memory.select"
+    assert span.run_id == "task-memory-span"
+    assert span.node_id == "context-manager"
+    assert span.status == "ok"
+    assert span.metadata["candidateRecordCount"] == 1
+    assert span.metadata["selectedRecordCount"] == 1
+    assert span.metadata["contextMode"] == "planning"
+    assert "secret-value" not in str(span.to_record())
+
+
+def test_context_bundle_marks_selected_memory_records_used(tmp_path: Path) -> None:
+    message = UserMessage(task_id="task-memory-used", content="Continue the report.")
+    goal_spec = parse_goal_spec(message)
+    registry = ToolRegistry([])
+    store = MemoryStore(str(tmp_path / "project.alita"))
+    store.append(
+        MemoryRecord(
+            memory_id="selected",
+            kind="graph_summary",
+            summary="Previous report summary.",
+            source_ref="run-1",
+            created_at="2026-05-29T00:00:00Z",
+        )
+    )
+
+    build_context_bundle(
+        message,
+        goal_spec,
+        str(tmp_path / "project.alita"),
+        registry,
+        memory_records=store.list(),
+        memory_store=store,
+    )
+
+    assert store.list()[0].last_used_at is not None
 
 
 def test_context_bundle_can_include_external_mcp_tool_capabilities(

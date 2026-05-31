@@ -12,21 +12,28 @@ def test_agent_message_endpoint_passes_agent_run_state_to_orchestrator(
 ) -> None:
     captured: list[AgentRunState] = []
 
-    def fake_run_agent_from_state(
-        run_state: AgentRunState,
-        *,
-        model_client,
-    ) -> list[AgentEvent]:
-        del model_client
-        captured.append(run_state)
-        return [
-            AgentEvent(
-                type="message.created",
-                payload={"message": {"content": "ok"}},
-            )
-        ]
+    class FakeRuntimeEngine:
+        def run_from_state(self, run_state: AgentRunState, **kwargs):
+            del kwargs
+            captured.append(run_state)
+            return type(
+                "RuntimeResult",
+                (),
+                {
+                    "events": [
+                        AgentEvent(
+                            type="message.created",
+                            payload={"message": {"content": "ok"}},
+                        )
+                    ]
+                },
+            )()
 
-    monkeypatch.setattr("agent_service.app.run_agent_from_state", fake_run_agent_from_state)
+    monkeypatch.setattr(
+        "agent_service.app._runtime_engine",
+        lambda: FakeRuntimeEngine(),
+        raising=False,
+    )
     client = TestClient(app)
     graph = _temporary_script_graph()
 
@@ -64,21 +71,28 @@ def test_research_choose_endpoint_passes_agent_run_state_to_orchestrator(
 ) -> None:
     captured: list[AgentRunState] = []
 
-    def fake_run_agent_from_state(
-        run_state: AgentRunState,
-        *,
-        model_client,
-    ) -> list[AgentEvent]:
-        del model_client
-        captured.append(run_state)
-        return [
-            AgentEvent(
-                type="research.choice_required",
-                payload={"taskId": run_state.task_id},
-            )
-        ]
+    class FakeRuntimeEngine:
+        def run_from_state(self, run_state: AgentRunState, **kwargs):
+            del kwargs
+            captured.append(run_state)
+            return type(
+                "RuntimeResult",
+                (),
+                {
+                    "events": [
+                        AgentEvent(
+                            type="research.choice_required",
+                            payload={"taskId": run_state.task_id},
+                        )
+                    ]
+                },
+            )()
 
-    monkeypatch.setattr("agent_service.app.run_agent_from_state", fake_run_agent_from_state)
+    monkeypatch.setattr(
+        "agent_service.app._runtime_engine",
+        lambda: FakeRuntimeEngine(),
+        raising=False,
+    )
     client = TestClient(app)
 
     response = client.post(
@@ -101,21 +115,19 @@ def test_agent_message_stream_endpoint_passes_agent_run_state_to_streamer(
 ) -> None:
     captured: list[AgentRunState] = []
 
-    def fake_stream_agent_events_from_state(
-        run_state: AgentRunState,
-        *,
-        model_client,
-    ):
-        del model_client
-        captured.append(run_state)
-        yield AgentEvent(
-            type="message.completed",
-            payload={"messageId": f"assistant-{run_state.task_id}"},
-        )
+    class FakeRuntimeEngine:
+        def stream_from_state(self, run_state: AgentRunState, **kwargs):
+            del kwargs
+            captured.append(run_state)
+            yield AgentEvent(
+                type="message.completed",
+                payload={"messageId": f"assistant-{run_state.task_id}"},
+            )
 
     monkeypatch.setattr(
-        "agent_service.app.stream_agent_events_from_state",
-        fake_stream_agent_events_from_state,
+        "agent_service.app._runtime_engine",
+        lambda: FakeRuntimeEngine(),
+        raising=False,
     )
     client = TestClient(app)
 

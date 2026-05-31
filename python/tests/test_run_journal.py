@@ -133,6 +133,38 @@ def test_checkpoint_v2_records_sequence_parent_hash_and_state(tmp_path: Path) ->
     assert record["runtimeState"] == {"stage": "observe"}
 
 
+def test_checkpoint_v2_id_is_unique_for_repeated_node_status_sequences() -> None:
+    first = RuntimeCheckpoint(
+        run_id="run-1",
+        node_id="node-a",
+        status="after_node",
+        completed_outputs={},
+        pending_node_ids=[],
+        created_at="2026-05-30T00:00:00Z",
+        sequence=1,
+        graph_hash="sha256:abc",
+        state_version=2,
+        runtime_state={"stage": "observe", "nodeId": "node-a"},
+    ).to_record()
+    second = RuntimeCheckpoint(
+        run_id="run-1",
+        node_id="node-a",
+        status="after_node",
+        completed_outputs={},
+        pending_node_ids=[],
+        created_at="2026-05-30T00:00:01Z",
+        sequence=2,
+        graph_hash="sha256:abc",
+        state_version=2,
+        runtime_state={"stage": "observe", "nodeId": "node-a"},
+    ).to_record()
+
+    assert first["checkpointId"].startswith("ckpt-run-1-000001-")
+    assert second["checkpointId"].startswith("ckpt-run-1-000002-")
+    assert first["checkpointId"] != second["checkpointId"]
+    assert first["checkpointLabel"] == "node-a:after_node:0"
+
+
 def test_run_journal_atomic_write_leaves_no_tmp_file(tmp_path: Path) -> None:
     journal = RunJournal(project_path=str(tmp_path / "demo.alita"), run_id="run-1")
 

@@ -66,26 +66,74 @@ class MemoryStore:
         with self.memory_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(safe_record.model_dump(), ensure_ascii=False) + "\n")
 
+    def upsert(self, record: MemoryRecord) -> None:
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        safe_record = record.model_copy(
+            update={"summary": sanitize_memory_summary(record.summary)}
+        )
+        records = self._read_all()
+        replaced = False
+        updated_records: list[MemoryRecord] = []
+        for existing in records:
+            if existing.memory_id == safe_record.memory_id:
+                updated_records.append(safe_record)
+                replaced = True
+            else:
+                updated_records.append(existing)
+        if not replaced:
+            updated_records.append(safe_record)
+        self._write_all(updated_records)
+
+    def mark_used(self, memory_ids: list[str], *, used_at: str) -> None:
+        ids = set(memory_ids)
+        if not ids:
+            return
+        records = [
+            record.model_copy(update={"last_used_at": used_at})
+            if record.memory_id in ids
+            else record
+            for record in self._read_all()
+        ]
+        self._write_all(records)
+
     def list(
         self,
         scope: str = "project",
         tags: list[str] | None = None,
+        now: str | None = None,
     ) -> list[MemoryRecord]:
+        required_tags = set(tags or [])
+        records: list[MemoryRecord] = []
+        for record in self._read_all():
+            if record.scope != scope:
+                continue
+            if required_tags and not required_tags.issubset(set(record.tags)):
+                continue
+            if now is not None and record.expires_at is not None and record.expires_at <= now:
+                continue
+            records.append(record)
+        return records
+
+    def _read_all(self) -> list[MemoryRecord]:
         if not self.memory_path.exists():
             return []
-        required_tags = set(tags or [])
         records: list[MemoryRecord] = []
         for raw_line in self.memory_path.read_text(encoding="utf-8").splitlines():
             line = raw_line.strip()
             if not line:
                 continue
-            record = MemoryRecord.model_validate(json.loads(line))
-            if record.scope != scope:
-                continue
-            if required_tags and not required_tags.issubset(set(record.tags)):
-                continue
-            records.append(record)
+            records.append(MemoryRecord.model_validate(json.loads(line)))
         return records
+
+    def _write_all(self, records: list[MemoryRecord]) -> None:
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        payload = "\n".join(
+            json.dumps(record.model_dump(), ensure_ascii=False)
+            for record in records
+        )
+        if payload:
+            payload += "\n"
+        self.memory_path.write_text(payload, encoding="utf-8")
 
 
 _SECRET_ASSIGNMENT_RE = re.compile(

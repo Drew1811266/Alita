@@ -42,6 +42,11 @@ def test_sandbox_reads_allowed_project_file(tmp_path: Path) -> None:
     assert result.backend == "subprocess"
     assert result.is_os_isolated is False
     assert result.is_process_tree_limited is False
+    assert result.backend_capabilities == {
+        "windows_job_object_available": job_object_backend_available(),
+        "process_tree_limited": False,
+        "os_isolated": False,
+    }
 
 
 def test_sandbox_job_object_probe_is_windows_only() -> None:

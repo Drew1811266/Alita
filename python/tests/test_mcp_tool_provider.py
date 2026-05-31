@@ -17,7 +17,7 @@ class FakeMcpClient:
             )
         ]
 
-    def call_tool(self, name, arguments):
+    def call_tool(self, name, arguments, *, timeout_ms=None):
         assert name == "search_docs"
         assert arguments == {"query": "alita"}
         return {
@@ -40,6 +40,15 @@ class FakeLifecycleMcpClient(FakeMcpClient):
 
     def stop(self) -> None:
         self.stop_calls += 1
+
+
+class RecordingTimeoutMcpClient(FakeMcpClient):
+    def __init__(self) -> None:
+        self.timeout_ms = None
+
+    def call_tool(self, name, arguments, *, timeout_ms=None):
+        self.timeout_ms = timeout_ms
+        return super().call_tool(name, arguments, timeout_ms=timeout_ms)
 
 
 def test_mcp_provider_maps_tools_to_unified_catalog() -> None:
@@ -97,6 +106,32 @@ def test_mcp_provider_calls_tool_and_maps_result() -> None:
     assert result.ok is True
     assert result.structured_content == {"matches": 1}
     assert result.content[0].text == "result"
+
+
+def test_mcp_provider_passes_timeout_to_client() -> None:
+    client = RecordingTimeoutMcpClient()
+    provider = McpToolProvider(
+        provider_id="mcp-docs",
+        display_name="Docs MCP",
+        client=client,
+        enabled=True,
+    )
+
+    result = provider.call_tool(
+        UnifiedToolInvocation(
+            invocation_id="inv-timeout",
+            run_id="run-timeout",
+            task_id="task-timeout",
+            tool_id="mcp:mcp-docs:search_docs",
+            arguments={"query": "alita"},
+            allowed_roots=[],
+            requested_permissions=["call_external_mcp_tool"],
+        ),
+        timeout_ms=1234,
+    )
+
+    assert result.ok is True
+    assert client.timeout_ms == 1234
 
 
 def test_mcp_provider_starts_lifecycle_client_once_before_calling() -> None:

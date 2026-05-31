@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import re
+from time import perf_counter
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from agent_service.context_manager import ContextBundle
+from agent_service.context_manager import ContextBundle, ToolCapability
 from agent_service.graph_compiler import compile_task_graph_to_node_graph
 from agent_service.goal_spec import GoalSpec, TaskType
 from agent_service.model_runtime import SupportedModelRegistry
 from agent_service.planner_v2 import PlannerV2, PlannerV2Error
+from agent_service.runtime_events import utc_now_iso
+from agent_service.runtime_trace import RuntimeSpan, next_span_id, trace_id_for_run
 from agent_service.tool_catalog_planner import (
     ToolCatalogPlanner,
     ToolCatalogPlanningRequest,
@@ -34,6 +38,7 @@ except ImportError:
 PlannerStrategy = Literal["document_template", "tool_catalog", "legacy_task_planner"]
 PLANNER_CHAIN_VERSION = "planner_chain.v1"
 LOW_RISK_REACT_PERMISSIONS = {"read_attachment", "read_project_files"}
+TraceSpanSink = Callable[[RuntimeSpan], None]
 LOCAL_PATH_PATTERN = re.compile(
     r"(?ix)"
     r"(?:"
@@ -102,21 +107,58 @@ class PlannerChain:
         *,
         tool_registry: ToolRegistry,
         model_registry: SupportedModelRegistry | None = None,
+        trace_span_sink: TraceSpanSink | None = None,
     ) -> None:
         self.tool_registry = tool_registry
         self.model_registry = model_registry or DEFAULT_SUPPORTED_MODEL_REGISTRY
+        self.trace_span_sink = trace_span_sink
+        self._span_counter = 0
 
     def plan(self, request: PlannerChainRequest) -> PlannerChainResult:
-        self._validate_request(request)
-        if request.route.task_type == "document_processing" and not _is_markdown_conversion_only(
-            request.message.content
-        ):
-            return self._plan_document_template(request)
-        if request.route.task_type != "document_processing":
-            catalog_result = self._plan_tool_catalog(request)
-            if catalog_result is not None:
-                return catalog_result
-        return self._plan_legacy_task(request)
+        started_at = utc_now_iso()
+        start = perf_counter()
+        try:
+            self._validate_request(request)
+            if request.route.task_type == "document_processing":
+                catalog_result = (
+                    self._plan_tool_catalog(request)
+                    if _explicit_tool_catalog_request(request)
+                    else None
+                )
+                if catalog_result is not None:
+                    result = catalog_result
+                elif not _is_markdown_conversion_only(request.message.content):
+                    result = self._plan_document_template(request)
+                else:
+                    result = self._plan_legacy_task(request)
+            elif request.route.task_type != "document_processing":
+                catalog_result = self._plan_tool_catalog(request)
+                result = (
+                    catalog_result
+                    if catalog_result is not None
+                    else self._plan_legacy_task(request)
+                )
+            else:
+                result = self._plan_legacy_task(request)
+        except Exception as error:
+            self._record_planner_span(
+                request=request,
+                result=None,
+                status="error",
+                started_at=started_at,
+                duration_ms=int((perf_counter() - start) * 1000),
+                error_code=type(error).__name__,
+            )
+            raise
+        self._record_planner_span(
+            request=request,
+            result=result,
+            status="ok",
+            started_at=started_at,
+            duration_ms=int((perf_counter() - start) * 1000),
+            error_code=None,
+        )
+        return result
 
     def _validate_request(self, request: PlannerChainRequest) -> None:
         if request.route.intent != "task":
@@ -215,12 +257,60 @@ class PlannerChain:
             validation_warnings=[],
         )
 
+    def _record_planner_span(
+        self,
+        *,
+        request: PlannerChainRequest,
+        result: PlannerChainResult | None,
+        status: str,
+        started_at: str,
+        duration_ms: int,
+        error_code: str | None,
+    ) -> None:
+        if self.trace_span_sink is None:
+            return
+        self._span_counter += 1
+        graph_payload = result.graph_payload if result is not None else {}
+        self.trace_span_sink(
+            RuntimeSpan(
+                trace_id=trace_id_for_run(request.task_id),
+                span_id=next_span_id(self._span_counter),
+                parent_span_id=None,
+                run_id=request.task_id,
+                node_id="planner-chain",
+                kind="planner.call",
+                name=result.planner if result is not None else PLANNER_CHAIN_VERSION,
+                status=status,
+                started_at=started_at,
+                ended_at=utc_now_iso(),
+                duration_ms=duration_ms,
+                metadata={
+                    "plannerChainVersion": PLANNER_CHAIN_VERSION,
+                    "planner": result.planner if result is not None else None,
+                    "strategy": result.strategy if result is not None else None,
+                    "taskType": _enum_value(request.route.task_type),
+                    "routeIntent": _enum_value(request.route.intent),
+                    "routeSource": _enum_value(request.route.source),
+                    "routeConfidence": request.route.confidence,
+                    "graphNodeCount": len(graph_payload.get("nodes") or []),
+                    "validationWarningCount": (
+                        len(result.validation_warnings) if result is not None else 0
+                    ),
+                    "errorCode": error_code,
+                },
+            )
+        )
+
 
 def route_context_from_payload(payload: dict[str, Any]) -> StructuredRouteContext:
     try:
         return StructuredRouteContext.model_validate(payload)
     except ValidationError:
         raise PlannerChainError("invalid structured route payload") from None
+
+
+def _enum_value(value: Any) -> Any:
+    return value.value if hasattr(value, "value") else value
 
 
 def _safe_text(value: str) -> str:
@@ -370,3 +460,29 @@ def _is_markdown_conversion_only(content: str) -> bool:
     wants_conversion = "convert" in normalized or "转换" in content or "转" in content
     wants_report = "report" in normalized or "pdf" in normalized or "报告" in content
     return wants_markdown and wants_conversion and not wants_report
+
+
+def _explicit_tool_catalog_request(request: PlannerChainRequest) -> bool:
+    content = request.message.content.lower()
+    matches = {
+        term
+        for tool in request.context.available_tools
+        for term in _explicit_tool_terms(tool)
+        if term in content
+    }
+    return len(matches) >= 2
+
+
+def _explicit_tool_terms(tool: ToolCapability) -> set[str]:
+    normalized_id = provider_tool_id(normalize_tool_id(tool.tool_id)).lower()
+    raw_terms = set(re.split(r"[._:\-\s]+", normalized_id))
+    if tool.name.isascii():
+        raw_terms.add(tool.name.lower())
+    raw_terms.add(normalized_id.replace(".", " ").replace("_", " "))
+    if "." in normalized_id:
+        raw_terms.add(normalized_id.rsplit(".", maxsplit=1)[-1].replace("_", " "))
+    return {
+        term
+        for term in raw_terms
+        if len(term) >= 5 and term not in {"document", "values", "compile"}
+    }

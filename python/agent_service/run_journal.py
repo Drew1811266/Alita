@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_service.runtime_loop import RuntimeCheckpoint
+from agent_service.runtime_state import RuntimeState, RuntimeStateDelta
 
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -73,7 +74,32 @@ class RunJournal:
         for checkpoint in self.read_checkpoints():
             if checkpoint.get("checkpointId") == checkpoint_id:
                 return checkpoint
+            if checkpoint.get("checkpointLabel") == checkpoint_id:
+                return checkpoint
         return None
+
+    def write_runtime_state(self, state: RuntimeState) -> None:
+        self._write_json(self.base_dir / "runtime_state.json", {"state": state.model_dump()})
+
+    def read_runtime_state(self) -> dict[str, Any] | None:
+        path = self.base_dir / "runtime_state.json"
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        state = payload.get("state")
+        return dict(state) if isinstance(state, dict) else None
+
+    def write_runtime_delta(self, delta: RuntimeStateDelta) -> None:
+        deltas = self.read_runtime_deltas()
+        deltas.append(delta.model_dump())
+        self._write_json(self.base_dir / "runtime_deltas.json", {"deltas": deltas})
+
+    def read_runtime_deltas(self) -> list[dict[str, Any]]:
+        path = self.base_dir / "runtime_deltas.json"
+        if not path.exists():
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return list(payload.get("deltas", []))
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         tmp_path = path.with_suffix(path.suffix + ".tmp")

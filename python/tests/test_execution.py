@@ -1239,7 +1239,7 @@ def test_planned_fixed_tool_executes_from_runtime_binding_without_tool_id_branch
                 )
             ]
 
-        def call_tool(self, invocation):
+        def call_tool(self, invocation, *, timeout_ms=None):
             self.calls.append(invocation)
             return UnifiedToolResult(
                 ok=True,
@@ -1439,6 +1439,72 @@ def test_run_graph_events_persists_runtime_node_spans(tmp_path: Path) -> None:
     span_event = next(event for event in events if event.type == "runtime.span_recorded")
     assert records[0]["kind"] == "runtime.node"
     assert records[0]["spanId"] == span_event.payload["span"]["spanId"]
+
+
+def test_run_graph_events_persists_tool_and_model_call_spans(tmp_path: Path) -> None:
+    source = tmp_path / "input.md"
+    source.write_text("document text secret-value", encoding="utf-8")
+    request = build_document_flow_request(tmp_path, source, run_id="run-domain-spans")
+
+    events = list(
+        run_graph_events(
+            request,
+            model_client=FakeModelClient(),
+            tool_executor=FakeToolExecutor(),
+        )
+    )
+
+    trace_path = tmp_path / "node-runs" / request.run_id / "trace.jsonl"
+    records = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    kinds = [record["kind"] for record in records]
+    span_event_kinds = [
+        event.payload["span"]["kind"]
+        for event in events
+        if event.type == "runtime.span_recorded"
+    ]
+
+    assert "tool.call" in kinds
+    assert "model.call" in kinds
+    assert "tool.call" in span_event_kinds
+    assert "model.call" in span_event_kinds
+    assert "secret-value" not in json.dumps(records, ensure_ascii=False)
+
+
+def test_run_graph_events_persists_planned_model_call_spans(tmp_path: Path) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "model-reasoning",
+                "model",
+                [],
+                model_ref="local-task-reasoner",
+            ),
+            build_node("task-output", "output", ["model-reasoning"]),
+        ],
+        graph_metadata={"plannerChain": {"strategy": "legacy_task_planner"}},
+    )
+    request.run_id = "run-planned-model-span"
+
+    list(run_graph_events(request, model_client=FakeModelClient()))
+
+    trace_path = tmp_path / "node-runs" / request.run_id / "trace.jsonl"
+    records = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert any(
+        record["kind"] == "model.call"
+        and record["nodeId"] == "model-reasoning"
+        and record["metadata"]["modelRef"] == "local-task-reasoner"
+        for record in records
+    )
 
 
 def test_react_enabled_model_node_records_observations(tmp_path: Path) -> None:
@@ -2019,6 +2085,19 @@ def test_run_completion_auto_writes_memory_records(tmp_path: Path) -> None:
     assert [record.kind for record in records] == ["graph_summary"]
     assert records[0].source_refs == [request.run_id, request.task_id]
     assert "sk-secret" not in records[0].summary
+    trace_path = tmp_path / "node-runs" / request.run_id / "trace.jsonl"
+    trace_records = [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(record["kind"] == "memory.write" for record in trace_records)
+    assert any(
+        event.type == "runtime.span_recorded"
+        and event.payload["span"]["kind"] == "memory.write"
+        for event in events
+    )
+    assert "sk-secret" not in json.dumps(trace_records, ensure_ascii=False)
 
 
 def test_run_completion_writes_memory_by_default(tmp_path: Path) -> None:
@@ -2032,6 +2111,29 @@ def test_run_completion_writes_memory_by_default(tmp_path: Path) -> None:
     assert events[-1].type == "task.completed"
     records = MemoryStore(request.project_path).list()
     assert [record.kind for record in records] == ["graph_summary"]
+
+
+def test_run_completion_upserts_repeated_graph_summary_memory(tmp_path: Path) -> None:
+    first_request = build_request(
+        tmp_path,
+        nodes=[build_node("task-output", "output", [])],
+    )
+    second_request = build_request(
+        tmp_path,
+        nodes=[build_node("task-output", "output", [])],
+    )
+    first_request.run_id = "run-memory-first"
+    second_request.run_id = "run-memory-second"
+
+    list(run_graph_events(first_request, executor=FakeNodeExecutor()))
+    list(run_graph_events(second_request, executor=FakeNodeExecutor()))
+
+    records = MemoryStore(first_request.project_path).list()
+    graph_summaries = [
+        record for record in records if record.kind == "graph_summary"
+    ]
+    assert len(graph_summaries) == 1
+    assert graph_summaries[0].source_ref == "run-memory-second"
 
 
 def test_run_completion_can_disable_memory_auto_write(tmp_path: Path) -> None:
@@ -2354,7 +2456,7 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
         def list_tools(self):
             return self.gateway.list_tools()
 
-        def call_tool(self, invocation):
+        def call_tool(self, invocation, *, timeout_ms=None):
             self.calls.append(invocation)
             if invocation.tool_id == "internal:document.receive_attachment":
                 assert invocation.arguments["operation"] == "receive_attachment"
@@ -2376,11 +2478,12 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
     def spy_default_unified_tool_gateway(
         *,
         packages_root=None,
-        registry=None,
-        internal_executor=None,
-        authority_context=None,
-        authority_event_sink=None,
-    ):
+            registry=None,
+            internal_executor=None,
+            authority_context=None,
+            authority_event_sink=None,
+            trace_span_sink=None,
+        ):
         factory_calls.append(
             {
                 "packages_root": packages_root,
@@ -2393,11 +2496,12 @@ def test_tool_executor_injection_is_wrapped_by_unified_gateway(
             real_default_unified_tool_gateway(
                 packages_root=packages_root,
                 registry=registry,
-                internal_executor=internal_executor,
-                authority_context=authority_context,
-                authority_event_sink=authority_event_sink,
+                    internal_executor=internal_executor,
+                    authority_context=authority_context,
+                    authority_event_sink=authority_event_sink,
+                    trace_span_sink=trace_span_sink,
+                )
             )
-        )
         spy_gateways.append(spy_gateway)
         return spy_gateway
 

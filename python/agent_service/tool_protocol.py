@@ -111,7 +111,12 @@ class ToolProvider(Protocol):
     def list_tools(self) -> list[UnifiedToolDefinition]:
         raise NotImplementedError
 
-    def call_tool(self, invocation: UnifiedToolInvocation) -> UnifiedToolResult:
+    def call_tool(
+        self,
+        invocation: UnifiedToolInvocation,
+        *,
+        timeout_ms: int | None = None,
+    ) -> UnifiedToolResult:
         raise NotImplementedError
 
 

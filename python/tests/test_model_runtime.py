@@ -105,6 +105,38 @@ def test_model_runtime_uses_node_reasoning_policy() -> None:
     assert model_client.max_tokens == [777]
 
 
+def test_model_runtime_records_model_call_span_without_prompt_payload() -> None:
+    model_client = FakeModelClient("outline text")
+    spans = []
+    runtime = ModelRuntime(model_client=model_client, trace_span_sink=spans.append)
+    binding = ModelBinding(
+        model_ref="local.content_organizer",
+        purpose="organize_document_content",
+        prompt_template="document.content_organizer.zh.v1",
+        output_key="outline",
+    )
+
+    output = runtime.run(
+        binding,
+        inputs={"document-parse": NodeOutput(values={"text": "document body secret-value"})},
+        run_id="run-model",
+        node_id="content-organize",
+    )
+
+    assert output == NodeOutput(values={"outline": "outline text"})
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.kind == "model.call"
+    assert span.name == "local.content_organizer"
+    assert span.run_id == "run-model"
+    assert span.node_id == "content-organize"
+    assert span.status == "ok"
+    assert span.metadata["modelRef"] == "local.content_organizer"
+    assert span.metadata["outputKey"] == "outline"
+    assert span.metadata["policyProfile"] == ModelCallProfile.NODE_REASONING.value
+    assert "secret-value" not in str(span.to_record())
+
+
 def test_model_runtime_rejects_unsupported_model_ref() -> None:
     model_client = FakeModelClient("unused")
     runtime = ModelRuntime(model_client=model_client)

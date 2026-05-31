@@ -9,6 +9,8 @@ from agent_service.authority import (
     AuthorityDecision,
     authorize_tool_invocation,
 )
+from agent_service.runtime_events import utc_now_iso
+from agent_service.runtime_trace import RuntimeSpan, next_span_id, trace_id_for_run
 from agent_service.schema_validation import validate_json_schema_subset
 from agent_service.tool_execution import ToolExecutor, default_tool_packages_root
 from agent_service.tool_observation import ObservationTimer, observation_metadata
@@ -29,6 +31,7 @@ AuthorityEventSink = Callable[
     [UnifiedToolInvocation, UnifiedToolDefinition, AuthorityDecision],
     None,
 ]
+TraceSpanSink = Callable[[RuntimeSpan], None]
 
 
 class UnifiedToolGateway:
@@ -38,10 +41,13 @@ class UnifiedToolGateway:
         providers: list[ToolProvider],
         authority_context: AuthorityContext | None = None,
         authority_event_sink: AuthorityEventSink | None = None,
+        trace_span_sink: TraceSpanSink | None = None,
     ) -> None:
         self.providers = providers
         self.authority_context = authority_context
         self.authority_event_sink = authority_event_sink
+        self.trace_span_sink = trace_span_sink
+        self._span_counter = 0
 
     def list_tools(self):
         tools = []
@@ -104,19 +110,41 @@ class UnifiedToolGateway:
         provider = next(
             provider for provider in self.providers if provider.provider_id == tool.provider_id
         )
-        result = provider.call_tool(invocation)
+        span_started_at = utc_now_iso()
+        result = provider.call_tool(invocation, timeout_ms=runtime_budget_ms)
+        duration_ms = timer.elapsed_ms()
         if not result.ok:
             error_code = result.error.code if result.error is not None else "tool_failed"
+            self._record_tool_span(
+                invocation=invocation,
+                tool=tool,
+                status="error",
+                started_at=span_started_at,
+                duration_ms=duration_ms,
+                authority_code=decision.code,
+                error_code=error_code,
+                runtime_budget_ms=runtime_budget_ms,
+            )
             return _with_observation(
                 result,
                 invocation=invocation,
                 tool=tool,
                 ok=False,
-                duration_ms=timer.elapsed_ms(),
+                duration_ms=duration_ms,
                 authority_code=decision.code,
                 error_code=error_code,
                 runtime_budget_ms=runtime_budget_ms,
             )
+        self._record_tool_span(
+            invocation=invocation,
+            tool=tool,
+            status="ok",
+            started_at=span_started_at,
+            duration_ms=duration_ms,
+            authority_code=decision.code,
+            error_code=None,
+            runtime_budget_ms=runtime_budget_ms,
+        )
         return replace(
             result,
             metadata={
@@ -127,12 +155,50 @@ class UnifiedToolGateway:
                     tool_id=invocation.tool_id,
                     provider_id=tool.provider_id,
                     ok=True,
-                    duration_ms=timer.elapsed_ms(),
+                    duration_ms=duration_ms,
                     authority_code=decision.code,
                     error_code=None,
                     runtime_budget_ms=runtime_budget_ms,
                 ),
             },
+        )
+
+    def _record_tool_span(
+        self,
+        *,
+        invocation: UnifiedToolInvocation,
+        tool: UnifiedToolDefinition,
+        status: str,
+        started_at: str,
+        duration_ms: int,
+        authority_code: str | None,
+        error_code: str | None,
+        runtime_budget_ms: int | None,
+    ) -> None:
+        if self.trace_span_sink is None:
+            return
+        self._span_counter += 1
+        self.trace_span_sink(
+            RuntimeSpan(
+                trace_id=trace_id_for_run(invocation.run_id),
+                span_id=next_span_id(self._span_counter),
+                parent_span_id=None,
+                run_id=invocation.run_id,
+                node_id=invocation.node_id,
+                kind="tool.call",
+                name=invocation.tool_id,
+                status=status,
+                started_at=started_at,
+                ended_at=utc_now_iso(),
+                duration_ms=duration_ms,
+                metadata={
+                    "toolId": invocation.tool_id,
+                    "providerId": tool.provider_id,
+                    "authorityCode": authority_code,
+                    "errorCode": error_code,
+                    "runtimeBudgetMs": runtime_budget_ms,
+                },
+            )
         )
 
 
@@ -164,6 +230,7 @@ def default_unified_tool_gateway(
     internal_executor: ToolExecutor | None = None,
     authority_context: AuthorityContext | None = None,
     authority_event_sink: AuthorityEventSink | None = None,
+    trace_span_sink: TraceSpanSink | None = None,
     mcp_provider_configs: list[McpProviderConfig] | None = None,
     mcp_client_factory: Callable[[McpProviderConfig], McpClient] | None = None,
 ) -> UnifiedToolGateway:
@@ -186,6 +253,7 @@ def default_unified_tool_gateway(
         providers=providers,
         authority_context=authority_context,
         authority_event_sink=authority_event_sink,
+        trace_span_sink=trace_span_sink,
     )
 
 
