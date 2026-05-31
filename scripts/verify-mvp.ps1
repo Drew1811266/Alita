@@ -34,6 +34,10 @@ try {
         npm run frontend:lint
     }
 
+    Invoke-CheckedCommand "Frontend production build" {
+        npm run frontend:build
+    }
+
     Invoke-CheckedCommand "Python tests" {
         Push-Location "python"
         try {

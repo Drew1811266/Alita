@@ -25,8 +25,31 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e "python[test]"
       - run: python -m pytest python/tests -q
       - run: npm ci
       - run: npm run agent:eval
+
+  rust:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Rust format
+        working-directory: src-tauri
+        run: cargo fmt --check
+      - name: Prepare Tauri test resources
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path src-tauri/binaries
+          New-Item -ItemType File -Force -Path src-tauri/binaries/alita-agent-sidecar-x86_64-pc-windows-msvc.exe
+          New-Item -ItemType Directory -Force -Path src-tauri/resources/llama-cpp
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml

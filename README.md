@@ -2,7 +2,7 @@
 
 Alita 是一个本地优先的 AI Agent 桌面工作台。它不是单纯的聊天窗口，而是把本地大模型、工程文件、节点化任务流程、文档工具、联网查询工具、语音输入、运行历史和 artifact 预览整合到一个 Windows 桌面应用中。
 
-当前仓库版本为 `0.35.0`。这个阶段的重点是：桌面工程闭环已经成型，并完成 Agent Runtime Mainline 优化：Agent 具备运行状态、统一工具网关、结构化路由、规划链、执行图、显式权限授权、manifest 驱动工具入口、受控 ReAct、运行 checkpoint、指定 checkpoint resume、低风险恢复继续、trace store、MCP lifecycle handoff、schema-aware tool planning、证据驱动研究、评估基线、项目记忆上下文和前后端 runtime 观测事件。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
+当前仓库版本为 `0.35.1`。这个阶段的重点是：桌面工程闭环已经成型，并完成 Agent Runtime Mainline 优化：Agent 具备运行状态、统一工具网关、结构化路由、规划链、执行图、显式权限授权、manifest 驱动工具入口、受控 ReAct、运行 checkpoint、指定 checkpoint resume、低风险恢复继续、trace store、MCP lifecycle handoff、schema-aware tool planning、证据驱动研究、评估基线、项目记忆上下文和前后端 runtime 观测事件。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
 
 ## 当前阶段
 
@@ -24,7 +24,7 @@ Alita 目前达到了一个“本地 Agent 工作台 MVP+”阶段：
 - 可以把研究报告拆成结构化 claim/evidence 记录，记录 citation excerpt 和 support 状态。
 - 可以在首选项中管理本地 Agent 模型和语音转文字模型。
 - 可以录音并通过本地 Qwen3-ASR 模型转写为输入文本。
-- 可以预览和打开生成的文本、Markdown、PDF、图片、音视频等 artifact。
+- 可以预览生成的文本、Markdown、PDF、图片和视频 artifact；音频等其他 artifact 可打开或定位到文件。
 
 当前还没有把所有通用任务都做成完全自治执行。文档处理、研究流程、天气查询和基础 web 搜索是当前最完整的几个闭环。
 
@@ -367,9 +367,9 @@ Python sidecar 位于 `python/agent_service`，使用 FastAPI、Pydantic、LangG
 
 当前仓库大约包含：
 
-- Python 测试文件：39 个
-- Rust/Tauri 测试文件：12 个
-- 前端测试文件：23 个
+- Python 测试文件：71 个
+- Rust/Tauri 测试文件：17 个
+- 前端测试文件：32 个
 
 ## 开发环境要求
 
@@ -601,19 +601,25 @@ git diff --check
 passed
 
 npm run agent:eval
-67/67 passed
+87/87 passed
 
 Push-Location python; python -m pytest -q; Pop-Location
-780 passed
+823 passed
 
 npm run frontend:typecheck
 passed
 
 npm run frontend:test
-32 test files passed, 210 tests passed
+32 test files passed, 211 tests passed
+
+npm run frontend:build
+passed
 
 cargo test --manifest-path src-tauri/Cargo.toml
 162 tests passed
+
+.\scripts\verify-mvp.ps1
+passed
 ```
 
 ## 运行时端口

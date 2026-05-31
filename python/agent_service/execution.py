@@ -814,7 +814,7 @@ class PlannedTaskExecutor:
                             ),
                             allowed_roots=self.document_executor._allowed_roots(),
                             requested_permissions=list(
-                                react_policy.allowed_permissions
+                                react_policy.allowed_permissions or []
                             ),
                             model_session_id=self.run_state.message.model_session_id,
                         ),
@@ -2856,7 +2856,7 @@ def _react_policy_from_graph_metadata(metadata: dict) -> ReActPolicy:
         max_steps=int(react.get("maxSteps", 4)),
         max_tool_calls=int(react.get("maxToolCalls", 3)),
         allowed_tool_ids=list(react.get("allowedToolIds") or []),
-        allowed_permissions=list(react.get("allowedPermissions") or []),
+        allowed_permissions=_react_allowed_permissions(react),
     )
 
 
@@ -2871,9 +2871,15 @@ def _react_policy_for_node(metadata: dict, node_id: str) -> ReActPolicy:
                 max_steps=int(policy.get("maxSteps", 4)),
                 max_tool_calls=int(policy.get("maxToolCalls", 3)),
                 allowed_tool_ids=list(policy.get("allowedToolIds") or []),
-                allowed_permissions=list(policy.get("allowedPermissions") or []),
+                allowed_permissions=_react_allowed_permissions(policy),
             )
     return _react_policy_from_graph_metadata(metadata)
+
+
+def _react_allowed_permissions(metadata: dict) -> list[str] | None:
+    if "allowedPermissions" not in metadata:
+        return None
+    return [str(permission) for permission in metadata.get("allowedPermissions") or []]
 
 
 def _selected_nodes_for_mode(

@@ -30,6 +30,7 @@ vi.mock("./VideoArtifactPreview", () => ({
 import { ArtifactPreviewPanel } from "./ArtifactPreviewPanel";
 import type { ArtifactTextPreview } from "./artifactApi";
 import type { PreviewArtifactSelection } from "./artifactPreview";
+import { detectArtifactPreviewKind } from "./artifactPreviewKind";
 import type { AgentNode } from "../../shared/types";
 
 const outputNode: AgentNode = {
@@ -184,5 +185,36 @@ describe("ArtifactPreviewPanel", () => {
 
     expect(markup).toContain("artifactPreviewVideo");
     expect(markup).toContain("demo.mp4");
+  });
+
+  it("renders unsupported state and system actions for a wav artifact", () => {
+    const wavArtifact = {
+      ...artifact,
+      fileName: "voice-note.wav",
+      path: "D:\\Project\\artifacts\\voice-note.wav",
+    };
+
+    const markup = renderToStaticMarkup(
+      <ArtifactPreviewPanel
+        artifact={wavArtifact}
+        error={null}
+        fileUrl="asset://localhost/voice-note.wav"
+        loading={false}
+        preview={null}
+        previewKind={detectArtifactPreviewKind(wavArtifact.path)}
+        selectedNode={{
+          ...outputNode,
+          artifactRefs: [wavArtifact.path],
+        }}
+        onOpenArtifact={() => undefined}
+        onRevealArtifact={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("voice-note.wav");
+    expect(markup).toContain("暂不支持内嵌预览");
+    expect(markup).toContain("打开");
+    expect(markup).toContain("定位");
+    expect(markup).toContain("artifactPreviewEmpty");
   });
 });

@@ -2338,9 +2338,12 @@ def test_research_report_binds_each_key_finding_to_source_reference(
     events = list(run_graph_events(request, search_provider=provider))
 
     artifact_event = next(event for event in events if event.type == "artifact.created")
+    completed_event = next(event for event in events if event.type == "research.completed")
     content = Path(artifact_event.payload["path"]).read_text(encoding="utf-8")
     assert "- [S1] Python packaging docs:" in content
+    assert "## References" in content
     assert "- S1 Python packaging docs - https://docs.python.org/3/" in content
+    assert completed_event.payload["reportArtifactPath"] == artifact_event.payload["path"]
 
 
 def test_generated_markdown_conversion_graph_exports_converted_artifact(
@@ -2813,6 +2816,70 @@ def test_resume_checkpoint_runs_only_pending_nodes(tmp_path: Path) -> None:
     assert resumed_events[-1].type == "task.completed"
 
 
+def test_resume_checkpoint_reuses_completed_outputs_without_rerunning_upstream(
+    tmp_path: Path,
+) -> None:
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node("first", "model", []),
+            build_node("second", "model", ["first"]),
+            build_node("task-output", "output", ["second"]),
+        ],
+    )
+    request.run_id = "run-resume-reuse-completed-output"
+
+    class FailingExecutor:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+            self.calls.append(node_id)
+            if node_id == "first":
+                return NodeOutput(values={"text": "first result from initial run"})
+            if node_id == "second":
+                assert inputs["first"].values["text"] == "first result from initial run"
+                return NodeOutput(values={"text": "second result from initial run"})
+            raise HarnessError("test_failure", "task output failed")
+
+    failing_executor = FailingExecutor()
+    failed_events = list(run_graph_events(request, executor=failing_executor))
+    assert failed_events[-1].type == "task.failed"
+    assert failing_executor.calls == ["first", "second", "task-output"]
+    resume_checkpoint = next(
+        event.payload["checkpoint"]
+        for event in failed_events
+        if event.type == "runtime.checkpoint_recorded"
+        and event.payload["checkpoint"]["checkpointLabel"] == "first:after_node:0"
+    )
+
+    class ResumeExecutor:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def run(self, node_id: str, inputs: dict[str, NodeOutput]) -> NodeOutput:
+            self.calls.append(node_id)
+            if node_id == "second":
+                assert inputs["first"].values["text"] == "first result from initial run"
+                return NodeOutput(values={"text": "second result from resumed run"})
+            assert node_id == "task-output"
+            assert inputs["second"].values["text"] == "second result from resumed run"
+            return NodeOutput(values={"text": "final result"})
+
+    request.mode.type = "resume_checkpoint"
+    request.mode.checkpoint_id = resume_checkpoint["checkpointId"]
+    resume_executor = ResumeExecutor()
+    resumed_events = list(run_graph_events(request, executor=resume_executor))
+
+    resume_started = next(
+        event for event in resumed_events if event.type == "runtime.resume_started"
+    )
+    assert resume_started.payload["checkpoint"]["checkpointId"] == request.mode.checkpoint_id
+    assert resume_started.payload["pendingNodeIds"] == ["second", "task-output"]
+    assert resume_executor.calls == ["second", "task-output"]
+    assert resumed_events[-1].type == "task.completed"
+
+
 def test_resume_checkpoint_uses_requested_checkpoint_id(tmp_path: Path) -> None:
     request = build_request(
         tmp_path,
@@ -2887,6 +2954,57 @@ def test_react_policy_prefers_node_level_action_policy() -> None:
     assert policy.max_steps == 2
     assert policy.max_tool_calls == 1
     assert policy.allowed_tool_ids == ["internal:test.echo_values"]
+    assert policy.allowed_permissions == ["read_project_files"]
+
+
+def test_react_policy_preserves_omitted_and_explicit_empty_permissions() -> None:
+    omitted_graph_policy = _react_policy_for_node(
+        {
+            "react": {
+                "enabled": True,
+                "allowedToolIds": ["internal:test.echo_values"],
+            },
+        },
+        "model-a",
+    )
+    explicit_empty_graph_policy = _react_policy_for_node(
+        {
+            "react": {
+                "enabled": True,
+                "allowedToolIds": ["internal:test.echo_values"],
+                "allowedPermissions": [],
+            },
+        },
+        "model-a",
+    )
+    omitted_node_policy = _react_policy_for_node(
+        {
+            "actionPolicies": {
+                "model-a": {
+                    "reactEnabled": True,
+                    "allowedToolIds": ["internal:test.echo_values"],
+                }
+            },
+        },
+        "model-a",
+    )
+    explicit_empty_node_policy = _react_policy_for_node(
+        {
+            "actionPolicies": {
+                "model-a": {
+                    "reactEnabled": True,
+                    "allowedToolIds": ["internal:test.echo_values"],
+                    "allowedPermissions": [],
+                }
+            },
+        },
+        "model-a",
+    )
+
+    assert omitted_graph_policy.allowed_permissions is None
+    assert explicit_empty_graph_policy.allowed_permissions == []
+    assert omitted_node_policy.allowed_permissions is None
+    assert explicit_empty_node_policy.allowed_permissions == []
 
 
 def test_failed_only_reruns_failed_node_and_downstream(tmp_path: Path) -> None:
