@@ -1,0 +1,372 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+from pydantic import ValidationError
+
+from agent_service.deep_agent_models import (
+    PlanDraft,
+    PlanReview,
+    ReasoningDecision,
+    ThinkingStatus,
+)
+from agent_service.model_client import (
+    ChatDiagnosticsResponse,
+    ChatMessage,
+    ModelRuntimeDisabled,
+    ModelRuntimeRequestFailed,
+)
+from agent_service.model_policy import DEEP_REASONING_POLICY, ModelCallPolicy
+
+
+class DeepPlanningError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        self.message = message
+        super().__init__(f"{code}: {message}")
+
+
+class DeepPlanningModel(Protocol):
+    def chat_with_diagnostics(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
+    ) -> ChatDiagnosticsResponse:
+        ...
+
+
+class ReasoningGateEngine:
+    def __init__(self, model_client: DeepPlanningModel) -> None:
+        self._model_client = model_client
+
+    def decide(
+        self,
+        message: str,
+        *,
+        context_bundle: dict[str, Any],
+    ) -> ReasoningDecision:
+        messages = [
+            ChatMessage(
+                role="system",
+                content=(
+                    "You are the deep agent reasoning gate. Return strict JSON only. "
+                    "Do not include markdown, prose, comments, or code fences."
+                ),
+            ),
+            ChatMessage(
+                role="user",
+                content=_reasoning_prompt(message, context_bundle=context_bundle),
+            ),
+        ]
+
+        try:
+            response = self._model_client.chat_with_diagnostics(
+                messages,
+                policy=DEEP_REASONING_POLICY,
+            )
+        except (ModelRuntimeDisabled, ModelRuntimeRequestFailed) as error:
+            raise DeepPlanningError("reasoning_unavailable", str(error)) from error
+
+        try:
+            payload = json.loads(response.content)
+            return ReasoningDecision.model_validate(payload)
+        except (json.JSONDecodeError, ValidationError, TypeError) as error:
+            raise DeepPlanningError(
+                "invalid_reasoning_json",
+                "Reasoning gate returned malformed or schema-invalid JSON.",
+            ) from error
+
+
+@dataclass(frozen=True)
+class DeepPlanningResult:
+    plan_draft: PlanDraft
+    thinking_status: ThinkingStatus
+    raw_response: str
+
+
+class DeepPlanningEngine:
+    def __init__(self, model_client: DeepPlanningModel) -> None:
+        self._model_client = model_client
+
+    def plan(
+        self,
+        message: str,
+        *,
+        context_bundle: dict[str, Any],
+        revision_instructions: list[str] | None = None,
+    ) -> DeepPlanningResult:
+        messages = [
+            ChatMessage(
+                role="system",
+                content=(
+                    "You are the deep planning engine. Return strict JSON matching "
+                    "the PlanDraft schema only. Do not include markdown, prose, "
+                    "comments, or code fences."
+                ),
+            ),
+            ChatMessage(
+                role="user",
+                content=_planning_prompt(
+                    message,
+                    context_bundle=context_bundle,
+                    revision_instructions=revision_instructions,
+                ),
+            ),
+        ]
+
+        try:
+            response = self._model_client.chat_with_diagnostics(
+                messages,
+                policy=DEEP_REASONING_POLICY,
+            )
+        except (ModelRuntimeDisabled, ModelRuntimeRequestFailed) as error:
+            raise DeepPlanningError("deep_planning_unavailable", str(error)) from error
+
+        try:
+            payload = json.loads(response.content)
+            plan_draft = PlanDraft.model_validate(payload)
+        except (json.JSONDecodeError, ValidationError, TypeError) as error:
+            raise DeepPlanningError(
+                "invalid_plan_json",
+                "Deep planning returned malformed or schema-invalid JSON.",
+            ) from error
+
+        diagnostics = response.diagnostics
+        thinking_status = ThinkingStatus(
+            requested=True,
+            enforced=True,
+            model_policy=DEEP_REASONING_POLICY.profile.value,
+            request_payload_had_thinking_params=(
+                diagnostics.request_payload_had_thinking_params
+            ),
+            enable_thinking_sent=diagnostics.enable_thinking_sent,
+            preserve_thinking_sent=diagnostics.preserve_thinking_sent,
+            fallback_used=diagnostics.fallback_used,
+            effective_mode=diagnostics.effective_mode,
+            raw_provider_status=diagnostics.raw_provider_status,
+        )
+
+        return DeepPlanningResult(
+            plan_draft=plan_draft,
+            thinking_status=thinking_status,
+            raw_response=response.content,
+        )
+
+
+def review_plan(
+    draft: PlanDraft,
+    *,
+    available_capabilities: set[str],
+) -> PlanReview:
+    if draft.missing_information:
+        missing_inputs = list(draft.missing_information)
+        first_missing = missing_inputs[0]
+        return PlanReview(
+            status="needs_clarification",
+            findings=["The plan declares missing information before execution."],
+            coverage_findings=["declared_missing_information"],
+            missing_inputs=missing_inputs,
+            suggested_clarifying_question=f"Please provide: {first_missing}",
+            revision_instructions=[
+                "Revise the plan after the missing information is supplied."
+            ],
+        )
+
+    findings: list[str] = []
+    coverage_findings: list[str] = []
+    revision_instructions: list[str] = []
+    unsupported_capabilities: list[str] = []
+
+    if not draft.success_criteria:
+        coverage_findings.append("missing_success_criteria")
+        findings.append("The plan has no success criteria.")
+        revision_instructions.append("Add explicit success criteria for the plan.")
+
+    if not draft.steps:
+        coverage_findings.append("missing_steps")
+        findings.append("The plan has no executable steps.")
+        revision_instructions.append("Add ordered steps with objectives and outputs.")
+
+    for capability in draft.required_capabilities:
+        if capability not in available_capabilities:
+            _add_unsupported_capability(
+                capability,
+                unsupported_capabilities,
+                coverage_findings,
+            )
+
+    for step in draft.steps:
+        if not step.verification_criteria:
+            code = f"missing_step_verification_criteria:{step.step_id}"
+            coverage_findings.append(code)
+            findings.append(
+                f"Step {step.step_id} has no verification criteria."
+            )
+            revision_instructions.append(
+                f"Add verification criteria for step {step.step_id}."
+            )
+        if not step.rationale:
+            code = f"missing_step_rationale:{step.step_id}"
+            coverage_findings.append(code)
+            findings.append(f"Step {step.step_id} has no rationale.")
+            revision_instructions.append(f"Add a rationale for step {step.step_id}.")
+        if not step.expected_output:
+            code = f"missing_step_expected_output:{step.step_id}"
+            coverage_findings.append(code)
+            findings.append(f"Step {step.step_id} has no expected output.")
+            revision_instructions.append(
+                f"Add an expected output for step {step.step_id}."
+            )
+        for capability in step.required_capabilities:
+            if capability not in available_capabilities:
+                _add_unsupported_capability(
+                    capability,
+                    unsupported_capabilities,
+                    coverage_findings,
+                )
+
+    if unsupported_capabilities:
+        findings.append(
+            "The plan requires unsupported capabilities: "
+            + ", ".join(unsupported_capabilities)
+            + "."
+        )
+        revision_instructions.append(
+            "Revise the plan to use only available capabilities or request support."
+        )
+
+    if findings:
+        return PlanReview(
+            status="invalid",
+            findings=findings,
+            coverage_findings=coverage_findings,
+            unsupported_capabilities=unsupported_capabilities,
+            revision_instructions=revision_instructions,
+        )
+
+    return PlanReview(status="approved")
+
+
+def _planning_prompt(
+    message: str,
+    *,
+    context_bundle: dict[str, Any],
+    revision_instructions: list[str] | None = None,
+) -> str:
+    prompt = {
+        "taskId": _task_id(context_bundle),
+        "user_message": message,
+        "attachment_summaries": _attachment_summaries(context_bundle),
+        "context_bundle": _scrub_paths(context_bundle),
+        "revision_instructions": revision_instructions or [],
+        "required_json_keys": [
+            "plan_draft_id",
+            "task_understanding",
+            "success_criteria",
+            "inputs",
+            "assumptions",
+            "missing_information",
+            "candidate_strategies",
+            "recommended_strategy",
+            "steps",
+            "required_capabilities",
+            "risks",
+            "verification_plan",
+        ],
+        "instructions": [
+            "Return only valid JSON for PlanDraft.",
+            "Use a non-empty success_criteria list.",
+            "Use a non-empty steps list.",
+            "Use a non-empty verification_plan list.",
+            "Ensure recommended_strategy references a candidate strategyId.",
+            "Ensure step depends_on values reference existing step_id values only.",
+        ],
+    }
+    return json.dumps(prompt, ensure_ascii=False, indent=2)
+
+
+def _reasoning_prompt(
+    message: str,
+    *,
+    context_bundle: dict[str, Any],
+) -> str:
+    attachment_summaries = _attachment_summaries(context_bundle)
+    prompt = {
+        "taskId": _task_id(context_bundle),
+        "user_message": message,
+        "attachment_count": len(attachment_summaries),
+        "attachment_summaries": attachment_summaries,
+        "context_bundle": _scrub_paths(context_bundle),
+        "allowed_next_actions": [
+            "simple_answer",
+            "tool_action",
+            "clarification",
+            "deep_planning",
+        ],
+        "instructions": [
+            "Classify the task and explain why that path is appropriate.",
+            "Return only valid JSON for ReasoningDecision.",
+        ],
+    }
+    return json.dumps(prompt, ensure_ascii=False, indent=2)
+
+
+def _task_id(context_bundle: dict[str, Any]) -> str | None:
+    task_id = context_bundle.get("taskId", context_bundle.get("task_id"))
+    return str(task_id) if task_id is not None else None
+
+
+def _attachment_summaries(context_bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    attachments = context_bundle.get("attachments", [])
+    if not isinstance(attachments, list):
+        return []
+
+    summaries: list[dict[str, Any]] = []
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        summaries.append(
+            {
+                "id": attachment.get("id"),
+                "name": attachment.get("name"),
+                "mime_type": attachment.get(
+                    "mime_type",
+                    attachment.get("mimeType"),
+                ),
+                "size_bytes": attachment.get(
+                    "size_bytes",
+                    attachment.get("sizeBytes"),
+                ),
+            }
+        )
+    return summaries
+
+
+def _scrub_paths(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _scrub_paths(item)
+            for key, item in value.items()
+            if str(key).lower()
+            not in {"path", "local_path", "filepath", "file_path", "absolute_path"}
+        }
+    if isinstance(value, list):
+        return [_scrub_paths(item) for item in value]
+    return value
+
+
+def _add_unsupported_capability(
+    capability: str,
+    unsupported_capabilities: list[str],
+    coverage_findings: list[str],
+) -> None:
+    if capability not in unsupported_capabilities:
+        unsupported_capabilities.append(capability)
+    code = f"unsupported_capability:{capability}"
+    if code not in coverage_findings:
+        coverage_findings.append(code)
