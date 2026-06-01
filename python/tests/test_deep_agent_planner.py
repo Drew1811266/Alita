@@ -153,14 +153,18 @@ def _context_bundle() -> dict[str, Any]:
     }
 
 
-def _message() -> UserMessage:
+def _message(
+    *,
+    content: str = "Review this contract.",
+    attachment_name: str = "contract.pdf",
+) -> UserMessage:
     return UserMessage(
         task_id="task-1",
-        content="Review this contract.",
+        content=content,
         attachments=[
             Attachment(
                 attachment_id="att-1",
-                name="contract.pdf",
+                name=attachment_name,
                 path="D:\\secret\\contract.pdf",
                 size_bytes=12345,
                 mime_type="application/pdf",
@@ -209,6 +213,69 @@ def test_reasoning_gate_engine_calls_model_and_parses_decision() -> None:
     assert decision.task_id == "task-1"
     assert len(model.calls) == 1
     assert model.calls[0]["policy"] == DEEP_REASONING_POLICY
+
+
+def test_planning_prompt_scrubs_local_path_from_user_message_content() -> None:
+    model = FakeDeepModel()
+    message = _message(content="Review D:\\Software Project\\Alita\\case.pdf.")
+
+    DeepPlanningEngine(model).plan(message, context_bundle=_context_bundle())
+
+    prompt = model.calls[0]["messages"][1].content
+    prompt_payload = json.loads(prompt)
+    assert "D:\\Software Project\\Alita\\case.pdf" not in prompt
+    assert "Software Project" not in prompt
+    assert "Alita\\case.pdf" not in prompt
+    assert prompt_payload["user_message"] == "Review [local_path_removed]."
+
+
+def test_reasoning_prompt_scrubs_local_path_from_user_message_content() -> None:
+    model = FakeDeepModel(raw_content=json.dumps(_decision_payload()))
+    message = _message(content="Review D:\\Software Project\\Alita\\case.pdf.")
+
+    ReasoningGateEngine(model).decide(message, context_bundle=_context_bundle())
+
+    prompt = model.calls[0]["messages"][1].content
+    prompt_payload = json.loads(prompt)
+    assert "D:\\Software Project\\Alita\\case.pdf" not in prompt
+    assert "Software Project" not in prompt
+    assert "Alita\\case.pdf" not in prompt
+    assert prompt_payload["user_message"] == "Review [local_path_removed]."
+
+
+def test_planning_prompt_scrubs_local_path_from_revision_instructions() -> None:
+    model = FakeDeepModel()
+
+    DeepPlanningEngine(model).plan(
+        _message(),
+        context_bundle=_context_bundle(),
+        revision_instructions=[
+            "Revise using D:\\Software Project\\Alita\\case.pdf.",
+        ],
+    )
+
+    prompt = model.calls[0]["messages"][1].content
+    prompt_payload = json.loads(prompt)
+    assert "D:\\Software Project\\Alita\\case.pdf" not in prompt
+    assert "Software Project" not in prompt
+    assert "Alita\\case.pdf" not in prompt
+    assert prompt_payload["revision_instructions"] == [
+        "Revise using [local_path_removed].",
+    ]
+
+
+def test_prompt_scrubs_local_path_from_attachment_name() -> None:
+    model = FakeDeepModel()
+    message = _message(attachment_name="D:\\Software Project\\Alita\\case.pdf")
+
+    DeepPlanningEngine(model).plan(message, context_bundle=_context_bundle())
+
+    prompt = model.calls[0]["messages"][1].content
+    prompt_payload = json.loads(prompt)
+    assert "D:\\Software Project\\Alita\\case.pdf" not in prompt
+    assert "Software Project" not in prompt
+    assert "Alita\\case.pdf" not in prompt
+    assert prompt_payload["attachment_summaries"][0]["name"] == "[local_path_removed]"
 
 
 def test_planning_prompt_scrubs_local_path_strings_under_non_path_keys() -> None:

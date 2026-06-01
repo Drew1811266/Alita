@@ -279,11 +279,11 @@ def _planning_prompt(
     revision_instructions: list[str] | None = None,
 ) -> str:
     prompt = {
-        "taskId": message.task_id,
-        "user_message": message.content,
+        "taskId": _scrub_paths(message.task_id),
+        "user_message": _scrub_paths(message.content),
         "attachment_summaries": _attachment_summaries(message.attachments),
         "context_bundle": _scrub_paths(context_bundle),
-        "revision_instructions": revision_instructions or [],
+        "revision_instructions": _scrub_paths(revision_instructions or []),
         "required_json_keys": [
             "plan_draft_id",
             "task_understanding",
@@ -317,8 +317,8 @@ def _reasoning_prompt(
 ) -> str:
     attachment_summaries = _attachment_summaries(message.attachments)
     prompt = {
-        "taskId": message.task_id,
-        "user_message": message.content,
+        "taskId": _scrub_paths(message.task_id),
+        "user_message": _scrub_paths(message.content),
         "attachment_count": len(attachment_summaries),
         "attachment_summaries": attachment_summaries,
         "context_bundle": _scrub_paths(context_bundle),
@@ -339,14 +339,13 @@ def _reasoning_prompt(
 def _attachment_summaries(attachments: list[Attachment]) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     for attachment in attachments:
-        summaries.append(
-            {
-                "attachment_id": attachment.attachment_id,
-                "name": attachment.name,
-                "mime_type": attachment.mime_type,
-                "size_bytes": attachment.size_bytes,
-            }
-        )
+        summary = {
+            "attachment_id": attachment.attachment_id,
+            "name": attachment.name,
+            "mime_type": attachment.mime_type,
+            "size_bytes": attachment.size_bytes,
+        }
+        summaries.append(_scrub_paths(summary))
     return summaries
 
 
