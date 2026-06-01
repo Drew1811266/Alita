@@ -176,6 +176,7 @@ class GraphNode(BaseModel):
     riskLevel: RiskLevel | None = None
     permissionsRequired: list[str] = Field(default_factory=list)
     position: dict[str, float]
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class GraphEdge(BaseModel):
