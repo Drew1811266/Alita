@@ -120,6 +120,25 @@ class PlanDraft(DeepAgentBaseModel):
         if missing_dependencies:
             raise ValueError("depends_on ids must reference existing steps")
 
+        dependency_map = {step.step_id: step.depends_on for step in self.steps}
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(step_id: str) -> None:
+            if step_id in visiting:
+                raise ValueError("depends_on graph must not contain cycles")
+            if step_id in visited:
+                return
+
+            visiting.add(step_id)
+            for dependency_id in dependency_map[step_id]:
+                visit(dependency_id)
+            visiting.remove(step_id)
+            visited.add(step_id)
+
+        for step_id in step_ids:
+            visit(step_id)
+
         strategy_ids = {strategy.strategy_id for strategy in self.candidate_strategies}
         if self.recommended_strategy not in strategy_ids:
             raise ValueError("recommended_strategy must reference a candidate strategy")
