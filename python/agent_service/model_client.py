@@ -30,6 +30,27 @@ class ChatWithToolsResponse:
 
 
 @dataclass(frozen=True)
+class ModelCallDiagnostics:
+    request_payload_had_thinking_params: bool
+    enable_thinking_sent: bool
+    preserve_thinking_sent: bool
+    fallback_used: Literal[
+        "none",
+        "unsupported_request_body",
+        "empty_reasoning_response",
+        "provider_error",
+    ] = "none"
+    effective_mode: Literal["deep", "degraded", "unavailable"] = "deep"
+    raw_provider_status: str | None = None
+
+
+@dataclass(frozen=True)
+class ChatDiagnosticsResponse:
+    content: str
+    diagnostics: ModelCallDiagnostics
+
+
+@dataclass(frozen=True)
 class ModelClientConfig:
     enabled: bool = False
     base_url: str = "http://127.0.0.1:8766"
@@ -176,6 +197,94 @@ class LlamaCppModelClient:
             retry_content = _extract_chat_content(retry_response)
             if retry_content.strip():
                 return retry_content
+
+        raise ModelRuntimeRequestFailed("llama.cpp returned an empty chat response")
+
+    def chat_with_diagnostics(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
+    ) -> ChatDiagnosticsResponse:
+        if not self.config.enabled:
+            raise ModelRuntimeDisabled("llama.cpp model runtime is not configured")
+
+        payload = self._chat_payload(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=False,
+            policy=policy,
+        )
+        original_payload = payload
+        policy_has_extra_body = bool(policy and _policy_extra_body(policy))
+        endpoint = f"{self.config.base_url}/v1/chat/completions"
+        fallback_used: Literal[
+            "none",
+            "unsupported_request_body",
+            "empty_reasoning_response",
+            "provider_error",
+        ] = "none"
+        raw_provider_status: str | None = None
+
+        try:
+            response = self._transport(
+                endpoint,
+                payload,
+                self.config.timeout_seconds,
+            )
+        except ModelRuntimeRequestFailed as error:
+            if not policy_has_extra_body or not _should_retry_without_policy_extra_body(error):
+                raise
+
+            fallback_used = "unsupported_request_body"
+            raw_provider_status = str(error)
+            payload = self._chat_payload(
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=False,
+                policy=policy,
+                include_policy_extra_body=False,
+            )
+            response = self._transport(
+                endpoint,
+                payload,
+                self.config.timeout_seconds,
+            )
+
+        content = _extract_chat_content(response)
+        if content.strip():
+            return ChatDiagnosticsResponse(
+                content=content,
+                diagnostics=_diagnostics_for_payload(
+                    original_payload,
+                    fallback_used=fallback_used,
+                    raw_provider_status=raw_provider_status,
+                ),
+            )
+
+        if _should_retry_empty_reasoning_response(response):
+            retry_payload = {
+                **payload,
+                "max_tokens": max(payload["max_tokens"] * 4, 4096),
+            }
+            retry_response = self._transport(
+                endpoint,
+                retry_payload,
+                self.config.timeout_seconds,
+            )
+            retry_content = _extract_chat_content(retry_response)
+            if retry_content.strip():
+                return ChatDiagnosticsResponse(
+                    content=retry_content,
+                    diagnostics=_diagnostics_for_payload(
+                        original_payload,
+                        fallback_used="empty_reasoning_response",
+                    ),
+                )
 
         raise ModelRuntimeRequestFailed("llama.cpp returned an empty chat response")
 
@@ -611,6 +720,45 @@ def _policy_extra_body(policy: ModelCallPolicy) -> dict:
 
 def _should_retry_without_policy_extra_body(error: ModelRuntimeRequestFailed) -> bool:
     return error.status_code in {400, 422}
+
+
+def _diagnostics_for_payload(
+    payload: dict,
+    *,
+    fallback_used: Literal[
+        "none",
+        "unsupported_request_body",
+        "empty_reasoning_response",
+        "provider_error",
+    ] = "none",
+    raw_provider_status: str | None = None,
+) -> ModelCallDiagnostics:
+    chat_template_kwargs = payload.get("chat_template_kwargs")
+    if not isinstance(chat_template_kwargs, dict):
+        chat_template_kwargs = {}
+
+    request_payload_had_thinking_params = any(
+        key in chat_template_kwargs
+        for key in ("enable_thinking", "preserve_thinking")
+    )
+    enable_thinking_sent = chat_template_kwargs.get("enable_thinking") is True
+    preserve_thinking_sent = chat_template_kwargs.get("preserve_thinking") is True
+    effective_mode: Literal["deep", "degraded", "unavailable"]
+    if fallback_used != "none":
+        effective_mode = "degraded"
+    elif enable_thinking_sent:
+        effective_mode = "deep"
+    else:
+        effective_mode = "unavailable"
+
+    return ModelCallDiagnostics(
+        request_payload_had_thinking_params=request_payload_had_thinking_params,
+        enable_thinking_sent=enable_thinking_sent,
+        preserve_thinking_sent=preserve_thinking_sent,
+        fallback_used=fallback_used,
+        effective_mode=effective_mode,
+        raw_provider_status=raw_provider_status,
+    )
 
 
 def _read_http_error_body(error: urllib.error.HTTPError) -> str:

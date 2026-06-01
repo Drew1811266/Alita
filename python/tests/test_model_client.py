@@ -6,10 +6,12 @@ import pytest
 
 from agent_service.model_client import (
     AgentModelClientConfig,
+    ChatDiagnosticsResponse,
     ChatWithToolsResponse,
     ChatMessage,
     LlamaCppModelClient,
     ModelClientConfig,
+    ModelCallDiagnostics,
     ModelRuntimeDisabled,
     ModelRuntimeRequestFailed,
     OpenAICompatibleModelClient,
@@ -244,6 +246,112 @@ def test_llama_client_retries_without_policy_extra_body_when_rejected() -> None:
     assert len(calls) == 2
     assert "chat_template_kwargs" in calls[0][1]
     assert "chat_template_kwargs" not in calls[1][1]
+
+
+def test_llama_chat_with_diagnostics_reports_deep_thinking_payload() -> None:
+    calls: list[tuple[str, dict, float]] = []
+
+    def transport(url: str, payload: dict, timeout: float) -> dict:
+        calls.append((url, deepcopy(payload), timeout))
+        return {"choices": [{"message": {"content": "deep answer"}}]}
+
+    client = LlamaCppModelClient(
+        ModelClientConfig(enabled=True),
+        transport=transport,
+    )
+
+    result = client.chat_with_diagnostics(
+        [ChatMessage(role="user", content="hello")],
+        policy=DEEP_REASONING_POLICY,
+    )
+
+    assert isinstance(result, ChatDiagnosticsResponse)
+    assert result.content == "deep answer"
+    assert result.diagnostics == ModelCallDiagnostics(
+        request_payload_had_thinking_params=True,
+        enable_thinking_sent=True,
+        preserve_thinking_sent=True,
+        fallback_used="none",
+        effective_mode="deep",
+    )
+    payload = calls[0][1]
+    assert payload["chat_template_kwargs"]["enable_thinking"] is True
+    assert payload["chat_template_kwargs"]["preserve_thinking"] is True
+
+
+def test_llama_chat_with_diagnostics_reports_unsupported_thinking_fallback() -> None:
+    calls: list[tuple[str, dict, float]] = []
+
+    def transport(url: str, payload: dict, timeout: float) -> dict:
+        calls.append((url, deepcopy(payload), timeout))
+        if "chat_template_kwargs" in payload:
+            raise ModelRuntimeRequestFailed("unsupported field", status_code=422)
+        return {"choices": [{"message": {"content": "retry answer"}}]}
+
+    client = LlamaCppModelClient(
+        ModelClientConfig(enabled=True),
+        transport=transport,
+    )
+
+    result = client.chat_with_diagnostics(
+        [ChatMessage(role="user", content="hello")],
+        policy=DEEP_REASONING_POLICY,
+    )
+
+    assert result.content == "retry answer"
+    assert result.diagnostics == ModelCallDiagnostics(
+        request_payload_had_thinking_params=True,
+        enable_thinking_sent=True,
+        preserve_thinking_sent=True,
+        fallback_used="unsupported_request_body",
+        effective_mode="degraded",
+        raw_provider_status="unsupported field",
+    )
+    assert len(calls) == 2
+    assert "chat_template_kwargs" in calls[0][1]
+    assert "chat_template_kwargs" not in calls[1][1]
+
+
+def test_llama_chat_with_diagnostics_reports_empty_reasoning_retry() -> None:
+    calls: list[tuple[str, dict, float]] = []
+
+    def transport(url: str, payload: dict, timeout: float) -> dict:
+        calls.append((url, deepcopy(payload), timeout))
+        if len(calls) == 1:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "content": "",
+                            "reasoning_content": "still thinking",
+                        },
+                    }
+                ]
+            }
+        return {"choices": [{"message": {"content": "final answer"}}]}
+
+    client = LlamaCppModelClient(
+        ModelClientConfig(enabled=True),
+        transport=transport,
+    )
+
+    result = client.chat_with_diagnostics(
+        [ChatMessage(role="user", content="hello")],
+        max_tokens=256,
+        policy=DEEP_REASONING_POLICY,
+    )
+
+    assert result.content == "final answer"
+    assert result.diagnostics == ModelCallDiagnostics(
+        request_payload_had_thinking_params=True,
+        enable_thinking_sent=True,
+        preserve_thinking_sent=True,
+        fallback_used="empty_reasoning_response",
+        effective_mode="degraded",
+    )
+    assert calls[0][1]["max_tokens"] == 256
+    assert calls[1][1]["max_tokens"] == 4096
 
 
 def test_llama_client_does_not_strip_policy_extra_body_for_network_failures() -> None:
