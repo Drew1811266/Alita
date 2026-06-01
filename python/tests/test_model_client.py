@@ -271,6 +271,8 @@ def test_llama_chat_with_diagnostics_reports_deep_thinking_payload() -> None:
         request_payload_had_thinking_params=True,
         enable_thinking_sent=True,
         preserve_thinking_sent=True,
+        enable_thinking_value=True,
+        preserve_thinking_value=True,
         fallback_used="none",
         effective_mode="deep",
     )
@@ -299,7 +301,9 @@ def test_llama_chat_with_diagnostics_reports_fast_thinking_disabled_payload() ->
     assert result.content == "fast answer"
     assert result.diagnostics.request_payload_had_thinking_params is True
     assert result.diagnostics.enable_thinking_sent is True
+    assert result.diagnostics.enable_thinking_value is False
     assert result.diagnostics.preserve_thinking_sent is False
+    assert result.diagnostics.preserve_thinking_value is None
     assert result.diagnostics.effective_mode != "deep"
     payload = calls[0][1]
     assert payload["chat_template_kwargs"]["enable_thinking"] is False
@@ -330,6 +334,8 @@ def test_llama_chat_with_diagnostics_reports_unsupported_thinking_fallback() -> 
         request_payload_had_thinking_params=True,
         enable_thinking_sent=True,
         preserve_thinking_sent=True,
+        enable_thinking_value=True,
+        preserve_thinking_value=True,
         fallback_used="unsupported_request_body",
         effective_mode="degraded",
         raw_provider_status="unsupported field",
@@ -374,11 +380,54 @@ def test_llama_chat_with_diagnostics_reports_empty_reasoning_retry() -> None:
         request_payload_had_thinking_params=True,
         enable_thinking_sent=True,
         preserve_thinking_sent=True,
+        enable_thinking_value=True,
+        preserve_thinking_value=True,
         fallback_used="empty_reasoning_response",
         effective_mode="degraded",
     )
     assert calls[0][1]["max_tokens"] == 256
     assert calls[1][1]["max_tokens"] == 4096
+
+
+def test_llama_chat_with_diagnostics_preserves_unsupported_body_fallback_when_empty_reasoning_retry_succeeds() -> None:
+    calls: list[tuple[str, dict, float]] = []
+
+    def transport(url: str, payload: dict, timeout: float) -> dict:
+        calls.append((url, deepcopy(payload), timeout))
+        if len(calls) == 1:
+            raise ModelRuntimeRequestFailed("unsupported field", status_code=422)
+        if len(calls) == 2:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {
+                            "content": "",
+                            "reasoning_content": "still thinking",
+                        },
+                    }
+                ]
+            }
+        return {"choices": [{"message": {"content": "final answer"}}]}
+
+    client = LlamaCppModelClient(
+        ModelClientConfig(enabled=True),
+        transport=transport,
+    )
+
+    result = client.chat_with_diagnostics(
+        [ChatMessage(role="user", content="hello")],
+        max_tokens=256,
+        policy=DEEP_REASONING_POLICY,
+    )
+
+    assert result.content == "final answer"
+    assert result.diagnostics.fallback_used == "unsupported_request_body"
+    assert result.diagnostics.raw_provider_status == "unsupported field"
+    assert len(calls) == 3
+    assert "chat_template_kwargs" in calls[0][1]
+    assert "chat_template_kwargs" not in calls[1][1]
+    assert "chat_template_kwargs" not in calls[2][1]
 
 
 def test_llama_chat_with_diagnostics_reraises_non_retryable_provider_failures() -> None:
