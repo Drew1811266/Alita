@@ -7,7 +7,11 @@ from agent_service.deep_agent_graph_compile import (
     review_compiled_graph,
 )
 from agent_service.deep_agent_models import PlanDraft, PlanStep
-from agent_service.schemas import RunGraph
+from agent_service.execution_graph import (
+    compile_execution_graph,
+    validate_execution_graph_bindings,
+)
+from agent_service.schemas import RunGraph, RunGraphRequest
 
 
 def _step(step_id: str, *, depends_on: list[str] | None = None) -> PlanStep:
@@ -218,6 +222,28 @@ def test_compile_document_capability_uses_fixed_tool_binding() -> None:
     }
     assert "modelRef" not in graph["nodes"][0]
     RunGraph.model_validate(graph)
+
+
+def test_compiled_document_read_graph_has_supported_execution_binding() -> None:
+    draft = _draft(["read"])
+    document_step = draft.steps[0].model_copy(
+        update={"required_capabilities": ["document.read"]}
+    )
+    draft = draft.model_copy(update={"steps": [document_step]})
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    request = RunGraphRequest(
+        task_id="task-1",
+        project_path="D:/Software Project/Alita",
+        graph=RunGraph.model_validate(graph),
+    )
+
+    execution_graph = compile_execution_graph(request)
+    validate_execution_graph_bindings(execution_graph)
+    binding = execution_graph.node_by_id("read").tool_binding
+
+    assert binding is not None
+    assert binding.tool_id == "document.read_write"
+    assert binding.operation == "read"
 
 
 def test_compile_document_write_capability_uses_explicit_write_operation() -> None:
