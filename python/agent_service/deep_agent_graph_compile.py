@@ -13,11 +13,16 @@ _DOCUMENT_TOOL_BINDINGS = {
     "document.read_write": ("document.read_write", "read"),
     "document.write": ("document.read_write", "write_markdown"),
     "document.convert": ("document.markitdown_convert", "convert_local_file"),
+    "document.convert.markdown": (
+        "document.markitdown_convert",
+        "convert_local_file",
+    ),
     "document.markitdown_convert": (
         "document.markitdown_convert",
         "convert_local_file",
     ),
     "document.render": ("document.typst_compile", "compile_report_pdf"),
+    "document.render.typst_pdf": ("document.typst_compile", "compile_report_pdf"),
     "document.typst_compile": ("document.typst_compile", "compile_report_pdf"),
 }
 
