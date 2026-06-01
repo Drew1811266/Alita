@@ -149,6 +149,7 @@ export type BackendEvent =
       type: "planning.failed";
       payload: {
         reason: string;
+        message?: string;
         review?: Record<string, unknown>;
       };
     }

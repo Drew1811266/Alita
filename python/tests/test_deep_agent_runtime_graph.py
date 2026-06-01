@@ -4,7 +4,11 @@ import json
 from typing import Any
 
 from agent_service.deep_agent_runtime_graph import run_deep_agent_runtime
-from agent_service.model_client import ChatDiagnosticsResponse, ModelCallDiagnostics
+from agent_service.model_client import (
+    ChatDiagnosticsResponse,
+    ModelCallDiagnostics,
+    ModelRuntimeDisabled,
+)
 from agent_service.schemas import UserMessage
 
 
@@ -29,6 +33,12 @@ class FakeModel:
                 effective_mode="deep",
             ),
         )
+
+
+class UnavailableModel:
+    def chat_with_diagnostics(self, messages, *, policy=None, **kwargs):
+        del messages, policy, kwargs
+        raise ModelRuntimeDisabled("model is not configured")
 
 
 def _reasoning_payload(next_action: str = "deep_planning") -> dict[str, Any]:
@@ -136,4 +146,34 @@ def test_deep_agent_runtime_records_simple_reasoning_without_graph() -> None:
         "reasoning.decision_created",
         "reasoning.completed",
     ]
+    assert all(event.type != "node_graph.created" for event in events)
+
+
+def test_deep_agent_runtime_returns_failed_event_when_reasoning_unavailable() -> None:
+    events = run_deep_agent_runtime(
+        UserMessage(task_id="task-unavailable", content="Create a report."),
+        project_path="D:/Project/demo.alita",
+        model_client=UnavailableModel(),
+    )
+
+    assert [event.type for event in events] == ["planning.failed"]
+    assert events[0].payload["reason"] == "reasoning_unavailable"
+    assert "model is not configured" in events[0].payload["message"]
+
+
+def test_deep_agent_runtime_returns_failed_event_when_plan_json_is_invalid() -> None:
+    model = FakeModel([_reasoning_payload(), {"not": "a plan draft"}])
+
+    events = run_deep_agent_runtime(
+        UserMessage(task_id="task-invalid-plan", content="Create a report."),
+        project_path="D:/Project/demo.alita",
+        model_client=model,
+    )
+
+    assert [event.type for event in events] == [
+        "reasoning.decision_created",
+        "planning.started",
+        "planning.failed",
+    ]
+    assert events[-1].payload["reason"] == "invalid_plan_json"
     assert all(event.type != "node_graph.created" for event in events)

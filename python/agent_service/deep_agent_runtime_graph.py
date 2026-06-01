@@ -18,6 +18,7 @@ from agent_service.deep_agent_models import (
     ThinkingStatus,
 )
 from agent_service.deep_agent_planner import (
+    DeepPlanningError,
     DeepPlanningEngine,
     ReasoningGateEngine,
     review_plan,
@@ -73,23 +74,43 @@ def build_deep_agent_runtime_graph():
     graph.add_node("present_plan", present_plan)
     graph.add_node("clarify_required", clarify_required)
     graph.add_node("simple_reasoning_final", simple_reasoning_final)
+    graph.add_node("deep_agent_failed", deep_agent_failed)
     graph.set_entry_point("reasoning_gate")
     graph.add_edge("build_context", "deep_plan")
-    graph.add_edge("deep_plan", "review_plan")
     graph.add_edge("compile_agent_plan_graph", "review_graph")
     graph.add_edge("present_plan", END)
     graph.add_edge("clarify_required", END)
     graph.add_edge("simple_reasoning_final", END)
+    graph.add_edge("deep_agent_failed", END)
     return graph.compile()
 
 
 def reasoning_gate(
     state: DeepAgentRuntimeState,
-) -> Command[Literal["build_context", "clarify_required", "simple_reasoning_final"]]:
-    decision = ReasoningGateEngine(model_client=state["model_client"]).decide(
-        state["message"],
-        context_bundle={},
-    )
+) -> Command[
+    Literal[
+        "build_context",
+        "clarify_required",
+        "simple_reasoning_final",
+        "deep_agent_failed",
+    ]
+]:
+    try:
+        decision = ReasoningGateEngine(model_client=state["model_client"]).decide(
+            state["message"],
+            context_bundle={},
+        )
+    except DeepPlanningError as error:
+        return Command(
+            update={
+                "events": [
+                    *state.get("events", []),
+                    _planning_failed_event(error),
+                ]
+            },
+            goto="deep_agent_failed",
+        )
+
     events = [
         *state.get("events", []),
         AgentEvent(
@@ -135,30 +156,45 @@ def build_context(state: DeepAgentRuntimeState) -> dict[str, Any]:
     }
 
 
-def deep_plan(state: DeepAgentRuntimeState) -> dict[str, Any]:
-    result = DeepPlanningEngine(model_client=state["model_client"]).plan(
-        state["message"],
-        context_bundle=state.get("context_bundle") or {},
+def deep_plan(
+    state: DeepAgentRuntimeState,
+) -> Command[Literal["review_plan", "deep_agent_failed"]]:
+    events = [
+        *state.get("events", []),
+        AgentEvent(
+            type="planning.started",
+            payload={"taskId": state["message"].task_id},
+        ),
+    ]
+    try:
+        result = DeepPlanningEngine(model_client=state["model_client"]).plan(
+            state["message"],
+            context_bundle=state.get("context_bundle") or {},
+        )
+    except DeepPlanningError as error:
+        return Command(
+            update={"events": [*events, _planning_failed_event(error)]},
+            goto="deep_agent_failed",
+        )
+
+    return Command(
+        update={
+            "plan_draft": result.plan_draft,
+            "thinking_status": result.thinking_status,
+            "events": [
+                *events,
+                AgentEvent(
+                    type="planning.thinking_status",
+                    payload={"thinkingStatus": result.thinking_status.model_dump()},
+                ),
+                AgentEvent(
+                    type="planning.draft_created",
+                    payload={"planDraft": result.plan_draft.model_dump()},
+                ),
+            ],
+        },
+        goto="review_plan",
     )
-    return {
-        "plan_draft": result.plan_draft,
-        "thinking_status": result.thinking_status,
-        "events": [
-            *state.get("events", []),
-            AgentEvent(
-                type="planning.started",
-                payload={"taskId": state["message"].task_id},
-            ),
-            AgentEvent(
-                type="planning.thinking_status",
-                payload={"thinkingStatus": result.thinking_status.model_dump()},
-            ),
-            AgentEvent(
-                type="planning.draft_created",
-                payload={"planDraft": result.plan_draft.model_dump()},
-            ),
-        ],
-    }
 
 
 def review_plan_node(
@@ -295,6 +331,18 @@ def simple_reasoning_final(state: DeepAgentRuntimeState) -> dict[str, Any]:
             ),
         ]
     }
+
+
+def deep_agent_failed(state: DeepAgentRuntimeState) -> dict[str, Any]:
+    del state
+    return {}
+
+
+def _planning_failed_event(error: DeepPlanningError) -> AgentEvent:
+    return AgentEvent(
+        type="planning.failed",
+        payload={"reason": error.code, "message": error.message},
+    )
 
 
 def _available_capabilities(context_bundle: dict[str, Any]) -> set[str]:

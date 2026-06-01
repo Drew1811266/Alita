@@ -338,6 +338,40 @@ describe("reduceBackendEvents", () => {
     expect(state.graph?.graphId).toBe("graph-1");
   });
 
+  it("adds visible messages for deep planning clarification and failure", () => {
+    const events: BackendEvent[] = [
+      {
+        type: "planning.clarification_required",
+        payload: {
+          taskId: "task-clarify",
+          prompt: "Please provide the target audience.",
+        },
+      },
+      {
+        type: "planning.failed",
+        payload: {
+          reason: "reasoning_unavailable",
+          message: "The local reasoning model is not configured.",
+        },
+      },
+    ];
+
+    const state = reduceBackendEvents(
+      {
+        messages: [],
+        graph: null,
+        dirty: false,
+      },
+      events,
+      createAssistantMessage,
+    );
+
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "Please provide the target audience.",
+      "规划失败：The local reasoning model is not configured.",
+    ]);
+  });
+
   it("adds a chat prompt for research choice events", () => {
     const submittedPayload = {
       taskId: "task-1",

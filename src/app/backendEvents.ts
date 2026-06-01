@@ -213,6 +213,32 @@ export function reduceBackendEvents(
       };
     }
 
+    if (event.type === "planning.clarification_required") {
+      return {
+        ...current,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(event.payload.prompt),
+        ],
+        pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "planning.failed") {
+      return {
+        ...current,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(formatPlanningFailure(event.payload)),
+        ],
+        pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
+        dirty: true,
+      };
+    }
+
     if (event.type === "node_graph.created") {
       return {
         ...current,
@@ -558,6 +584,12 @@ function formatPlanningProgress(
   payload: Extract<BackendEvent, { type: "planning.progress" }>["payload"],
 ): string {
   return `Planning progress ${payload.sequence}/${payload.total}: ${payload.label}\n${payload.summary}`;
+}
+
+function formatPlanningFailure(
+  payload: Extract<BackendEvent, { type: "planning.failed" }>["payload"],
+): string {
+  return `规划失败：${payload.message ?? payload.reason}`;
 }
 
 function formatPermissionPrompt(
