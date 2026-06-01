@@ -34,6 +34,8 @@ class ModelCallDiagnostics:
     request_payload_had_thinking_params: bool
     enable_thinking_sent: bool
     preserve_thinking_sent: bool
+    enable_thinking_value: bool | None = None
+    preserve_thinking_value: bool | None = None
     fallback_used: Literal[
         "none",
         "unsupported_request_body",
@@ -282,7 +284,12 @@ class LlamaCppModelClient:
                     content=retry_content,
                     diagnostics=_diagnostics_for_payload(
                         original_payload,
-                        fallback_used="empty_reasoning_response",
+                        fallback_used=(
+                            fallback_used
+                            if fallback_used != "none"
+                            else "empty_reasoning_response"
+                        ),
+                        raw_provider_status=raw_provider_status,
                     ),
                 )
 
@@ -746,6 +753,9 @@ def _diagnostics_for_payload(
     enable_thinking_value = chat_template_kwargs.get("enable_thinking")
     if not isinstance(enable_thinking_value, bool):
         enable_thinking_value = None
+    preserve_thinking_value = chat_template_kwargs.get("preserve_thinking")
+    if not isinstance(preserve_thinking_value, bool):
+        preserve_thinking_value = None
     effective_mode: Literal["deep", "degraded", "unavailable"]
     if fallback_used != "none":
         effective_mode = "degraded"
@@ -758,6 +768,8 @@ def _diagnostics_for_payload(
         request_payload_had_thinking_params=request_payload_had_thinking_params,
         enable_thinking_sent=enable_thinking_sent,
         preserve_thinking_sent=preserve_thinking_sent,
+        enable_thinking_value=enable_thinking_value,
+        preserve_thinking_value=preserve_thinking_value,
         fallback_used=fallback_used,
         effective_mode=effective_mode,
         raw_provider_status=raw_provider_status,
