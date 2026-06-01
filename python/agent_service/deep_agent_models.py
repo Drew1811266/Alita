@@ -30,7 +30,7 @@ ReasoningNextAction = Literal[
     "clarification",
     "deep_planning",
 ]
-ReviewStatus = Literal["approved", "clarification", "invalid"]
+ReviewStatus = Literal["approved", "needs_clarification", "invalid"]
 GraphReviewStatus = Literal["approved", "invalid"]
 ThinkingFallback = Literal[
     "none",
