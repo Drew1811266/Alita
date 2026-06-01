@@ -20,6 +20,7 @@ from agent_service.model_client import (
     ModelRuntimeRequestFailed,
 )
 from agent_service.model_policy import DEEP_REASONING_POLICY, ModelCallPolicy, ModelCallProfile
+from agent_service.schemas import Attachment, UserMessage
 
 
 class FakeDeepModel:
@@ -131,24 +132,40 @@ def _decision_payload() -> dict[str, Any]:
 
 def _context_bundle() -> dict[str, Any]:
     return {
-        "taskId": "task-1",
+        "taskId": "context-task-should-not-drive-prompt",
         "attachments": [
             {
-                "id": "att-1",
-                "name": "contract.pdf",
+                "id": "context-att-1",
+                "name": "context-contract.pdf",
                 "mime_type": "application/pdf",
-                "size_bytes": 12345,
-                "path": "D:\\secret\\contract.pdf",
+                "size_bytes": 999,
+                "path": "D:\\context-secret\\context-contract.pdf",
             }
         ],
         "conversation": [{"role": "user", "content": "Review this contract."}],
     }
 
 
+def _message() -> UserMessage:
+    return UserMessage(
+        task_id="task-1",
+        content="Review this contract.",
+        attachments=[
+            Attachment(
+                attachment_id="att-1",
+                name="contract.pdf",
+                path="D:\\secret\\contract.pdf",
+                size_bytes=12345,
+                mime_type="application/pdf",
+            )
+        ],
+    )
+
+
 def test_deep_planning_engine_calls_model_with_deep_reasoning_policy() -> None:
     model = FakeDeepModel()
     result = DeepPlanningEngine(model).plan(
-        "Review this contract.",
+        _message(),
         context_bundle=_context_bundle(),
     )
 
@@ -159,14 +176,25 @@ def test_deep_planning_engine_calls_model_with_deep_reasoning_policy() -> None:
     assert result.thinking_status.effective_mode == "deep"
     assert result.thinking_status.enforced is True
     prompt = model.calls[0]["messages"][1].content
+    prompt_payload = json.loads(prompt)
     assert "D:\\secret\\contract.pdf" not in prompt
+    assert "D:\\context-secret\\context-contract.pdf" not in prompt
     assert "contract.pdf" in prompt
+    assert prompt_payload["taskId"] == "task-1"
+    assert prompt_payload["attachment_summaries"] == [
+        {
+            "attachment_id": "att-1",
+            "name": "contract.pdf",
+            "mime_type": "application/pdf",
+            "size_bytes": 12345,
+        }
+    ]
 
 
 def test_reasoning_gate_engine_calls_model_and_parses_decision() -> None:
     model = FakeDeepModel(raw_content=json.dumps(_decision_payload()))
     decision = ReasoningGateEngine(model).decide(
-        "Review this contract.",
+        _message(),
         context_bundle=_context_bundle(),
     )
 
@@ -180,7 +208,7 @@ def test_deep_planning_engine_rejects_invalid_json_without_template_fallback() -
     model = FakeDeepModel(raw_content="{not json")
 
     with pytest.raises(DeepPlanningError) as error:
-        DeepPlanningEngine(model).plan("Review this contract.", context_bundle=_context_bundle())
+        DeepPlanningEngine(model).plan(_message(), context_bundle=_context_bundle())
 
     assert error.value.code == "invalid_plan_json"
     assert len(model.calls) == 1
@@ -190,7 +218,7 @@ def test_reasoning_gate_rejects_invalid_json() -> None:
     model = FakeDeepModel(raw_content="{not json")
 
     with pytest.raises(DeepPlanningError) as error:
-        ReasoningGateEngine(model).decide("Review this contract.", context_bundle=_context_bundle())
+        ReasoningGateEngine(model).decide(_message(), context_bundle=_context_bundle())
 
     assert error.value.code == "invalid_reasoning_json"
     assert len(model.calls) == 1
@@ -207,7 +235,7 @@ def test_deep_planning_engine_reports_unavailable_model(runtime_error: Exception
     model = FakeDeepModel(error=runtime_error)
 
     with pytest.raises(DeepPlanningError) as error:
-        DeepPlanningEngine(model).plan("Review this contract.", context_bundle=_context_bundle())
+        DeepPlanningEngine(model).plan(_message(), context_bundle=_context_bundle())
 
     assert error.value.code == "deep_planning_unavailable"
 
@@ -267,7 +295,7 @@ def test_review_plan_blocks_step_unsupported_capability() -> None:
 def test_revision_instructions_appear_in_planning_prompt_and_local_path_is_scrubbed() -> None:
     model = FakeDeepModel()
     DeepPlanningEngine(model).plan(
-        "Review this contract.",
+        _message(),
         context_bundle=_context_bundle(),
         revision_instructions=["Add a verification step for citations."],
     )
@@ -275,3 +303,4 @@ def test_revision_instructions_appear_in_planning_prompt_and_local_path_is_scrub
     prompt = model.calls[0]["messages"][1].content
     assert "Add a verification step for citations." in prompt
     assert "D:\\secret\\contract.pdf" not in prompt
+    assert "D:\\context-secret\\context-contract.pdf" not in prompt

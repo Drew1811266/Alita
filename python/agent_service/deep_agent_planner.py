@@ -19,6 +19,7 @@ from agent_service.model_client import (
     ModelRuntimeRequestFailed,
 )
 from agent_service.model_policy import DEEP_REASONING_POLICY, ModelCallPolicy
+from agent_service.schemas import Attachment, UserMessage
 
 
 class DeepPlanningError(RuntimeError):
@@ -46,7 +47,7 @@ class ReasoningGateEngine:
 
     def decide(
         self,
-        message: str,
+        message: UserMessage,
         *,
         context_bundle: dict[str, Any],
     ) -> ReasoningDecision:
@@ -95,7 +96,7 @@ class DeepPlanningEngine:
 
     def plan(
         self,
-        message: str,
+        message: UserMessage,
         *,
         context_bundle: dict[str, Any],
         revision_instructions: list[str] | None = None,
@@ -253,15 +254,15 @@ def review_plan(
 
 
 def _planning_prompt(
-    message: str,
+    message: UserMessage,
     *,
     context_bundle: dict[str, Any],
     revision_instructions: list[str] | None = None,
 ) -> str:
     prompt = {
-        "taskId": _task_id(context_bundle),
-        "user_message": message,
-        "attachment_summaries": _attachment_summaries(context_bundle),
+        "taskId": message.task_id,
+        "user_message": message.content,
+        "attachment_summaries": _attachment_summaries(message.attachments),
         "context_bundle": _scrub_paths(context_bundle),
         "revision_instructions": revision_instructions or [],
         "required_json_keys": [
@@ -291,14 +292,14 @@ def _planning_prompt(
 
 
 def _reasoning_prompt(
-    message: str,
+    message: UserMessage,
     *,
     context_bundle: dict[str, Any],
 ) -> str:
-    attachment_summaries = _attachment_summaries(context_bundle)
+    attachment_summaries = _attachment_summaries(message.attachments)
     prompt = {
-        "taskId": _task_id(context_bundle),
-        "user_message": message,
+        "taskId": message.task_id,
+        "user_message": message.content,
         "attachment_count": len(attachment_summaries),
         "attachment_summaries": attachment_summaries,
         "context_bundle": _scrub_paths(context_bundle),
@@ -316,44 +317,35 @@ def _reasoning_prompt(
     return json.dumps(prompt, ensure_ascii=False, indent=2)
 
 
-def _task_id(context_bundle: dict[str, Any]) -> str | None:
-    task_id = context_bundle.get("taskId", context_bundle.get("task_id"))
-    return str(task_id) if task_id is not None else None
-
-
-def _attachment_summaries(context_bundle: dict[str, Any]) -> list[dict[str, Any]]:
-    attachments = context_bundle.get("attachments", [])
-    if not isinstance(attachments, list):
-        return []
-
+def _attachment_summaries(attachments: list[Attachment]) -> list[dict[str, Any]]:
     summaries: list[dict[str, Any]] = []
     for attachment in attachments:
-        if not isinstance(attachment, dict):
-            continue
         summaries.append(
             {
-                "id": attachment.get("id"),
-                "name": attachment.get("name"),
-                "mime_type": attachment.get(
-                    "mime_type",
-                    attachment.get("mimeType"),
-                ),
-                "size_bytes": attachment.get(
-                    "size_bytes",
-                    attachment.get("sizeBytes"),
-                ),
+                "attachment_id": attachment.attachment_id,
+                "name": attachment.name,
+                "mime_type": attachment.mime_type,
+                "size_bytes": attachment.size_bytes,
             }
         )
     return summaries
 
 
 def _scrub_paths(value: Any) -> Any:
+    if hasattr(value, "model_dump") and callable(value.model_dump):
+        return _scrub_paths(value.model_dump())
     if isinstance(value, dict):
         return {
             key: _scrub_paths(item)
             for key, item in value.items()
             if str(key).lower()
-            not in {"path", "local_path", "filepath", "file_path", "absolute_path"}
+            not in {
+                "path",
+                "local_path",
+                "filepath",
+                "file_path",
+                "absolute_path",
+            }
         }
     if isinstance(value, list):
         return [_scrub_paths(item) for item in value]
