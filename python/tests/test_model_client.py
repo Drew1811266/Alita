@@ -677,6 +677,69 @@ def test_openai_compatible_client_posts_chat_request_with_authorization() -> Non
     ]
 
 
+def test_openai_compatible_client_chat_with_diagnostics_reports_unavailable_thinking() -> None:
+    calls: list[tuple[str, dict, float, dict[str, str]]] = []
+
+    def transport(url: str, payload: dict, timeout: float, headers: dict[str, str]) -> dict:
+        calls.append((url, payload, timeout, headers))
+        return {"choices": [{"message": {"content": "api reply"}}]}
+
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4.1",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+        ),
+        transport=transport,
+    )
+
+    result = client.chat_with_diagnostics(
+        [ChatMessage(role="user", content="hello")],
+        policy=DEEP_REASONING_POLICY,
+    )
+
+    assert result == ChatDiagnosticsResponse(
+        content="api reply",
+        diagnostics=ModelCallDiagnostics(
+            request_payload_had_thinking_params=False,
+            enable_thinking_sent=False,
+            preserve_thinking_sent=False,
+            enable_thinking_value=None,
+            preserve_thinking_value=None,
+            fallback_used="none",
+            effective_mode="unavailable",
+            raw_provider_status=None,
+        ),
+    )
+    assert "chat_template_kwargs" not in calls[0][1]
+
+
+def test_openai_compatible_client_chat_with_diagnostics_rejects_empty_response() -> None:
+    def transport(url: str, payload: dict, timeout: float, headers: dict[str, str]) -> dict:
+        return {"choices": [{"message": {"content": ""}}]}
+
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4.1",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+        ),
+        transport=transport,
+    )
+
+    with pytest.raises(
+        ModelRuntimeRequestFailed,
+        match="OpenAI-compatible API returned an empty chat response",
+    ):
+        client.chat_with_diagnostics([ChatMessage(role="user", content="hello")])
+
+
 def test_openai_compatible_client_posts_native_tool_payload_and_parses_tool_calls() -> None:
     calls: list[tuple[str, dict, float, dict[str, str]]] = []
     tools = [

@@ -448,6 +448,37 @@ class OpenAICompatibleModelClient:
 
         raise ModelRuntimeRequestFailed("OpenAI-compatible API returned an empty chat response")
 
+    def chat_with_diagnostics(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        policy: ModelCallPolicy | None = None,
+    ) -> ChatDiagnosticsResponse:
+        self._ensure_enabled()
+        payload = self._payload(
+            messages,
+            temperature,
+            max_tokens,
+            stream=False,
+            policy=policy,
+        )
+        response = self._transport(
+            self._chat_url(),
+            payload,
+            self.config.timeout_seconds,
+            self._headers(),
+        )
+        content = _extract_api_chat_content(response)
+        if content.strip():
+            return ChatDiagnosticsResponse(
+                content=content,
+                diagnostics=_diagnostics_for_payload(payload),
+            )
+
+        raise ModelRuntimeRequestFailed("OpenAI-compatible API returned an empty chat response")
+
     def chat_with_tools(
         self,
         messages: list[ChatMessage],
