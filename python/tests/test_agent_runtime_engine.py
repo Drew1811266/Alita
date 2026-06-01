@@ -5,6 +5,20 @@ from agent_service.runtime_store import RuntimeStore
 from agent_service.schemas import AgentEvent, UserMessage
 
 
+def _simple_deep_runtime(*args, **kwargs) -> list[AgentEvent]:
+    del args, kwargs
+    return [
+        AgentEvent(
+            type="reasoning.decision_created",
+            payload={"decision": {"next_action": "simple_answer"}},
+        ),
+        AgentEvent(
+            type="reasoning.completed",
+            payload={"taskId": "task-runtime-entry", "nextAction": "simple_answer"},
+        ),
+    ]
+
+
 def test_engine_start_run_creates_runtime_state_and_started_event():
     engine = AgentRuntimeEngine()
     message = UserMessage(task_id="task-engine", content="Create a Python script.")
@@ -29,7 +43,10 @@ def test_engine_step_route_advances_to_context_without_calling_legacy_runner():
         legacy_calls.append(run_state)
         return []
 
-    engine = AgentRuntimeEngine(route_runner=fake_runner)
+    engine = AgentRuntimeEngine(
+        route_runner=fake_runner,
+        deep_runtime_runner=_simple_deep_runtime,
+    )
     message = UserMessage(
         task_id="task-engine-plan",
         content="Create a Python script that counts CSV rows.",
@@ -82,7 +99,10 @@ def test_engine_step_plan_uses_legacy_planner_and_records_action_graph():
             )
         ]
 
-    engine = AgentRuntimeEngine(route_runner=fake_runner)
+    engine = AgentRuntimeEngine(
+        route_runner=fake_runner,
+        deep_runtime_runner=_simple_deep_runtime,
+    )
     started = engine.start_run(
         message=UserMessage(
             task_id="task-engine-action-graph",
@@ -122,7 +142,10 @@ def test_engine_run_from_agent_state_wraps_legacy_events_with_runtime_events():
             )
         ]
 
-    engine = AgentRuntimeEngine(route_runner=fake_runner)
+    engine = AgentRuntimeEngine(
+        route_runner=fake_runner,
+        deep_runtime_runner=_simple_deep_runtime,
+    )
     run_state = AgentRunState.from_user_message(
         UserMessage(task_id="task-runtime-entry", content="hello")
     ).model_copy(
@@ -134,11 +157,13 @@ def test_engine_run_from_agent_state_wraps_legacy_events_with_runtime_events():
     assert captured[0].task_id == "task-runtime-entry"
     assert [event.type for event in result.events] == [
         "runtime.run_started",
+        "reasoning.decision_created",
+        "reasoning.completed",
         "runtime.state_delta",
         "message.created",
     ]
     assert result.state.stage == "plan"
-    assert result.events[1].payload["delta"]["decision"]["kind"] == (
+    assert result.events[3].payload["delta"]["decision"]["kind"] == (
         "legacy_route_and_plan"
     )
 
@@ -158,7 +183,11 @@ def test_engine_run_from_agent_state_persists_runtime_state_and_delta(tmp_path):
 
     project_path = str(tmp_path / "demo.alita")
     store = RuntimeStore(project_path=project_path, run_id="run-store-engine")
-    engine = AgentRuntimeEngine(route_runner=fake_runner, runtime_store=store)
+    engine = AgentRuntimeEngine(
+        route_runner=fake_runner,
+        deep_runtime_runner=_simple_deep_runtime,
+        runtime_store=store,
+    )
     run_state = AgentRunState.from_user_message(
         UserMessage(task_id="task-store-engine", content="Create a graph.")
     ).model_copy(update={"project_path": project_path, "run_id": "run-store-engine"})
@@ -172,6 +201,42 @@ def test_engine_run_from_agent_state_persists_runtime_state_and_delta(tmp_path):
     assert restored.run_id == "run-store-engine"
     assert [delta.stage_after for delta in deltas] == ["plan"]
     assert deltas[0].decision == {"kind": "legacy_route_and_plan"}
+
+
+def test_engine_stream_terminal_deep_runtime_persists_plan_state(tmp_path):
+    def deep_runtime(*args, **kwargs) -> list[AgentEvent]:
+        del args, kwargs
+        return [
+            AgentEvent(
+                type="node_graph.created",
+                payload={"graph": {"graphId": "graph-1", "nodes": [], "edges": []}},
+            )
+        ]
+
+    def stream_runner(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("legacy stream runner must not run after terminal graph")
+
+    project_path = str(tmp_path / "demo.alita")
+    store = RuntimeStore(project_path=project_path, run_id="run-stream-store")
+    engine = AgentRuntimeEngine(
+        deep_runtime_runner=deep_runtime,
+        stream_runner=stream_runner,
+        runtime_store=store,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-stream-store", content="Create a graph.")
+    ).model_copy(update={"project_path": project_path, "run_id": "run-stream-store"})
+
+    events = list(engine.stream_from_state(run_state))
+
+    assert [event.type for event in events] == [
+        "runtime.run_started",
+        "node_graph.created",
+    ]
+    restored = store.read_state()
+    assert restored is not None
+    assert restored.stage == "plan"
 
 
 def test_engine_resume_restores_state_from_runtime_store(tmp_path):

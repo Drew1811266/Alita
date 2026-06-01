@@ -1,10 +1,99 @@
+import json
+from typing import Any
+
 import pytest
 from fastapi.testclient import TestClient
 
 from agent_service.agent_run_state import AgentRunState
 from agent_service.app import app
+from agent_service.model_client import ChatDiagnosticsResponse, ModelCallDiagnostics
 from agent_service.schemas import AgentEvent, ScriptReviewState
 from agent_service.script_review import script_review_fingerprint
+
+
+class FakeDeepModel:
+    def __init__(self, payloads: list[dict[str, Any]]) -> None:
+        self.payloads = payloads
+        self.calls = 0
+
+    def chat_with_diagnostics(self, messages, *, policy=None, **kwargs):
+        del messages, policy, kwargs
+        self.calls += 1
+        payload = self.payloads[self.calls - 1]
+        return ChatDiagnosticsResponse(
+            content=json.dumps(payload),
+            diagnostics=ModelCallDiagnostics(
+                request_payload_had_thinking_params=True,
+                enable_thinking_sent=True,
+                preserve_thinking_sent=True,
+                enable_thinking_value=True,
+                preserve_thinking_value=True,
+                fallback_used="none",
+                effective_mode="deep",
+            ),
+        )
+
+    def chat(self, messages, *, policy=None, **kwargs) -> str:
+        del messages, policy, kwargs
+        return "hello"
+
+
+def _install_fake_model(
+    monkeypatch: pytest.MonkeyPatch,
+    payloads: list[dict[str, Any]],
+) -> FakeDeepModel:
+    model = FakeDeepModel(payloads)
+    monkeypatch.setattr("agent_service.app.create_model_client", lambda *args, **kwargs: model)
+    return model
+
+
+def _reasoning_payload(next_action: str = "simple_answer") -> dict[str, Any]:
+    return {
+        "task_id": "task-app",
+        "task_understanding": "Reason about the request before acting.",
+        "intent": "task",
+        "complexity": "graph_task" if next_action == "deep_planning" else "simple",
+        "why_this_path": "Every request passes through the reasoning gate.",
+        "confidence": 0.9,
+        "needs_clarification": False,
+        "required_capabilities": ["model.reasoning"],
+        "next_action": next_action,
+    }
+
+
+def _plan_payload() -> dict[str, Any]:
+    return {
+        "plan_draft_id": "plan-app",
+        "task_understanding": "Create a custom task graph.",
+        "success_criteria": ["The graph reflects the generated plan."],
+        "inputs": [],
+        "assumptions": [],
+        "missing_information": [],
+        "candidate_strategies": [
+            {
+                "strategyId": "custom-plan",
+                "summary": "Generate a graph from the reasoned plan.",
+                "tradeoffs": ["Requires a planning model call before graph creation."],
+            }
+        ],
+        "recommended_strategy": "custom-plan",
+        "steps": [
+            {
+                "step_id": "draft",
+                "title": "Draft output",
+                "objective": "Draft the requested output.",
+                "rationale": "The user asked for a structured deliverable.",
+                "inputs": [],
+                "required_capabilities": ["model.reasoning"],
+                "expected_output": "Draft output.",
+                "verification_criteria": ["Output follows the request."],
+                "depends_on": [],
+            }
+        ],
+        "required_capabilities": ["model.reasoning"],
+        "risks": [],
+        "verification_plan": ["Check final output against the request."],
+    }
 
 
 def test_agent_message_endpoint_passes_agent_run_state_to_orchestrator(
@@ -192,7 +281,10 @@ def test_graph_run_stream_endpoint_passes_agent_run_state_to_executor(
     assert captured[0].message.content == "Summarize the graph"
 
 
-def test_agent_message_stream_returns_sse_events() -> None:
+def test_agent_message_stream_returns_sse_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_model(monkeypatch, [_reasoning_payload("deep_planning"), _plan_payload()])
     client = TestClient(app)
 
     response = client.post(
@@ -218,7 +310,10 @@ def test_agent_message_stream_returns_sse_events() -> None:
     assert "node_graph.created" in response.text
 
 
-def test_agent_message_stream_returns_planning_progress_before_task_graph() -> None:
+def test_agent_message_stream_returns_planning_progress_before_task_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_model(monkeypatch, [_reasoning_payload("deep_planning"), _plan_payload()])
     client = TestClient(app)
 
     response = client.post(
@@ -231,15 +326,18 @@ def test_agent_message_stream_returns_planning_progress_before_task_graph() -> N
     )
 
     assert response.status_code == 200
-    assert "planning.progress" in response.text
-    assert response.text.index("planning.progress") < response.text.index(
+    assert "planning.draft_created" in response.text
+    assert response.text.index("planning.draft_created") < response.text.index(
         "node_graph.created"
     )
-    assert "context-gathering" in response.text
-    assert "plan-review" in response.text
+    assert "planning.review_completed" in response.text
+    assert "planning.graph_compiled" in response.text
 
 
-def test_agent_message_complex_inquiry_default_returns_research_choice_payload() -> None:
+def test_agent_message_complex_inquiry_default_returns_research_choice_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_model(monkeypatch, [_reasoning_payload("simple_answer")])
     client = TestClient(app)
 
     response = client.post(
@@ -253,8 +351,12 @@ def test_agent_message_complex_inquiry_default_returns_research_choice_payload()
 
     assert response.status_code == 200
     events = response.json()
-    assert [event["type"] for event in events] == ["research.choice_required"]
-    assert events[0]["payload"] == {
+    assert [event["type"] for event in events] == [
+        "reasoning.decision_created",
+        "reasoning.completed",
+        "research.choice_required",
+    ]
+    assert events[-1]["payload"] == {
         "taskId": "task-choice",
         "prompt": "This question can be answered quickly or turned into a research flow. Choose how to proceed.",
         "choices": [
@@ -272,7 +374,10 @@ def test_agent_message_complex_inquiry_default_returns_research_choice_payload()
     }
 
 
-def test_agent_message_complex_inquiry_research_flow_choice_returns_graph() -> None:
+def test_agent_message_complex_inquiry_research_flow_choice_returns_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_model(monkeypatch, [_reasoning_payload("simple_answer")])
     client = TestClient(app)
 
     response = client.post(
@@ -287,11 +392,18 @@ def test_agent_message_complex_inquiry_research_flow_choice_returns_graph() -> N
 
     assert response.status_code == 200
     events = response.json()
-    assert [event["type"] for event in events] == ["node_graph.created"]
-    assert events[0]["payload"]["graph"]["graphId"] == "task-research-flow-research-graph"
+    assert [event["type"] for event in events] == [
+        "reasoning.decision_created",
+        "reasoning.completed",
+        "node_graph.created",
+    ]
+    assert events[-1]["payload"]["graph"]["graphId"] == "task-research-flow-research-graph"
 
 
-def test_research_choose_accepts_choice_request() -> None:
+def test_research_choose_accepts_choice_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_model(monkeypatch, [_reasoning_payload("simple_answer")])
     client = TestClient(app)
 
     response = client.post(
@@ -306,11 +418,18 @@ def test_research_choose_accepts_choice_request() -> None:
 
     assert response.status_code == 200
     events = response.json()
-    assert [event["type"] for event in events] == ["node_graph.created"]
-    assert events[0]["payload"]["graph"]["graphId"] == "task-research-command-research-graph"
+    assert [event["type"] for event in events] == [
+        "reasoning.decision_created",
+        "reasoning.completed",
+        "node_graph.created",
+    ]
+    assert events[-1]["payload"]["graph"]["graphId"] == "task-research-command-research-graph"
 
 
-def test_agent_message_stream_research_flow_choice_returns_graph_sse() -> None:
+def test_agent_message_stream_research_flow_choice_returns_graph_sse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_model(monkeypatch, [_reasoning_payload("simple_answer")])
     client = TestClient(app)
 
     response = client.post(
@@ -332,6 +451,7 @@ def test_agent_message_stream_research_flow_choice_returns_graph_sse() -> None:
 
 def test_agent_endpoints_require_sidecar_token_when_configured(monkeypatch) -> None:
     monkeypatch.setenv("ALITA_SIDECAR_TOKEN", "secret-token")
+    _install_fake_model(monkeypatch, [_reasoning_payload("simple_answer")])
     client = TestClient(app)
     payload = {
         "task_id": "task-auth",
@@ -390,7 +510,10 @@ def test_agent_message_without_token_or_bypass_returns_not_configured(
     assert response.json() == {"detail": "sidecar token is not configured"}
 
 
-def test_agent_message_without_token_allows_explicit_dev_bypass() -> None:
+def test_agent_message_without_token_allows_explicit_dev_bypass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_model(monkeypatch, [_reasoning_payload("simple_answer")])
     client = TestClient(app)
 
     response = client.post(
