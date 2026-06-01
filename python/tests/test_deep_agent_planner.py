@@ -146,6 +146,8 @@ def _context_bundle() -> dict[str, Any]:
             {"note": "see D:\\secret\\file.pdf before planning"},
             {"source": "/Users/drew/private/file.pdf"},
             {"hint": "inspect D:\\Software Project\\Alita\\secret.txt next"},
+            {"workspace": "open D:\\Software Project\\Alita\\secret folder"},
+            {"directory": "read /Users/drew/private/secret folder"},
         ],
         "conversation": [{"role": "user", "content": "Review this contract."}],
     }
@@ -218,13 +220,20 @@ def test_planning_prompt_scrubs_local_path_strings_under_non_path_keys() -> None
     assert "D:\\secret\\file.pdf" not in prompt
     assert "/Users/drew/private/file.pdf" not in prompt
     assert "D:\\Software Project\\Alita\\secret.txt" not in prompt
+    assert "D:\\Software Project\\Alita\\secret folder" not in prompt
+    assert "/Users/drew/private/secret folder" not in prompt
     assert "Software Project" not in prompt
     assert "Alita\\secret.txt" not in prompt
+    assert "Alita\\secret folder" not in prompt
+    assert "/Users/drew" not in prompt
+    assert "private/secret folder" not in prompt
     assert "[local_path_removed]" in prompt
     assert prompt_payload["context_bundle"]["notes"] == [
         {"note": "see [local_path_removed] before planning"},
         {"source": "[local_path_removed]"},
         {"hint": "inspect [local_path_removed] next"},
+        {"workspace": "open [local_path_removed]"},
+        {"directory": "read [local_path_removed]"},
     ]
 
 
@@ -237,13 +246,20 @@ def test_reasoning_prompt_scrubs_local_path_strings_under_non_path_keys() -> Non
     assert "D:\\secret\\file.pdf" not in prompt
     assert "/Users/drew/private/file.pdf" not in prompt
     assert "D:\\Software Project\\Alita\\secret.txt" not in prompt
+    assert "D:\\Software Project\\Alita\\secret folder" not in prompt
+    assert "/Users/drew/private/secret folder" not in prompt
     assert "Software Project" not in prompt
     assert "Alita\\secret.txt" not in prompt
+    assert "Alita\\secret folder" not in prompt
+    assert "/Users/drew" not in prompt
+    assert "private/secret folder" not in prompt
     assert "[local_path_removed]" in prompt
     assert prompt_payload["context_bundle"]["notes"] == [
         {"note": "see [local_path_removed] before planning"},
         {"source": "[local_path_removed]"},
         {"hint": "inspect [local_path_removed] next"},
+        {"workspace": "open [local_path_removed]"},
+        {"directory": "read [local_path_removed]"},
     ]
 
 
