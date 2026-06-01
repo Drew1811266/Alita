@@ -128,6 +128,15 @@ export type NodePort = {
   dataType: "text" | "document" | "artifact" | "json";
 };
 
+export type PlanNodeProvenance = {
+  sourcePlanDraftId?: string;
+  sourcePlanStepId?: string;
+  rationale?: string;
+  expectedOutput?: string;
+  verificationCriteria?: string[];
+  requiredCapabilities?: string[];
+};
+
 export type AgentNode = {
   nodeId: string;
   nodeType: NodeType;
@@ -153,6 +162,7 @@ export type AgentNode = {
     x: number;
     y: number;
   };
+  metadata?: Record<string, unknown> & PlanNodeProvenance;
 };
 
 export type ChatAttachment = {

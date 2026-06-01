@@ -209,6 +209,41 @@ describe("NodePopover", () => {
     expect(markup).toContain("Planning took longer than expected.");
   });
 
+  it("renders plan-step provenance when node metadata includes it", () => {
+    const markup = renderPopover({
+      ...toolNode,
+      metadata: {
+        sourcePlanDraftId: "plan-1",
+        sourcePlanStepId: "step-risk",
+        rationale: "Risk extraction is required by the user goal.",
+        expectedOutput: "A severity-ranked risk list.",
+        verificationCriteria: ["Every risk has a source clause."],
+        requiredCapabilities: ["model.reasoning"],
+      },
+    });
+
+    expect(markup).toContain("计划来源");
+    expect(markup).toContain("step-risk");
+    expect(markup).toContain("Risk extraction is required by the user goal.");
+    expect(markup).toContain("A severity-ranked risk list.");
+    expect(markup).toContain("Every risk has a source clause.");
+  });
+
+  it("ignores malformed plan-step provenance metadata", () => {
+    const node: AgentNode = {
+      ...toolNode,
+      metadata: {
+        sourcePlanStepId: {},
+        rationale: {},
+        expectedOutput: {},
+        verificationCriteria: "not-an-array",
+      } as unknown as AgentNode["metadata"],
+    };
+
+    expect(() => renderPopover(node)).not.toThrow();
+    expect(renderPopover(node)).not.toContain("计划来源");
+  });
+
   it("renders temporary script risk, approval, preview, contracts, and usage", () => {
     const markup = renderToStaticMarkup(
       <NodePopover
