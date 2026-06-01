@@ -30,6 +30,10 @@ _LOCAL_PATH_PATTERN = re.compile(
     r"(?P<unix>/(?:Users|home)/(?:[^/\r\n\"'<>|:*?]+/)+[^/\r\n\"'<>|:*?]+"
     r"\.[A-Za-z0-9]{1,16})"
 )
+_LOCAL_PATH_TO_END_PATTERN = re.compile(
+    r"(?P<windows>[A-Za-z]:\\[^\r\n\"'<>|:*?]*)|"
+    r"(?P<unix>/(?:Users|home)/[^\r\n\"'<>|:*?]*)"
+)
 
 
 class DeepPlanningError(RuntimeError):
@@ -365,7 +369,8 @@ def _scrub_paths(value: Any) -> Any:
     if isinstance(value, list):
         return [_scrub_paths(item) for item in value]
     if isinstance(value, str):
-        return _LOCAL_PATH_PATTERN.sub(LOCAL_PATH_MARKER, value)
+        scrubbed = _LOCAL_PATH_PATTERN.sub(LOCAL_PATH_MARKER, value)
+        return _LOCAL_PATH_TO_END_PATTERN.sub(LOCAL_PATH_MARKER, scrubbed)
     return value
 
 
