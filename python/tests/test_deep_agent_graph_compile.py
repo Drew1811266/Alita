@@ -180,3 +180,28 @@ def test_review_compiled_graph_rejects_missing_provenance_detail() -> None:
 
     assert review.status == "invalid"
     assert review.findings == ["missing_node_metadata:read:rationale"]
+
+
+def test_review_compiled_graph_rejects_missing_required_capabilities() -> None:
+    draft = _draft(["read"])
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    graph = deepcopy(graph)
+    del graph["nodes"][0]["metadata"]["requiredCapabilities"]
+
+    review = review_compiled_graph(draft, graph)
+
+    assert review.status == "invalid"
+    assert review.findings == ["missing_node_metadata:read:requiredCapabilities"]
+
+
+def test_review_compiled_graph_treats_missing_source_step_id_as_extra() -> None:
+    draft = _draft(["read"])
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    graph = deepcopy(graph)
+    del graph["nodes"][0]["metadata"]["sourcePlanStepId"]
+
+    review = review_compiled_graph(draft, graph)
+
+    assert review.status == "invalid"
+    assert review.extra_node_ids == ["read"]
+    assert review.missing_plan_step_ids == ["read"]

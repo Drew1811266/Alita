@@ -80,7 +80,7 @@ def review_compiled_graph(draft: PlanDraft, graph: dict) -> GraphReview:
         seen_step_ids.add(source_plan_step_id)
         step = step_by_id[source_plan_step_id]
 
-        _review_required_metadata(node_id, metadata, findings)
+        _review_required_metadata(node_id, metadata, step, findings)
         _review_dependencies(node_id, node, step, findings)
 
     missing_plan_step_ids = [
@@ -151,6 +151,7 @@ def _document_tool_ref(step: PlanStep) -> str | None:
 def _review_required_metadata(
     node_id: str,
     metadata: dict[str, Any],
+    step: PlanStep,
     findings: list[str],
 ) -> None:
     required_fields = ("rationale", "expectedOutput", "verificationCriteria")
@@ -158,6 +159,12 @@ def _review_required_metadata(
         value = metadata.get(field_name)
         if value is None or value == "" or value == []:
             findings.append(f"missing_node_metadata:{node_id}:{field_name}")
+
+    required_capabilities = metadata.get("requiredCapabilities")
+    if not isinstance(required_capabilities, list) or (
+        step.required_capabilities and not required_capabilities
+    ):
+        findings.append(f"missing_node_metadata:{node_id}:requiredCapabilities")
 
 
 def _review_dependencies(
