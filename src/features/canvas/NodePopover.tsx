@@ -75,6 +75,24 @@ function renderPorts(ports: AgentNode["inputPorts"]) {
   );
 }
 
+function renderStringList(values: unknown) {
+  if (!Array.isArray(values) || values.length === 0) {
+    return <span className="nodePopoverEmpty">无</span>;
+  }
+
+  return (
+    <ul className="nodePopoverPortList">
+      {values.map((value) => (
+        <li key={String(value)}>{String(value)}</li>
+      ))}
+    </ul>
+  );
+}
+
+function readableString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
 function renderArtifacts(
   artifactRefs: AgentNode["artifactRefs"],
   onOpenArtifact?: (path: string) => void,
@@ -217,6 +235,9 @@ export function NodePopover({
     node.scriptReview?.requiresApproval === true &&
     node.scriptReview.riskLevel === "high" &&
     (onApproveTemporaryScript || onRejectTemporaryScript);
+  const sourcePlanStepId = readableString(node.metadata?.sourcePlanStepId);
+  const rationale = readableString(node.metadata?.rationale);
+  const expectedOutput = readableString(node.metadata?.expectedOutput);
 
   return (
     <aside className="nodePopover" aria-label={`${node.displayName} 节点信息`}>
@@ -252,6 +273,30 @@ export function NodePopover({
           <dt>AI 调用目的</dt>
           <dd>{node.summary}</dd>
         </div>
+        {sourcePlanStepId ? (
+          <>
+            <div>
+              <dt>计划来源</dt>
+              <dd>{sourcePlanStepId}</dd>
+            </div>
+            {rationale ? (
+              <div>
+                <dt>推理依据</dt>
+                <dd>{rationale}</dd>
+              </div>
+            ) : null}
+            {expectedOutput ? (
+              <div>
+                <dt>预期输出</dt>
+                <dd>{expectedOutput}</dd>
+              </div>
+            ) : null}
+            <div>
+              <dt>验证标准</dt>
+              <dd>{renderStringList(node.metadata?.verificationCriteria)}</dd>
+            </div>
+          </>
+        ) : null}
         <div>
           <dt>将调用的功能</dt>
           <dd>{getCapability(node)}</dd>
