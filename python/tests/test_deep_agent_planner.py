@@ -142,6 +142,10 @@ def _context_bundle() -> dict[str, Any]:
                 "path": "D:\\context-secret\\context-contract.pdf",
             }
         ],
+        "notes": [
+            {"note": "see D:\\secret\\file.pdf before planning"},
+            {"source": "/Users/drew/private/file.pdf"},
+        ],
         "conversation": [{"role": "user", "content": "Review this contract."}],
     }
 
@@ -204,6 +208,36 @@ def test_reasoning_gate_engine_calls_model_and_parses_decision() -> None:
     assert model.calls[0]["policy"] == DEEP_REASONING_POLICY
 
 
+def test_planning_prompt_scrubs_local_path_strings_under_non_path_keys() -> None:
+    model = FakeDeepModel()
+    DeepPlanningEngine(model).plan(_message(), context_bundle=_context_bundle())
+
+    prompt = model.calls[0]["messages"][1].content
+    prompt_payload = json.loads(prompt)
+    assert "D:\\secret\\file.pdf" not in prompt
+    assert "/Users/drew/private/file.pdf" not in prompt
+    assert "[local_path_removed]" in prompt
+    assert prompt_payload["context_bundle"]["notes"] == [
+        {"note": "see [local_path_removed] before planning"},
+        {"source": "[local_path_removed]"},
+    ]
+
+
+def test_reasoning_prompt_scrubs_local_path_strings_under_non_path_keys() -> None:
+    model = FakeDeepModel(raw_content=json.dumps(_decision_payload()))
+    ReasoningGateEngine(model).decide(_message(), context_bundle=_context_bundle())
+
+    prompt = model.calls[0]["messages"][1].content
+    prompt_payload = json.loads(prompt)
+    assert "D:\\secret\\file.pdf" not in prompt
+    assert "/Users/drew/private/file.pdf" not in prompt
+    assert "[local_path_removed]" in prompt
+    assert prompt_payload["context_bundle"]["notes"] == [
+        {"note": "see [local_path_removed] before planning"},
+        {"source": "[local_path_removed]"},
+    ]
+
+
 def test_deep_planning_engine_rejects_invalid_json_without_template_fallback() -> None:
     model = FakeDeepModel(raw_content="{not json")
 
@@ -257,6 +291,26 @@ def test_review_plan_blocks_missing_success_criteria() -> None:
     assert review.status == "invalid"
     assert "missing_success_criteria" in review.coverage_findings
     assert review.revision_instructions
+
+
+def test_review_plan_blocks_missing_verification_plan() -> None:
+    draft = PlanDraft.model_construct(
+        **{
+            **_plan_payload(),
+            "steps": PlanDraft.model_validate(_plan_payload()).steps,
+            "verification_plan": [],
+        }
+    )
+
+    review = review_plan(
+        draft,
+        available_capabilities={"document.read", "model.reasoning"},
+    )
+
+    assert review.status == "invalid"
+    assert "missing_verification_plan" in review.coverage_findings
+    assert "verification plan" in " ".join(review.findings).lower()
+    assert "verification plan" in " ".join(review.revision_instructions).lower()
 
 
 def test_review_plan_requests_clarification_for_declared_missing_information() -> None:

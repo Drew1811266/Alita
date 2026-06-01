@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -20,6 +21,12 @@ from agent_service.model_client import (
 )
 from agent_service.model_policy import DEEP_REASONING_POLICY, ModelCallPolicy
 from agent_service.schemas import Attachment, UserMessage
+
+
+LOCAL_PATH_MARKER = "[local_path_removed]"
+_LOCAL_PATH_PATTERN = re.compile(
+    r"(?P<windows>[A-Za-z]:\\[^\s\"']+)|(?P<unix>/(?:Users|home)/[^\s\"']+)"
+)
 
 
 class DeepPlanningError(RuntimeError):
@@ -193,6 +200,11 @@ def review_plan(
         findings.append("The plan has no executable steps.")
         revision_instructions.append("Add ordered steps with objectives and outputs.")
 
+    if not draft.verification_plan:
+        coverage_findings.append("missing_verification_plan")
+        findings.append("The plan has no verification plan.")
+        revision_instructions.append("Add a verification plan for the full plan.")
+
     for capability in draft.required_capabilities:
         if capability not in available_capabilities:
             _add_unsupported_capability(
@@ -349,6 +361,8 @@ def _scrub_paths(value: Any) -> Any:
         }
     if isinstance(value, list):
         return [_scrub_paths(item) for item in value]
+    if isinstance(value, str):
+        return _LOCAL_PATH_PATTERN.sub(LOCAL_PATH_MARKER, value)
     return value
 
 
