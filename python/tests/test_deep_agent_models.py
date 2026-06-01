@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from agent_service.deep_agent_models import (
+    CandidateStrategy,
     GraphReview,
     PlanDraft,
     PlanReview,
@@ -157,3 +158,165 @@ def test_plan_review_rejects_old_needs_clarification_status() -> None:
             suggested_clarifying_question=None,
             revision_instructions=[],
         )
+
+
+def test_deep_agent_models_reject_unknown_extra_fields() -> None:
+    with pytest.raises(ValidationError):
+        ReasoningDecision(
+            task_id="task-1",
+            task_understanding="User wants a contract risk report.",
+            intent="task",
+            complexity="graph_task",
+            why_this_path="The request requires reading an attachment and producing a report.",
+            confidence=0.91,
+            needs_clarification=False,
+            required_capabilities=["document.read", "model.reasoning"],
+            next_action="deep_planning",
+            unexpected_field="should be rejected",
+        )
+
+
+def test_candidate_strategy_accepts_alias_and_field_name() -> None:
+    from_alias = CandidateStrategy(
+        strategyId="strategy-risk-review",
+        summary="Extract clauses, identify risks, and write a report.",
+        tradeoffs=[],
+    )
+    from_field_name = CandidateStrategy(
+        strategy_id="strategy-risk-review",
+        summary="Extract clauses, identify risks, and write a report.",
+        tradeoffs=[],
+    )
+
+    assert from_alias.strategy_id == "strategy-risk-review"
+    assert from_field_name.strategy_id == "strategy-risk-review"
+
+
+def test_plan_draft_rejects_duplicate_step_ids() -> None:
+    duplicate_step = PlanStep(
+        step_id="step-read",
+        title="Read contract again",
+        objective="Extract readable text from the uploaded contract again.",
+        rationale="This duplicate id should not be accepted.",
+        inputs=["contract.docx"],
+        required_capabilities=["document.read"],
+        expected_output="Normalized contract text.",
+        verification_criteria=["Text output is non-empty."],
+        depends_on=[],
+    )
+
+    with pytest.raises(ValidationError):
+        PlanDraft(
+            **{
+                **_valid_plan_draft_kwargs(),
+                "steps": [_valid_plan_step(), duplicate_step],
+            }
+        )
+
+
+def test_plan_draft_rejects_missing_step_dependency() -> None:
+    dependent_step = PlanStep(
+        step_id="step-report",
+        title="Write report",
+        objective="Produce the contract risk report.",
+        rationale="The user requested a report.",
+        inputs=["contract.docx"],
+        required_capabilities=["model.reasoning"],
+        expected_output="Contract risk report.",
+        verification_criteria=["Report contains source citations."],
+        depends_on=["step-missing"],
+    )
+
+    with pytest.raises(ValidationError):
+        PlanDraft(**{**_valid_plan_draft_kwargs(), "steps": [dependent_step]})
+
+
+def test_plan_draft_rejects_unknown_recommended_strategy() -> None:
+    with pytest.raises(ValidationError):
+        PlanDraft(
+            **{
+                **_valid_plan_draft_kwargs(),
+                "recommended_strategy": "strategy-does-not-exist",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: ReasoningDecision(
+            task_id="task-1",
+            task_understanding=" ",
+            intent="task",
+            complexity="graph_task",
+            why_this_path="The request requires reading an attachment and producing a report.",
+            confidence=0.91,
+            needs_clarification=False,
+            required_capabilities=["document.read", "model.reasoning"],
+            next_action="deep_planning",
+        ),
+        lambda: ReasoningDecision(
+            task_id="task-1",
+            task_understanding="User wants a contract risk report.",
+            intent="task",
+            complexity="graph_task",
+            why_this_path=" ",
+            confidence=0.91,
+            needs_clarification=False,
+            required_capabilities=["document.read", "model.reasoning"],
+            next_action="deep_planning",
+        ),
+        lambda: CandidateStrategy(
+            strategyId=" ",
+            summary="Extract clauses, identify risks, and write a report.",
+        ),
+        lambda: CandidateStrategy(strategyId="strategy-risk-review", summary=" "),
+        lambda: PlanStep(
+            step_id=" ",
+            title="Read contract",
+            objective="Extract readable text from the uploaded contract.",
+            rationale="Risk review requires clause-level text.",
+            expected_output="Normalized contract text.",
+        ),
+        lambda: PlanStep(
+            step_id="step-read",
+            title=" ",
+            objective="Extract readable text from the uploaded contract.",
+            rationale="Risk review requires clause-level text.",
+            expected_output="Normalized contract text.",
+        ),
+        lambda: PlanStep(
+            step_id="step-read",
+            title="Read contract",
+            objective=" ",
+            rationale="Risk review requires clause-level text.",
+            expected_output="Normalized contract text.",
+        ),
+        lambda: PlanStep(
+            step_id="step-read",
+            title="Read contract",
+            objective="Extract readable text from the uploaded contract.",
+            rationale=" ",
+            expected_output="Normalized contract text.",
+        ),
+        lambda: PlanStep(
+            step_id="step-read",
+            title="Read contract",
+            objective="Extract readable text from the uploaded contract.",
+            rationale="Risk review requires clause-level text.",
+            expected_output=" ",
+        ),
+        lambda: PlanDraft(
+            **{**_valid_plan_draft_kwargs(), "success_criteria": [" "]}
+        ),
+        lambda: PlanDraft(
+            **{**_valid_plan_draft_kwargs(), "recommended_strategy": " "}
+        ),
+        lambda: PlanDraft(
+            **{**_valid_plan_draft_kwargs(), "verification_plan": [" "]}
+        ),
+    ],
+)
+def test_blank_required_strings_are_rejected(factory) -> None:
+    with pytest.raises(ValidationError):
+        factory()
