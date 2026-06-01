@@ -12,7 +12,7 @@ ReasoningNextAction = Literal[
     "clarification",
     "deep_planning",
 ]
-ReviewStatus = Literal["approved", "needs_clarification", "invalid"]
+ReviewStatus = Literal["approved", "clarification", "invalid"]
 GraphReviewStatus = Literal["approved", "invalid"]
 ThinkingFallback = Literal[
     "none",
@@ -89,6 +89,7 @@ class PlanDraft(BaseModel):
 
 class PlanReview(BaseModel):
     status: ReviewStatus
+    findings: list[str] = Field(default_factory=list)
     coverage_findings: list[str] = Field(default_factory=list)
     missing_inputs: list[str] = Field(default_factory=list)
     unsupported_capabilities: list[str] = Field(default_factory=list)
