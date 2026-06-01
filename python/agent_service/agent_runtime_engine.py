@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from agent_service.agent_run_state import AgentRunState
 from agent_service.action_graph import action_graph_from_run_graph
+from agent_service.deep_agent_runtime_graph import run_deep_agent_runtime
 from agent_service.graph import run_agent_from_state, stream_agent_events_from_state
 from agent_service.runtime_state import (
     RuntimeState,
@@ -24,6 +25,7 @@ class RuntimeEngineResult:
 
 
 RouteRunner = Callable[..., list[AgentEvent]]
+DeepRuntimeRunner = Callable[..., list[AgentEvent]]
 StreamRunner = Callable[..., Any]
 
 
@@ -32,10 +34,12 @@ class AgentRuntimeEngine:
         self,
         *,
         route_runner: RouteRunner = run_agent_from_state,
+        deep_runtime_runner: DeepRuntimeRunner = run_deep_agent_runtime,
         stream_runner: StreamRunner = stream_agent_events_from_state,
         runtime_store: RuntimeStore | None = None,
     ) -> None:
         self.route_runner = route_runner
+        self.deep_runtime_runner = deep_runtime_runner
         self.stream_runner = stream_runner
         self.runtime_store = runtime_store
 
@@ -82,6 +86,18 @@ class AgentRuntimeEngine:
             run_id=run_state.run_id,
         )
         self._write_state(started.state)
+        deep_events = self.deep_runtime_runner(
+            run_state.message,
+            project_path=run_state.project_path or "project.alita",
+            model_client=model_client,
+        )
+        if _deep_agent_finished_without_legacy(deep_events):
+            next_state = started.state.model_copy(update={"stage": "plan"})
+            self._write_state(next_state)
+            return RuntimeEngineResult(
+                state=next_state,
+                events=[*started.events, *deep_events],
+            )
         route_events, next_state = self._legacy_route_and_plan(
             started.state,
             run_state,
@@ -91,7 +107,7 @@ class AgentRuntimeEngine:
         )
         return RuntimeEngineResult(
             state=next_state,
-            events=[*started.events, *route_events],
+            events=[*started.events, *deep_events, *route_events],
         )
 
     def stream_from_state(
@@ -110,6 +126,18 @@ class AgentRuntimeEngine:
         self._write_state(started.state)
         for event in started.events:
             yield event
+
+        deep_events = self.deep_runtime_runner(
+            run_state.message,
+            project_path=run_state.project_path or "project.alita",
+            model_client=model_client,
+        )
+        for event in deep_events:
+            yield event
+        if _deep_agent_finished_without_legacy(deep_events):
+            next_state = started.state.model_copy(update={"stage": "plan"})
+            self._write_state(next_state)
+            return
 
         emitted_events: list[AgentEvent] = []
         for event in self.stream_runner(
@@ -333,6 +361,15 @@ def _message_from_state(state: RuntimeState) -> UserMessage:
         task_id=state.task_id,
         content=str(first_message.get("content") or ""),
     )
+
+
+def _deep_agent_finished_without_legacy(events: list[AgentEvent]) -> bool:
+    terminal_event_types = {
+        "node_graph.created",
+        "planning.clarification_required",
+        "planning.failed",
+    }
+    return any(event.type in terminal_event_types for event in events)
 
 
 def _action_graph_from_events(events: list[AgentEvent]) -> dict[str, Any] | None:
