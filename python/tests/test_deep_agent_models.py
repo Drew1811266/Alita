@@ -11,6 +11,46 @@ from agent_service.deep_agent_models import (
 )
 
 
+def _valid_plan_step() -> PlanStep:
+    return PlanStep(
+        step_id="step-read",
+        title="Read contract",
+        objective="Extract readable text from the uploaded contract.",
+        rationale="Risk review requires clause-level text.",
+        inputs=["contract.docx"],
+        required_capabilities=["document.read"],
+        expected_output="Normalized contract text.",
+        verification_criteria=["Text output is non-empty."],
+        depends_on=[],
+    )
+
+
+def _valid_plan_draft_kwargs() -> dict:
+    return {
+        "plan_draft_id": "plan-1",
+        "task_understanding": "Analyze contract risk.",
+        "success_criteria": [
+            "Risks are grouped by severity.",
+            "Final report has actions.",
+        ],
+        "inputs": [{"kind": "attachment", "name": "contract.docx"}],
+        "assumptions": ["The attached document is the contract to review."],
+        "missing_information": [],
+        "candidate_strategies": [
+            {
+                "strategyId": "strategy-risk-review",
+                "summary": "Extract clauses, identify risks, and write a report.",
+                "tradeoffs": ["Focused on legal/business risk, not legal advice."],
+            }
+        ],
+        "recommended_strategy": "strategy-risk-review",
+        "steps": [_valid_plan_step()],
+        "required_capabilities": ["document.read", "model.reasoning"],
+        "risks": ["The contract may be scanned or unreadable."],
+        "verification_plan": ["Confirm every risk cites a source clause."],
+    }
+
+
 def test_reasoning_decision_requires_explanation_and_next_action() -> None:
     decision = ReasoningDecision(
         task_id="task-1",
@@ -29,38 +69,7 @@ def test_reasoning_decision_requires_explanation_and_next_action() -> None:
 
 
 def test_plan_draft_requires_steps_and_success_criteria() -> None:
-    draft = PlanDraft(
-        plan_draft_id="plan-1",
-        task_understanding="Analyze contract risk.",
-        success_criteria=["Risks are grouped by severity.", "Final report has actions."],
-        inputs=[{"kind": "attachment", "name": "contract.docx"}],
-        assumptions=["The attached document is the contract to review."],
-        missing_information=[],
-        candidate_strategies=[
-            {
-                "strategyId": "strategy-risk-review",
-                "summary": "Extract clauses, identify risks, and write a report.",
-                "tradeoffs": ["Focused on legal/business risk, not legal advice."],
-            }
-        ],
-        recommended_strategy="strategy-risk-review",
-        steps=[
-            PlanStep(
-                step_id="step-read",
-                title="Read contract",
-                objective="Extract readable text from the uploaded contract.",
-                rationale="Risk review requires clause-level text.",
-                inputs=["contract.docx"],
-                required_capabilities=["document.read"],
-                expected_output="Normalized contract text.",
-                verification_criteria=["Text output is non-empty."],
-                depends_on=[],
-            )
-        ],
-        required_capabilities=["document.read", "model.reasoning"],
-        risks=["The contract may be scanned or unreadable."],
-        verification_plan=["Confirm every risk cites a source clause."],
-    )
+    draft = PlanDraft(**_valid_plan_draft_kwargs())
 
     assert draft.steps[0].step_id == "step-read"
     assert draft.success_criteria[0] == "Risks are grouped by severity."
@@ -68,20 +77,17 @@ def test_plan_draft_requires_steps_and_success_criteria() -> None:
 
 def test_plan_draft_rejects_empty_steps() -> None:
     with pytest.raises(ValidationError):
-        PlanDraft(
-            plan_draft_id="plan-empty",
-            task_understanding="Analyze a document.",
-            success_criteria=["Report exists."],
-            inputs=[],
-            assumptions=[],
-            missing_information=[],
-            candidate_strategies=[],
-            recommended_strategy="",
-            steps=[],
-            required_capabilities=[],
-            risks=[],
-            verification_plan=[],
-        )
+        PlanDraft(**{**_valid_plan_draft_kwargs(), "steps": []})
+
+
+def test_plan_draft_rejects_empty_success_criteria() -> None:
+    with pytest.raises(ValidationError):
+        PlanDraft(**{**_valid_plan_draft_kwargs(), "success_criteria": []})
+
+
+def test_plan_draft_rejects_empty_verification_plan() -> None:
+    with pytest.raises(ValidationError):
+        PlanDraft(**{**_valid_plan_draft_kwargs(), "verification_plan": []})
 
 
 def test_thinking_status_records_degraded_mode() -> None:
@@ -91,11 +97,13 @@ def test_thinking_status_records_degraded_mode() -> None:
         request_payload_had_thinking_params=True,
         enable_thinking_sent=True,
         preserve_thinking_sent=True,
+        enforced=True,
         fallback_used="unsupported_request_body",
         effective_mode="degraded",
         raw_provider_status="HTTP 422",
     )
 
+    assert status.enforced is True
     assert status.effective_mode == "degraded"
     assert status.fallback_used == "unsupported_request_body"
 

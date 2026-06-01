@@ -41,6 +41,7 @@ class ThinkingStatus(BaseModel):
     request_payload_had_thinking_params: bool
     enable_thinking_sent: bool
     preserve_thinking_sent: bool
+    enforced: bool
     fallback_used: ThinkingFallback = "none"
     effective_mode: ThinkingEffectiveMode
     raw_provider_status: str | None = None
