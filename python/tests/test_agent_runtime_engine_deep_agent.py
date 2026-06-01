@@ -138,3 +138,32 @@ def test_runtime_engine_simple_request_passes_reasoning_gate_before_legacy_answe
         "runtime.state_delta",
         "message.created",
     ]
+
+
+def test_deep_agent_runtime_does_not_call_legacy_task_planner(monkeypatch) -> None:
+    import agent_service.planner_chain as planner_chain
+    import agent_service.task_planner as task_planner
+
+    def blocked(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("legacy task planner must not be called")
+
+    monkeypatch.setattr(planner_chain, "analyze_task", blocked)
+    monkeypatch.setattr(task_planner, "analyze_task", blocked)
+
+    model = FakeDeepModel([_reasoning_payload("deep_planning"), _plan_payload()])
+    engine = AgentRuntimeEngine()
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-no-template",
+            content="Analyze this document into a custom report.",
+        )
+    ).model_copy(
+        update={"project_path": "D:/Project/demo.alita", "run_id": "run-no-template"}
+    )
+
+    result = engine.run_from_state(run_state, model_client=model)
+
+    assert result.events[-1].type == "node_graph.created"
+    graph = result.events[-1].payload["graph"]
+    assert graph["metadata"]["generatedBy"] == "deep_agent_runtime"
