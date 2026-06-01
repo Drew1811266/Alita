@@ -264,6 +264,31 @@ def test_compile_document_write_capability_uses_explicit_write_operation() -> No
     RunGraph.model_validate(graph)
 
 
+def test_compile_manifest_document_capabilities_use_fixed_tool_bindings() -> None:
+    draft = _draft(["convert", "render"])
+    convert_step = draft.steps[0].model_copy(
+        update={"required_capabilities": ["document.convert.markdown"]}
+    )
+    render_step = draft.steps[1].model_copy(
+        update={"required_capabilities": ["document.render.typst_pdf"]}
+    )
+    draft = draft.model_copy(update={"steps": [convert_step, render_step]})
+
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+
+    assert graph["nodes"][0]["toolRef"] == "document.markitdown_convert"
+    assert graph["nodes"][0]["toolBinding"] == {
+        "toolId": "document.markitdown_convert",
+        "operation": "convert_local_file",
+    }
+    assert graph["nodes"][1]["toolRef"] == "document.typst_compile"
+    assert graph["nodes"][1]["toolBinding"] == {
+        "toolId": "document.typst_compile",
+        "operation": "compile_report_pdf",
+    }
+    RunGraph.model_validate(graph)
+
+
 def test_compile_unknown_document_capability_falls_back_to_model_node() -> None:
     draft = _draft(["inspect"])
     document_step = draft.steps[0].model_copy(
