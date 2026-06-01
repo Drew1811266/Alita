@@ -90,6 +90,69 @@ export type BackendEvent =
       };
     }
   | {
+      type: "reasoning.decision_created";
+      payload: {
+        decision: Record<string, unknown>;
+      };
+    }
+  | {
+      type: "reasoning.completed";
+      payload: {
+        taskId: string;
+        nextAction: string;
+      };
+    }
+  | {
+      type: "planning.started";
+      payload: {
+        taskId: string;
+      };
+    }
+  | {
+      type: "planning.thinking_status";
+      payload: {
+        thinkingStatus: Record<string, unknown>;
+      };
+    }
+  | {
+      type: "planning.draft_created";
+      payload: {
+        planDraft: Record<string, unknown>;
+      };
+    }
+  | {
+      type: "planning.review_completed";
+      payload: {
+        review: Record<string, unknown>;
+      };
+    }
+  | {
+      type: "planning.graph_compiled";
+      payload: {
+        graph: NodeGraph;
+      };
+    }
+  | {
+      type: "planning.graph_review_completed";
+      payload: {
+        review: Record<string, unknown>;
+      };
+    }
+  | {
+      type: "planning.clarification_required";
+      payload: {
+        taskId: string;
+        prompt: string;
+      };
+    }
+  | {
+      type: "planning.failed";
+      payload: {
+        reason: string;
+        review?: Record<string, unknown>;
+      };
+    }
+  | {
       type: "node_graph.created";
       payload: {
         graph: NodeGraph;

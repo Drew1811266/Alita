@@ -291,6 +291,53 @@ describe("reduceBackendEvents", () => {
     expect(result.dirty).toBe(true);
   });
 
+  it("ignores planning events without dropping node graph events", () => {
+    const events: BackendEvent[] = [
+      {
+        type: "planning.draft_created",
+        payload: {
+          planDraft: {
+            plan_draft_id: "plan-1",
+            task_understanding: "Write a report",
+            steps: [],
+          },
+        },
+      },
+      {
+        type: "node_graph.created",
+        payload: {
+          graph: {
+            graphId: "graph-1",
+            nodes: [],
+            edges: [],
+            metadata: {
+              generatedBy: "deep_agent_runtime",
+              sourcePlanDraftId: "plan-1",
+            },
+          },
+        },
+      },
+    ];
+
+    const state = reduceBackendEvents(
+      {
+        messages: [],
+        graph: null,
+        dirty: false,
+        pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
+        activeRunId: null,
+        runHistory: [],
+        pendingRuntimeNotices: [],
+        artifacts: [],
+      },
+      events,
+      createAssistantMessage,
+    );
+
+    expect(state.graph?.graphId).toBe("graph-1");
+  });
+
   it("adds a chat prompt for research choice events", () => {
     const submittedPayload = {
       taskId: "task-1",
