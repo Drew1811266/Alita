@@ -155,6 +155,53 @@ def test_review_compiled_graph_rejects_dependency_mismatch() -> None:
     ]
 
 
+def test_review_compiled_graph_rejects_duplicate_valid_provenance_node() -> None:
+    draft = _draft(["read"])
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    duplicate_node = deepcopy(graph["nodes"][0])
+    duplicate_node["nodeId"] = "read-copy"
+    graph["nodes"].append(duplicate_node)
+
+    review = review_compiled_graph(draft, graph)
+
+    assert review.status == "invalid"
+    assert review.findings == ["duplicate_plan_step_node:read"]
+
+
+def test_review_compiled_graph_rejects_missing_expected_edge() -> None:
+    draft = _draft(["read", "write"])
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    graph["edges"] = []
+
+    review = review_compiled_graph(draft, graph)
+
+    assert review.status == "invalid"
+    assert review.findings == ["missing_edge:read->write"]
+
+
+def test_review_compiled_graph_rejects_extra_undeclared_edge() -> None:
+    draft = _draft(["read", "write"])
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    graph["edges"].append({"id": "write->read", "source": "write", "target": "read"})
+
+    review = review_compiled_graph(draft, graph)
+
+    assert review.status == "invalid"
+    assert review.findings == ["extra_edge:write->read"]
+
+
+def test_review_compiled_graph_approves_clean_compiled_graph() -> None:
+    draft = _draft(["read", "write"])
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+
+    review = review_compiled_graph(draft, graph)
+
+    assert review.status == "approved"
+    assert review.findings == []
+    assert review.missing_plan_step_ids == []
+    assert review.extra_node_ids == []
+
+
 def test_compile_document_capability_uses_fixed_tool_binding() -> None:
     draft = _draft(["read"])
     document_step = draft.steps[0].model_copy(
