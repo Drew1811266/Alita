@@ -741,12 +741,15 @@ def _diagnostics_for_payload(
         key in chat_template_kwargs
         for key in ("enable_thinking", "preserve_thinking")
     )
-    enable_thinking_sent = chat_template_kwargs.get("enable_thinking") is True
-    preserve_thinking_sent = chat_template_kwargs.get("preserve_thinking") is True
+    enable_thinking_sent = "enable_thinking" in chat_template_kwargs
+    preserve_thinking_sent = "preserve_thinking" in chat_template_kwargs
+    enable_thinking_value = chat_template_kwargs.get("enable_thinking")
+    if not isinstance(enable_thinking_value, bool):
+        enable_thinking_value = None
     effective_mode: Literal["deep", "degraded", "unavailable"]
     if fallback_used != "none":
         effective_mode = "degraded"
-    elif enable_thinking_sent:
+    elif enable_thinking_value is True:
         effective_mode = "deep"
     else:
         effective_mode = "unavailable"

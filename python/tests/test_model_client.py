@@ -279,6 +279,33 @@ def test_llama_chat_with_diagnostics_reports_deep_thinking_payload() -> None:
     assert payload["chat_template_kwargs"]["preserve_thinking"] is True
 
 
+def test_llama_chat_with_diagnostics_reports_fast_thinking_disabled_payload() -> None:
+    calls: list[tuple[str, dict, float]] = []
+
+    def transport(url: str, payload: dict, timeout: float) -> dict:
+        calls.append((url, deepcopy(payload), timeout))
+        return {"choices": [{"message": {"content": "fast answer"}}]}
+
+    client = LlamaCppModelClient(
+        ModelClientConfig(enabled=True),
+        transport=transport,
+    )
+
+    result = client.chat_with_diagnostics(
+        [ChatMessage(role="user", content="hello")],
+        policy=FAST_CHAT_POLICY,
+    )
+
+    assert result.content == "fast answer"
+    assert result.diagnostics.request_payload_had_thinking_params is True
+    assert result.diagnostics.enable_thinking_sent is True
+    assert result.diagnostics.preserve_thinking_sent is False
+    assert result.diagnostics.effective_mode != "deep"
+    payload = calls[0][1]
+    assert payload["chat_template_kwargs"]["enable_thinking"] is False
+    assert "preserve_thinking" not in payload["chat_template_kwargs"]
+
+
 def test_llama_chat_with_diagnostics_reports_unsupported_thinking_fallback() -> None:
     calls: list[tuple[str, dict, float]] = []
 
@@ -352,6 +379,28 @@ def test_llama_chat_with_diagnostics_reports_empty_reasoning_retry() -> None:
     )
     assert calls[0][1]["max_tokens"] == 256
     assert calls[1][1]["max_tokens"] == 4096
+
+
+def test_llama_chat_with_diagnostics_reraises_non_retryable_provider_failures() -> None:
+    calls: list[tuple[str, dict, float]] = []
+
+    def transport(url: str, payload: dict, timeout: float) -> dict:
+        calls.append((url, deepcopy(payload), timeout))
+        raise ModelRuntimeRequestFailed("connection reset")
+
+    client = LlamaCppModelClient(
+        ModelClientConfig(enabled=True),
+        transport=transport,
+    )
+
+    with pytest.raises(ModelRuntimeRequestFailed, match="connection reset"):
+        client.chat_with_diagnostics(
+            [ChatMessage(role="user", content="hello")],
+            policy=DEEP_REASONING_POLICY,
+        )
+
+    assert len(calls) == 1
+    assert "chat_template_kwargs" in calls[0][1]
 
 
 def test_llama_client_does_not_strip_policy_extra_body_for_network_failures() -> None:
