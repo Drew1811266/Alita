@@ -111,6 +111,7 @@ def test_thinking_status_records_degraded_mode() -> None:
 def test_reviews_have_status_values() -> None:
     plan_review = PlanReview(
         status="approved",
+        findings=[],
         coverage_findings=[],
         missing_inputs=[],
         unsupported_capabilities=[],
@@ -127,3 +128,32 @@ def test_reviews_have_status_values() -> None:
 
     assert plan_review.status == "approved"
     assert graph_review.status == "approved"
+
+
+def test_plan_review_accepts_clarification_with_findings() -> None:
+    review = PlanReview(
+        status="clarification",
+        findings=["The plan cannot proceed without the source document."],
+        missing_inputs=["contract.docx"],
+        unsupported_capabilities=[],
+        risk_findings=[],
+        suggested_clarifying_question="Please upload the contract to review.",
+        revision_instructions=[],
+    )
+
+    assert review.status == "clarification"
+    assert review.findings == ["The plan cannot proceed without the source document."]
+    assert review.suggested_clarifying_question == "Please upload the contract to review."
+
+
+def test_plan_review_rejects_old_needs_clarification_status() -> None:
+    with pytest.raises(ValidationError):
+        PlanReview(
+            status="needs_clarification",
+            findings=["Use the Phase 1 clarification status instead."],
+            missing_inputs=[],
+            unsupported_capabilities=[],
+            risk_findings=[],
+            suggested_clarifying_question=None,
+            revision_instructions=[],
+        )
