@@ -231,6 +231,56 @@ def test_plan_draft_rejects_missing_step_dependency() -> None:
         PlanDraft(**{**_valid_plan_draft_kwargs(), "steps": [dependent_step]})
 
 
+def test_plan_draft_rejects_self_dependency() -> None:
+    self_dependent_step = PlanStep(
+        step_id="step-read",
+        title="Read contract",
+        objective="Extract readable text from the uploaded contract.",
+        rationale="Risk review requires clause-level text.",
+        inputs=["contract.docx"],
+        required_capabilities=["document.read"],
+        expected_output="Normalized contract text.",
+        verification_criteria=["Text output is non-empty."],
+        depends_on=["step-read"],
+    )
+
+    with pytest.raises(ValidationError):
+        PlanDraft(**{**_valid_plan_draft_kwargs(), "steps": [self_dependent_step]})
+
+
+def test_plan_draft_rejects_two_step_dependency_cycle() -> None:
+    first_step = PlanStep(
+        step_id="step-read",
+        title="Read contract",
+        objective="Extract readable text from the uploaded contract.",
+        rationale="Risk review requires clause-level text.",
+        inputs=["contract.docx"],
+        required_capabilities=["document.read"],
+        expected_output="Normalized contract text.",
+        verification_criteria=["Text output is non-empty."],
+        depends_on=["step-report"],
+    )
+    second_step = PlanStep(
+        step_id="step-report",
+        title="Write report",
+        objective="Produce the contract risk report.",
+        rationale="The user requested a report.",
+        inputs=["contract.docx"],
+        required_capabilities=["model.reasoning"],
+        expected_output="Contract risk report.",
+        verification_criteria=["Report contains source citations."],
+        depends_on=["step-read"],
+    )
+
+    with pytest.raises(ValidationError):
+        PlanDraft(
+            **{
+                **_valid_plan_draft_kwargs(),
+                "steps": [first_step, second_step],
+            }
+        )
+
+
 def test_plan_draft_rejects_unknown_recommended_strategy() -> None:
     with pytest.raises(ValidationError):
         PlanDraft(
