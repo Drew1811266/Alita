@@ -77,11 +77,15 @@ def review_compiled_graph(draft: PlanDraft, graph: dict) -> GraphReview:
             extra_node_ids.append(node_id)
             continue
 
+        if source_plan_step_id in seen_step_ids:
+            findings.append(f"duplicate_plan_step_node:{source_plan_step_id}")
         seen_step_ids.add(source_plan_step_id)
         step = step_by_id[source_plan_step_id]
 
         _review_required_metadata(node_id, metadata, step, findings)
         _review_dependencies(node_id, node, step, findings)
+
+    _review_edges(draft, graph, findings)
 
     missing_plan_step_ids = [
         step.step_id for step in draft.steps if step.step_id not in seen_step_ids
@@ -183,6 +187,40 @@ def _review_dependencies(
     findings.append(
         f"dependency_mismatch:{node_id}:missing={missing}:unexpected={unexpected}"
     )
+
+
+def _review_edges(
+    draft: PlanDraft,
+    graph: dict,
+    findings: list[str],
+) -> None:
+    expected_edges = [
+        (dependency_id, step.step_id)
+        for step in draft.steps
+        for dependency_id in step.depends_on
+    ]
+    actual_edges: set[tuple[str, str]] = set()
+
+    for edge in graph.get("edges", []):
+        if not isinstance(edge, dict):
+            findings.append("invalid_edge_shape")
+            continue
+
+        source = edge.get("source")
+        target = edge.get("target")
+        if not isinstance(source, str) or not isinstance(target, str):
+            findings.append("invalid_edge_shape")
+            continue
+
+        actual_edges.add((source, target))
+
+    expected_edge_set = set(expected_edges)
+    for source, target in expected_edges:
+        if (source, target) not in actual_edges:
+            findings.append(f"missing_edge:{source}->{target}")
+
+    for source, target in sorted(actual_edges - expected_edge_set):
+        findings.append(f"extra_edge:{source}->{target}")
 
 
 def _node_id(node: dict[str, Any]) -> str:
