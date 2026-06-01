@@ -2,18 +2,23 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import ValidationError
+
 from agent_service.deep_agent_models import GraphReview, PlanDraft, PlanStep
 from agent_service.schemas import RunGraph
 
 
-_DOCUMENT_TOOL_REFS = {
-    "document.read": "document.read_write",
-    "document.write": "document.read_write",
-    "document.read_write": "document.read_write",
-    "document.convert": "document.markitdown_convert",
-    "document.markitdown_convert": "document.markitdown_convert",
-    "document.render": "document.typst_compile",
-    "document.typst_compile": "document.typst_compile",
+_DOCUMENT_TOOL_BINDINGS = {
+    "document.read": ("document.read_write", "read"),
+    "document.read_write": ("document.read_write", "read"),
+    "document.write": ("document.read_write", "write_markdown"),
+    "document.convert": ("document.markitdown_convert", "convert_local_file"),
+    "document.markitdown_convert": (
+        "document.markitdown_convert",
+        "convert_local_file",
+    ),
+    "document.render": ("document.typst_compile", "compile_report_pdf"),
+    "document.typst_compile": ("document.typst_compile", "compile_report_pdf"),
 }
 
 
@@ -54,6 +59,15 @@ def compile_agent_plan_graph(draft: PlanDraft, *, task_id: str) -> dict:
 
 
 def review_compiled_graph(draft: PlanDraft, graph: dict) -> GraphReview:
+    try:
+        validated_graph = RunGraph.model_validate(graph)
+    except ValidationError:
+        return GraphReview(
+            status="invalid",
+            findings=["invalid_run_graph_schema"],
+        )
+
+    graph = validated_graph.model_dump(exclude_none=True)
     step_by_id = {step.step_id: step for step in draft.steps}
     plan_step_ids = set(step_by_id)
     seen_step_ids: set[str] = set()
@@ -77,12 +91,15 @@ def review_compiled_graph(draft: PlanDraft, graph: dict) -> GraphReview:
             extra_node_ids.append(node_id)
             continue
 
+        if node_id != source_plan_step_id:
+            findings.append(f"node_id_mismatch:{node_id}:{source_plan_step_id}")
         if source_plan_step_id in seen_step_ids:
             findings.append(f"duplicate_plan_step_node:{source_plan_step_id}")
         seen_step_ids.add(source_plan_step_id)
         step = step_by_id[source_plan_step_id]
 
         _review_required_metadata(node_id, metadata, step, findings)
+        _review_fixed_tool_binding(node_id, node, findings)
         _review_dependencies(node_id, node, step, findings)
 
     _review_edges(draft, graph, findings)
@@ -110,9 +127,10 @@ def _compile_step_node(
     index: int,
     source_plan_draft_id: str,
 ) -> dict[str, Any]:
+    tool_binding = _document_tool_binding(step)
     node: dict[str, Any] = {
         "nodeId": step.step_id,
-        "nodeType": "fixed_tool" if _document_tool_ref(step) else "model",
+        "nodeType": "fixed_tool" if tool_binding else "model",
         "displayName": step.title,
         "status": "waiting",
         "inputPorts": [],
@@ -133,22 +151,23 @@ def _compile_step_node(
         },
     }
 
-    tool_ref = _document_tool_ref(step)
-    if tool_ref is not None:
+    if tool_binding is not None:
+        tool_ref, operation = tool_binding
         node["toolRef"] = tool_ref
+        node["toolBinding"] = {
+            "toolId": tool_ref,
+            "operation": operation,
+        }
     else:
         node["modelRef"] = "local-task-reasoner"
 
     return node
 
 
-def _document_tool_ref(step: PlanStep) -> str | None:
+def _document_tool_binding(step: PlanStep) -> tuple[str, str] | None:
     for capability in step.required_capabilities:
-        if capability in _DOCUMENT_TOOL_REFS:
-            return _DOCUMENT_TOOL_REFS[capability]
-    for capability in step.required_capabilities:
-        if capability.startswith("document."):
-            return "document.read_write"
+        if capability in _DOCUMENT_TOOL_BINDINGS:
+            return _DOCUMENT_TOOL_BINDINGS[capability]
     return None
 
 
@@ -169,6 +188,22 @@ def _review_required_metadata(
         step.required_capabilities and not required_capabilities
     ):
         findings.append(f"missing_node_metadata:{node_id}:requiredCapabilities")
+
+
+def _review_fixed_tool_binding(
+    node_id: str,
+    node: dict[str, Any],
+    findings: list[str],
+) -> None:
+    if node.get("nodeType") != "fixed_tool":
+        return
+
+    tool_binding = node.get("toolBinding")
+    operation = (
+        tool_binding.get("operation") if isinstance(tool_binding, dict) else None
+    )
+    if not isinstance(operation, str) or not operation.strip():
+        findings.append(f"missing_tool_binding_operation:{node_id}")
 
 
 def _review_dependencies(

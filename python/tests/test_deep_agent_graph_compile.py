@@ -159,7 +159,6 @@ def test_review_compiled_graph_rejects_duplicate_valid_provenance_node() -> None
     draft = _draft(["read"])
     graph = compile_agent_plan_graph(draft, task_id="task-1")
     duplicate_node = deepcopy(graph["nodes"][0])
-    duplicate_node["nodeId"] = "read-copy"
     graph["nodes"].append(duplicate_node)
 
     review = review_compiled_graph(draft, graph)
@@ -213,7 +212,45 @@ def test_compile_document_capability_uses_fixed_tool_binding() -> None:
 
     assert graph["nodes"][0]["nodeType"] == "fixed_tool"
     assert graph["nodes"][0]["toolRef"] == "document.read_write"
+    assert graph["nodes"][0]["toolBinding"] == {
+        "toolId": "document.read_write",
+        "operation": "read",
+    }
     assert "modelRef" not in graph["nodes"][0]
+    RunGraph.model_validate(graph)
+
+
+def test_compile_document_write_capability_uses_explicit_write_operation() -> None:
+    draft = _draft(["write"])
+    document_step = draft.steps[0].model_copy(
+        update={"required_capabilities": ["document.write"]}
+    )
+    draft = draft.model_copy(update={"steps": [document_step]})
+
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+
+    assert graph["nodes"][0]["nodeType"] == "fixed_tool"
+    assert graph["nodes"][0]["toolRef"] == "document.read_write"
+    assert graph["nodes"][0]["toolBinding"] == {
+        "toolId": "document.read_write",
+        "operation": "write_markdown",
+    }
+    RunGraph.model_validate(graph)
+
+
+def test_compile_unknown_document_capability_falls_back_to_model_node() -> None:
+    draft = _draft(["inspect"])
+    document_step = draft.steps[0].model_copy(
+        update={"required_capabilities": ["document.unknown_operation"]}
+    )
+    draft = draft.model_copy(update={"steps": [document_step]})
+
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+
+    assert graph["nodes"][0]["nodeType"] == "model"
+    assert graph["nodes"][0]["modelRef"] == "local-task-reasoner"
+    assert "toolRef" not in graph["nodes"][0]
+    assert "toolBinding" not in graph["nodes"][0]
     RunGraph.model_validate(graph)
 
 
@@ -252,3 +289,40 @@ def test_review_compiled_graph_treats_missing_source_step_id_as_extra() -> None:
     assert review.status == "invalid"
     assert review.extra_node_ids == ["read"]
     assert review.missing_plan_step_ids == ["read"]
+
+
+def test_review_compiled_graph_returns_invalid_for_schema_errors() -> None:
+    draft = _draft(["read"])
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    del graph["graphId"]
+
+    review = review_compiled_graph(draft, graph)
+
+    assert review.status == "invalid"
+    assert review.findings == ["invalid_run_graph_schema"]
+
+
+def test_review_compiled_graph_rejects_node_id_mismatch() -> None:
+    draft = _draft(["read"])
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    graph["nodes"][0]["nodeId"] = "different-node"
+
+    review = review_compiled_graph(draft, graph)
+
+    assert review.status == "invalid"
+    assert review.findings == ["node_id_mismatch:different-node:read"]
+
+
+def test_review_compiled_graph_rejects_fixed_tool_without_operation() -> None:
+    draft = _draft(["read"])
+    document_step = draft.steps[0].model_copy(
+        update={"required_capabilities": ["document.read"]}
+    )
+    draft = draft.model_copy(update={"steps": [document_step]})
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    del graph["nodes"][0]["toolBinding"]["operation"]
+
+    review = review_compiled_graph(draft, graph)
+
+    assert review.status == "invalid"
+    assert review.findings == ["missing_tool_binding_operation:read"]
