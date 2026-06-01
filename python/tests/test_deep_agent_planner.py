@@ -243,6 +243,26 @@ def test_reasoning_prompt_scrubs_local_path_from_user_message_content() -> None:
     assert prompt_payload["user_message"] == "Review [local_path_removed]."
 
 
+def test_planning_prompt_scrubs_common_local_path_forms_from_user_message_content() -> None:
+    model = FakeDeepModel()
+    message = _message(
+        content=(
+            "Review C:/Users/Drew/file.pdf, ~/private/file.pdf, /tmp/file.pdf, "
+            "and \\\\server\\share\\file.pdf."
+        )
+    )
+
+    DeepPlanningEngine(model).plan(message, context_bundle=_context_bundle())
+
+    prompt = model.calls[0]["messages"][1].content
+    assert "[local_path_removed]" in prompt
+    assert "C:/Users" not in prompt
+    assert "/tmp/file.pdf" not in prompt
+    assert "~/private" not in prompt
+    assert "\\\\server" not in prompt
+    assert "share\\file.pdf" not in prompt
+
+
 def test_planning_prompt_scrubs_local_path_from_revision_instructions() -> None:
     model = FakeDeepModel()
 
@@ -276,6 +296,29 @@ def test_prompt_scrubs_local_path_from_attachment_name() -> None:
     assert "Software Project" not in prompt
     assert "Alita\\case.pdf" not in prompt
     assert prompt_payload["attachment_summaries"][0]["name"] == "[local_path_removed]"
+
+
+def test_planning_prompt_scrubs_common_local_path_forms_from_nested_context() -> None:
+    model = FakeDeepModel()
+    context_bundle = {
+        **_context_bundle(),
+        "notes": [
+            {"source": "open C:/Users/Drew/file.pdf"},
+            {"source": "open ~/private/file.pdf"},
+            {"source": "open /tmp/file.pdf"},
+            {"source": "open \\\\server\\share\\file.pdf"},
+        ],
+    }
+
+    DeepPlanningEngine(model).plan(_message(), context_bundle=context_bundle)
+
+    prompt = model.calls[0]["messages"][1].content
+    assert "[local_path_removed]" in prompt
+    assert "C:/Users" not in prompt
+    assert "/tmp/file.pdf" not in prompt
+    assert "~/private" not in prompt
+    assert "\\\\server" not in prompt
+    assert "share\\file.pdf" not in prompt
 
 
 def test_planning_prompt_scrubs_local_path_strings_under_non_path_keys() -> None:

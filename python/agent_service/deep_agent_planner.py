@@ -25,14 +25,22 @@ from agent_service.schemas import Attachment, UserMessage
 
 LOCAL_PATH_MARKER = "[local_path_removed]"
 _LOCAL_PATH_PATTERN = re.compile(
-    r"(?P<windows>[A-Za-z]:\\(?:[^\\\r\n\"'<>|:*?]+\\)+[^\\\r\n\"'<>|:*?]+"
+    r"(?<![A-Za-z])(?P<windows>[A-Za-z]:\\(?:[^\\\r\n\"'<>|:*?]+\\)+[^\\\r\n\"'<>|:*?]+"
     r"\.[A-Za-z0-9]{1,16})|"
-    r"(?P<unix>/(?:Users|home)/(?:[^/\r\n\"'<>|:*?]+/)+[^/\r\n\"'<>|:*?]+"
+    r"(?<![A-Za-z])(?P<windows_forward>[A-Za-z]:/(?:[^/\r\n\"'<>|:*?]+/)+[^/\r\n\"'<>|:*?]+"
+    r"\.[A-Za-z0-9]{1,16})|"
+    r"(?P<unix>/(?:Users|home|tmp)/(?:[^/\r\n\"'<>|:*?]+/)*[^/\r\n\"'<>|:*?]+"
+    r"\.[A-Za-z0-9]{1,16})|"
+    r"(?P<home>~/(?:[^/\r\n\"'<>|:*?]+/)*[^/\r\n\"'<>|:*?]+"
+    r"\.[A-Za-z0-9]{1,16})|"
+    r"(?P<unc>\\\\(?:[^\\\r\n\"'<>|:*?]+\\)+[^\\\r\n\"'<>|:*?]+"
     r"\.[A-Za-z0-9]{1,16})"
 )
 _LOCAL_PATH_TO_END_PATTERN = re.compile(
-    r"(?P<windows>[A-Za-z]:\\[^\r\n\"'<>|:*?]*)|"
-    r"(?P<unix>/(?:Users|home)/[^\r\n\"'<>|:*?]*)"
+    r"(?<![A-Za-z])(?P<windows>[A-Za-z]:[\\/][^\r\n\"'<>|]*)|"
+    r"(?P<unix>/(?:Users|home|tmp)/[^\r\n\"'<>|:*?]*)|"
+    r"(?P<home>~/[^\r\n\"'<>|:*?]*)|"
+    r"(?P<unc>\\\\[^\r\n\"'<>|:*?]*)"
 )
 
 
