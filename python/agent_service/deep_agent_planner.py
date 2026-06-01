@@ -25,7 +25,10 @@ from agent_service.schemas import Attachment, UserMessage
 
 LOCAL_PATH_MARKER = "[local_path_removed]"
 _LOCAL_PATH_PATTERN = re.compile(
-    r"(?P<windows>[A-Za-z]:\\[^\s\"']+)|(?P<unix>/(?:Users|home)/[^\s\"']+)"
+    r"(?P<windows>[A-Za-z]:\\(?:[^\\\r\n\"'<>|:*?]+\\)+[^\\\r\n\"'<>|:*?]+"
+    r"\.[A-Za-z0-9]{1,16})|"
+    r"(?P<unix>/(?:Users|home)/(?:[^/\r\n\"'<>|:*?]+/)+[^/\r\n\"'<>|:*?]+"
+    r"\.[A-Za-z0-9]{1,16})"
 )
 
 

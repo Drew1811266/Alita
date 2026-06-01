@@ -145,6 +145,7 @@ def _context_bundle() -> dict[str, Any]:
         "notes": [
             {"note": "see D:\\secret\\file.pdf before planning"},
             {"source": "/Users/drew/private/file.pdf"},
+            {"hint": "inspect D:\\Software Project\\Alita\\secret.txt next"},
         ],
         "conversation": [{"role": "user", "content": "Review this contract."}],
     }
@@ -216,10 +217,14 @@ def test_planning_prompt_scrubs_local_path_strings_under_non_path_keys() -> None
     prompt_payload = json.loads(prompt)
     assert "D:\\secret\\file.pdf" not in prompt
     assert "/Users/drew/private/file.pdf" not in prompt
+    assert "D:\\Software Project\\Alita\\secret.txt" not in prompt
+    assert "Software Project" not in prompt
+    assert "Alita\\secret.txt" not in prompt
     assert "[local_path_removed]" in prompt
     assert prompt_payload["context_bundle"]["notes"] == [
         {"note": "see [local_path_removed] before planning"},
         {"source": "[local_path_removed]"},
+        {"hint": "inspect [local_path_removed] next"},
     ]
 
 
@@ -231,10 +236,14 @@ def test_reasoning_prompt_scrubs_local_path_strings_under_non_path_keys() -> Non
     prompt_payload = json.loads(prompt)
     assert "D:\\secret\\file.pdf" not in prompt
     assert "/Users/drew/private/file.pdf" not in prompt
+    assert "D:\\Software Project\\Alita\\secret.txt" not in prompt
+    assert "Software Project" not in prompt
+    assert "Alita\\secret.txt" not in prompt
     assert "[local_path_removed]" in prompt
     assert prompt_payload["context_bundle"]["notes"] == [
         {"note": "see [local_path_removed] before planning"},
         {"source": "[local_path_removed]"},
+        {"hint": "inspect [local_path_removed] next"},
     ]
 
 
