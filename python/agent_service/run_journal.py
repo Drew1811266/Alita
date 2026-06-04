@@ -37,7 +37,15 @@ class RunJournal:
         return [
             json.loads(path.read_text(encoding="utf-8"))
             for path in self.base_dir.glob("*.json")
-            if path.name not in {"run.json", "audit.json", "checkpoints.json"}
+            if path.name
+            not in {
+                "run.json",
+                "audit.json",
+                "checkpoints.json",
+                "runtime_state.json",
+                "runtime_deltas.json",
+                "planning_checkpoints.json",
+            }
         ]
 
     def write_audit_event(self, payload: dict[str, Any]) -> None:
@@ -101,6 +109,21 @@ class RunJournal:
         payload = json.loads(path.read_text(encoding="utf-8"))
         return list(payload.get("deltas", []))
 
+    def write_planning_checkpoint_summary(self, payload: dict[str, Any]) -> None:
+        summaries = self.read_planning_checkpoint_summaries()
+        summaries.append(_sanitize_planning_checkpoint_summary_payload(payload))
+        self._write_json(
+            self.base_dir / "planning_checkpoints.json",
+            {"checkpoints": summaries},
+        )
+
+    def read_planning_checkpoint_summaries(self) -> list[dict[str, Any]]:
+        path = self.base_dir / "planning_checkpoints.json"
+        if not path.exists():
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return list(payload.get("checkpoints", []))
+
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         tmp_path = path.with_suffix(path.suffix + ".tmp")
         tmp_path.write_text(
@@ -114,3 +137,21 @@ def _safe_storage_id(kind: str, value: str) -> str:
     if not SAFE_ID_PATTERN.fullmatch(value):
         raise ValueError(f"invalid {kind}: {value}")
     return value
+
+
+def _sanitize_planning_checkpoint_summary_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "runId": str(payload["runId"]),
+        "threadId": str(payload["threadId"]),
+        "checkpointId": str(payload["checkpointId"]),
+        "stage": str(payload["stage"]),
+        "node": payload.get("node"),
+        "revisionCount": int(payload.get("revisionCount", 0) or 0),
+        "hasPlanDraft": bool(payload.get("hasPlanDraft", False)),
+        "hasCompiledGraph": bool(payload.get("hasCompiledGraph", False)),
+        "hasAgentCompiledGraph": bool(payload.get("hasAgentCompiledGraph", False)),
+        "executionReady": bool(payload.get("executionReady", False)),
+        "createdAt": str(payload["createdAt"]),
+    }

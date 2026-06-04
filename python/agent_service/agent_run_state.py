@@ -21,6 +21,7 @@ class AgentRunState(BaseModel):
     task_id: str
     message: UserMessage
     run_id: str | None = None
+    thread_id: str | None = None
     goal_spec: GoalSpec | None = None
     current_graph: RunGraph | None = None
     has_run_history: bool = False
@@ -46,6 +47,9 @@ class AgentRunState(BaseModel):
             has_run_history=bool(request.hasRunHistory),
             artifact_refs=list(request.artifactRefs or []),
             pending_choice=request.pendingChoice,
+            thread_id=_thread_id_from_pending_choice(request.pendingChoice),
+            run_id=_run_id_from_pending_choice(request.pendingChoice),
+            project_path=request.projectPath,
         )
 
     @classmethod
@@ -58,15 +62,21 @@ class AgentRunState(BaseModel):
         has_run_history: bool = False,
         artifact_refs: list[str] | None = None,
         pending_choice: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        thread_id: str | None = None,
+        project_path: str | None = None,
     ) -> "AgentRunState":
         return cls(
             task_id=message.task_id,
             message=message,
+            run_id=run_id or _run_id_from_pending_choice(pending_choice),
+            thread_id=thread_id or _thread_id_from_pending_choice(pending_choice),
             inquiry_choice=inquiry_choice,
             current_graph=current_graph,
             has_run_history=has_run_history,
             artifact_refs=list(artifact_refs or []),
             pending_choice=pending_choice,
+            project_path=project_path,
         )
 
     @classmethod
@@ -74,6 +84,7 @@ class AgentRunState(BaseModel):
         return cls(
             task_id=request.task_id,
             run_id=request.run_id,
+            thread_id=None,
             message=UserMessage(
                 task_id=request.task_id,
                 content=str(request.graph.metadata.get("question", "")),
@@ -103,3 +114,21 @@ class AgentRunState(BaseModel):
         if structured_route_decision is not None:
             update["structured_route_decision"] = structured_route_decision
         return self.model_copy(update=update)
+
+
+def _thread_id_from_pending_choice(
+    pending_choice: dict[str, Any] | None,
+) -> str | None:
+    if not pending_choice:
+        return None
+    thread_id = pending_choice.get("threadId")
+    return str(thread_id) if thread_id else None
+
+
+def _run_id_from_pending_choice(
+    pending_choice: dict[str, Any] | None,
+) -> str | None:
+    if not pending_choice:
+        return None
+    run_id = pending_choice.get("runId")
+    return str(run_id) if run_id else None

@@ -1,5 +1,13 @@
 import type {
+  AgentExecutionFailedPayload,
+  AgentExecutionFinalPayload,
+  AgentExecutionRepairProposedPayload,
+  AgentPlanGraphCompileFailedPayload,
+  AgentPlanGraphExecutionReadyPayload,
   BackendEvent,
+  PlanningConfirmationChoiceId,
+  PlanningConfirmationSubmitChoice,
+  PlanningCheckpointRecord,
   ResearchChoiceId,
   ResearchChoicePayload,
 } from "../shared/events";
@@ -13,20 +21,47 @@ import type {
   RunHistoryEntry,
 } from "../shared/types";
 
+export type {
+  AgentExecutionCompletedPayload,
+  AgentExecutionFailedPayload,
+  AgentExecutionFinalPayload,
+  AgentExecutionInterruptedPayload,
+  AgentExecutionRepairProposedPayload,
+  AgentExecutionStartedPayload,
+  AgentExecutionVerifyCompletedPayload,
+  AgentPlanGraphCompileFailedPayload,
+  AgentPlanGraphExecutionReadyPayload,
+} from "../shared/events";
+
+export type AgentCompileStatus =
+  | "idle"
+  | "compiling"
+  | "compiled"
+  | "reviewed"
+  | "execution_ready"
+  | "failed";
+
 export type BackendEventState = {
   messages: ChatMessage[];
   graph: NodeGraph | null;
   dirty: boolean;
   pendingResearchChoice?: PendingResearchChoice | null;
   pendingGraphOverwriteChoice?: PendingGraphOverwriteChoice | null;
+  pendingPlanningChoice?: PendingPlanningChoice | null;
+  planningCheckpoints?: PlanningCheckpointRecord[];
   activeRunId?: string | null;
   runHistory?: RunHistoryEntry[];
   pendingRuntimeNotices?: PendingRuntimeNotice[];
   artifacts?: ArtifactRef[];
+  agentCompileStatus?: AgentCompileStatus;
+  agentExecutionReadySummary?: AgentPlanGraphExecutionReadyPayload | null;
+  agentCompileFailure?: AgentPlanGraphCompileFailedPayload | null;
+  activeAgentExecutionFlow?: ActiveAgentExecutionFlow | null;
 };
 
 export type ResearchChoiceSubmitPayload = {
   taskId: string;
+  projectPath?: string;
   content: string;
   attachments: ChatAttachment[];
   inquiryChoice?: ResearchChoiceId;
@@ -41,10 +76,48 @@ export type PendingGraphOverwriteChoice = Extract<
   { type: "graph.overwrite_confirmation_required" }
 >["payload"];
 
+export type PendingPlanningConfirmationChoice = Extract<
+  BackendEvent,
+  { type: "planning.confirmation_required" }
+>["payload"];
+
+export type PendingPlanningClarificationChoice = Extract<
+  BackendEvent,
+  { type: "planning.clarification_required" }
+>["payload"];
+
+export type PendingPlanningChoice =
+  | PendingPlanningConfirmationChoice
+  | PendingPlanningClarificationChoice;
+
+export type PlanningClarificationSubmitChoice = {
+  kind: "planning.clarification";
+  runId: string;
+  threadId: string;
+  answer: string;
+};
+
 type PendingRuntimeNotice = {
   runId: string;
   nodeId: string;
   notice: RuntimeNotice;
+};
+
+const LEGACY_GRAPH_BLOCKED_MESSAGE =
+  "Legacy graph fallback was blocked. The Agent must produce the task graph through deep planning.";
+
+const DEEP_AGENT_PRODUCT_PATH_BLOCKED_MESSAGE =
+  "Deep Agent planning did not reach a valid terminal state, and legacy graph fallback is blocked.";
+
+type BlockedTaskFailureSuppression = {
+  runId: string;
+  taskId: string;
+  errorCode: "legacy_graph_blocked" | "deep_agent_product_path_incomplete";
+};
+
+export type ActiveAgentExecutionFlow = {
+  runId: string;
+  taskId: string;
 };
 
 export function toGraphOverwriteSubmitChoice(
@@ -68,13 +141,46 @@ export function toGraphOverwriteSubmitChoice(
   };
 }
 
+export function toPlanningConfirmationSubmitChoice(
+  pendingChoice: PendingPlanningConfirmationChoice,
+  choiceId: PlanningConfirmationChoiceId,
+  revisionInstructions: string[] = [],
+): PlanningConfirmationSubmitChoice {
+  return {
+    ...pendingChoice.pendingChoice,
+    kind: "planning.confirmation",
+    decision: choiceId,
+    revisionInstructions,
+  };
+}
+
+export function toPlanningClarificationSubmitChoice(
+  pendingChoice: PendingPlanningClarificationChoice,
+  answer: string,
+): PlanningClarificationSubmitChoice {
+  return {
+    kind: "planning.clarification",
+    runId: pendingChoice.runId,
+    threadId: pendingChoice.threadId,
+    answer: answer.trim(),
+  };
+}
+
 export function reduceBackendEvents(
   state: BackendEventState,
   events: BackendEvent[],
   createAssistantMessage: (content: string) => ChatMessage,
   submittedPayload?: ResearchChoiceSubmitPayload,
 ): BackendEventState {
+  let blockedTaskFailureSuppression: BlockedTaskFailureSuppression | null =
+    null;
+  let activeAgentExecutionFlow: ActiveAgentExecutionFlow | null =
+    state.activeAgentExecutionFlow ?? null;
+
   return events.reduce<BackendEventState>((current, event) => {
+    const taskFailureSuppression = blockedTaskFailureSuppression;
+    blockedTaskFailureSuppression = null;
+
     if (event.type === "run.started") {
       return {
         ...current,
@@ -125,6 +231,7 @@ export function reduceBackendEvents(
         messages: [...current.messages, event.payload.message],
         pendingResearchChoice: null,
         pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: null,
         dirty: true,
       };
     }
@@ -168,6 +275,7 @@ export function reduceBackendEvents(
         ],
         pendingResearchChoice: null,
         pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: null,
         dirty: true,
       };
     }
@@ -181,6 +289,7 @@ export function reduceBackendEvents(
         ],
         pendingResearchChoice: null,
         pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: null,
         dirty: true,
       };
     }
@@ -200,6 +309,314 @@ export function reduceBackendEvents(
       };
     }
 
+    if (event.type === "planning.stage_changed") {
+      return {
+        ...current,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "planning.checkpoint_recorded") {
+      return {
+        ...current,
+        planningCheckpoints: [
+          ...(current.planningCheckpoints ?? []),
+          event.payload.checkpoint,
+        ],
+        dirty: true,
+      };
+    }
+
+    if (event.type === "planning.confirmation_required") {
+      return {
+        ...current,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(formatPlanningConfirmationPrompt(event.payload)),
+        ],
+        pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: event.payload,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "planning.confirmed") {
+      return {
+        ...current,
+        messages: [
+          ...current.messages,
+          createAssistantMessage("规划已确认，正在编译执行准备。"),
+        ],
+        pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: null,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "agent_plan_graph.compile_started") {
+      return {
+        ...current,
+        agentCompileStatus: "compiling",
+        agentExecutionReadySummary: null,
+        agentCompileFailure: null,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "agent_plan_graph.compiled") {
+      return {
+        ...current,
+        agentCompileStatus: "compiled",
+        dirty: true,
+      };
+    }
+
+    if (event.type === "agent_plan_graph.compile_review_completed") {
+      return {
+        ...current,
+        agentCompileStatus: "reviewed",
+        dirty: true,
+      };
+    }
+
+    if (event.type === "agent_plan_graph.execution_ready") {
+      return {
+        ...current,
+        agentCompileStatus: "execution_ready",
+        agentExecutionReadySummary: event.payload,
+        agentCompileFailure: null,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "agent_plan_graph.compile_failed") {
+      return {
+        ...current,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(
+            formatAgentPlanGraphCompileFailure(event.payload),
+          ),
+        ],
+        pendingPlanningChoice: null,
+        agentCompileStatus: "failed",
+        agentExecutionReadySummary: null,
+        agentCompileFailure: event.payload,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "agent_execution.started") {
+      activeAgentExecutionFlow = {
+        runId: event.payload.runId,
+        taskId: event.payload.taskId,
+      };
+
+      return {
+        ...current,
+        activeAgentExecutionFlow,
+        messages: [
+          ...current.messages,
+          createAssistantMessage("Agent 开始执行已确认的计划。"),
+        ],
+        dirty: true,
+      };
+    }
+
+    if (event.type === "agent_execution.completed") {
+      return {
+        ...current,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "agent_execution.failed") {
+      const isExceptionFailure = isAgentExecutionExceptionFailure(event.payload);
+      const hasRepairPath =
+        "recoveryActions" in event.payload &&
+        event.payload.recoveryActions.length > 0;
+      const isMatchingActiveFlow = isMatchingAgentExecutionFlow(
+        activeAgentExecutionFlow,
+        event.payload.taskId,
+        event.payload.runId,
+      );
+      const shouldShowFailure =
+        isExceptionFailure || !isMatchingActiveFlow || !hasRepairPath;
+      const shouldClearActiveFlow =
+        isExceptionFailure || (isMatchingActiveFlow && !hasRepairPath);
+      if (shouldClearActiveFlow) {
+        activeAgentExecutionFlow = null;
+      }
+
+      return {
+        ...current,
+        activeAgentExecutionFlow,
+        messages: shouldShowFailure
+          ? [
+              ...current.messages,
+              createAssistantMessage(formatAgentExecutionFailure(event.payload)),
+            ]
+          : current.messages,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "agent_execution.interrupted") {
+      if (
+        isMatchingAgentExecutionFlow(
+          activeAgentExecutionFlow,
+          event.payload.taskId,
+          event.payload.runId,
+        )
+      ) {
+        activeAgentExecutionFlow = null;
+      }
+
+      return {
+        ...current,
+        activeAgentExecutionFlow,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(
+            `Agent 执行已中断：${event.payload.reason || "unknown"}`,
+          ),
+        ],
+        dirty: true,
+      };
+    }
+
+    if (event.type === "agent_execution.verify_completed") {
+      return {
+        ...current,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "agent_execution.repair_proposed") {
+      if (
+        isMatchingAgentExecutionFlow(
+          activeAgentExecutionFlow,
+          event.payload.taskId,
+          event.payload.runId,
+        )
+      ) {
+        activeAgentExecutionFlow = null;
+      }
+
+      return {
+        ...current,
+        activeAgentExecutionFlow,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(formatAgentExecutionRepair(event.payload)),
+        ],
+        dirty: true,
+      };
+    }
+
+    if (event.type === "agent_execution.final") {
+      if (
+        isMatchingAgentExecutionFlow(
+          activeAgentExecutionFlow,
+          event.payload.taskId,
+          event.payload.runId,
+        )
+      ) {
+        activeAgentExecutionFlow = null;
+      }
+
+      return {
+        ...current,
+        activeAgentExecutionFlow,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(formatAgentExecutionFinal(event.payload)),
+        ],
+        dirty: true,
+      };
+    }
+
+    if (event.type === "planning.cancelled") {
+      return {
+        ...current,
+        messages: [
+          ...current.messages,
+          createAssistantMessage("规划已取消。"),
+        ],
+        pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: null,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "planning.interrupted") {
+      if (event.payload.kind === "planning.confirmation") {
+        if (
+          current.pendingPlanningChoice &&
+          current.pendingPlanningChoice.kind === "planning.confirmation" &&
+          isSamePlanningConfirmationChoice(
+            current.pendingPlanningChoice,
+            event.payload,
+          )
+        ) {
+          return {
+            ...current,
+            dirty: true,
+          };
+        }
+
+        return {
+          ...current,
+          messages: [
+            ...current.messages,
+            createAssistantMessage(formatPlanningConfirmationPrompt(event.payload)),
+          ],
+          pendingResearchChoice: null,
+          pendingGraphOverwriteChoice: null,
+          pendingPlanningChoice: event.payload,
+          dirty: true,
+        };
+      }
+
+      if (lastMessageContent(current) === event.payload.prompt) {
+        return {
+          ...current,
+          pendingPlanningChoice: event.payload,
+          dirty: true,
+        };
+      }
+
+      return {
+        ...current,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(event.payload.prompt),
+        ],
+        pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: event.payload,
+        dirty: true,
+      };
+    }
+
+    if (
+      event.type === "planning.resumed" ||
+      event.type === "planning.revision_requested" ||
+      event.type === "planning.revision_started" ||
+      event.type === "planning.revision_completed" ||
+      event.type === "planning.revision_exhausted"
+    ) {
+      return {
+        ...current,
+        pendingPlanningChoice:
+          event.type === "planning.resumed" ? null : current.pendingPlanningChoice,
+        dirty: true,
+      };
+    }
+
     if (event.type === "planning.progress") {
       return {
         ...current,
@@ -209,6 +626,7 @@ export function reduceBackendEvents(
         ],
         pendingResearchChoice: null,
         pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: null,
         dirty: true,
       };
     }
@@ -222,6 +640,7 @@ export function reduceBackendEvents(
         ],
         pendingResearchChoice: null,
         pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: event.payload,
         dirty: true,
       };
     }
@@ -235,6 +654,7 @@ export function reduceBackendEvents(
         ],
         pendingResearchChoice: null,
         pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: null,
         dirty: true,
       };
     }
@@ -249,6 +669,10 @@ export function reduceBackendEvents(
         ],
         pendingResearchChoice: null,
         pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: null,
+        agentCompileStatus: "idle",
+        agentExecutionReadySummary: null,
+        agentCompileFailure: null,
         dirty: true,
       };
     }
@@ -263,6 +687,7 @@ export function reduceBackendEvents(
         messages: [...current.messages, createAssistantMessage(summary)],
         pendingResearchChoice: null,
         pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: null,
         dirty: true,
       };
     }
@@ -276,6 +701,7 @@ export function reduceBackendEvents(
         ],
         pendingResearchChoice: null,
         pendingGraphOverwriteChoice: event.payload,
+        pendingPlanningChoice: null,
         dirty: true,
       };
     }
@@ -489,6 +915,54 @@ export function reduceBackendEvents(
       };
     }
 
+    if (event.type === "runtime.legacy_graph_blocked") {
+      blockedTaskFailureSuppression = {
+        runId: event.payload.runId,
+        taskId: event.payload.taskId,
+        errorCode: "legacy_graph_blocked",
+      };
+
+      return {
+        ...current,
+        activeRunId: event.payload.runId,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(LEGACY_GRAPH_BLOCKED_MESSAGE),
+        ],
+        pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: null,
+        agentCompileStatus: "failed",
+        agentExecutionReadySummary: null,
+        agentCompileFailure: null,
+        dirty: true,
+      };
+    }
+
+    if (event.type === "runtime.deep_agent_product_path_blocked") {
+      blockedTaskFailureSuppression = {
+        runId: event.payload.runId,
+        taskId: event.payload.taskId,
+        errorCode: "deep_agent_product_path_incomplete",
+      };
+
+      return {
+        ...current,
+        activeRunId: event.payload.runId,
+        messages: [
+          ...current.messages,
+          createAssistantMessage(DEEP_AGENT_PRODUCT_PATH_BLOCKED_MESSAGE),
+        ],
+        pendingResearchChoice: null,
+        pendingGraphOverwriteChoice: null,
+        pendingPlanningChoice: null,
+        agentCompileStatus: "failed",
+        agentExecutionReadySummary: null,
+        agentCompileFailure: null,
+        dirty: true,
+      };
+    }
+
     if (event.type === "task.completed") {
       const runId = event.payload.runId ?? current.activeRunId;
       const existingRun = runId ? findRunHistoryEntry(current, runId) : null;
@@ -496,6 +970,11 @@ export function reduceBackendEvents(
       const runtimeNotices = runId
         ? collectRuntimeNoticesForRun(current, runId)
         : [];
+      const shouldSuppressMessage = isMatchingAgentExecutionFlow(
+        activeAgentExecutionFlow,
+        event.payload.taskId,
+        runId,
+      );
       return {
         ...current,
         activeRunId: runId ? null : current.activeRunId,
@@ -514,7 +993,9 @@ export function reduceBackendEvents(
               ...(runtimeNotices.length > 0 ? { runtimeNotices } : {}),
             })
           : current.runHistory,
-        messages: [...current.messages, createAssistantMessage("流程执行完成。")],
+        messages: shouldSuppressMessage
+          ? current.messages
+          : [...current.messages, createAssistantMessage("流程执行完成。")],
         dirty: true,
       };
     }
@@ -526,6 +1007,20 @@ export function reduceBackendEvents(
       const runtimeNotices = runId
         ? collectRuntimeNoticesForRun(current, runId)
         : [];
+      const messages = shouldSuppressGenericTaskFailureMessage(
+        taskFailureSuppression,
+        event,
+      ) ||
+        isMatchingAgentExecutionFlow(
+          activeAgentExecutionFlow,
+          event.payload.taskId,
+          runId,
+        )
+        ? current.messages
+        : [
+            ...current.messages,
+            createAssistantMessage(`流程执行失败：${event.payload.error}`),
+          ];
       return {
         ...current,
         activeRunId: runId ? null : current.activeRunId,
@@ -544,10 +1039,7 @@ export function reduceBackendEvents(
               ...(runtimeNotices.length > 0 ? { runtimeNotices } : {}),
             })
           : current.runHistory,
-        messages: [
-          ...current.messages,
-          createAssistantMessage(`流程执行失败：${event.payload.error}`),
-        ],
+        messages,
         dirty: true,
       };
     }
@@ -558,6 +1050,18 @@ export function reduceBackendEvents(
 
 function formatGraphOverwritePrompt(
   payload: PendingGraphOverwriteChoice,
+): string {
+  const choices = payload.choices
+    .map((choice, index) => {
+      const description = choice.description ? ` - ${choice.description}` : "";
+      return `${index + 1}. ${choice.label}${description}`;
+    })
+    .join("\n");
+  return `${payload.summary}\n\n${choices}`;
+}
+
+function formatPlanningConfirmationPrompt(
+  payload: PendingPlanningConfirmationChoice,
 ): string {
   const choices = payload.choices
     .map((choice, index) => {
@@ -590,6 +1094,87 @@ function formatPlanningFailure(
   payload: Extract<BackendEvent, { type: "planning.failed" }>["payload"],
 ): string {
   return `规划失败：${payload.message ?? payload.reason}`;
+}
+
+function formatAgentPlanGraphCompileFailure(
+  payload: AgentPlanGraphCompileFailedPayload,
+): string {
+  return `执行准备编译失败：${payload.reason}`;
+}
+
+function formatAgentExecutionFailure(
+  payload: AgentExecutionFailedPayload,
+): string {
+  const reason =
+    "errorCode" in payload
+      ? payload.errorCode
+      : payload.reason || "unknown";
+  const issueMessage =
+    "issues" in payload ? getFirstIssueMessage(payload.issues) : null;
+  return issueMessage
+    ? `Agent 执行失败：${reason}\n${issueMessage}`
+    : `Agent 执行失败：${reason}`;
+}
+
+function formatAgentExecutionRepair(
+  payload: AgentExecutionRepairProposedPayload,
+): string {
+  const actionCount =
+    payload.actions.length > 0 ? `（${payload.actions.length} 个动作）` : "";
+  return `Agent 已提出执行修复方案。${actionCount}`;
+}
+
+function formatAgentExecutionFinal(
+  payload: AgentExecutionFinalPayload,
+): string {
+  const artifactLine =
+    payload.artifactRefs.length > 0
+      ? `\n产物：${payload.artifactRefs.join("、")}`
+      : "";
+  return `Agent 执行完成并通过验证。${artifactLine}`;
+}
+
+function isAgentExecutionExceptionFailure(
+  payload: AgentExecutionFailedPayload,
+): boolean {
+  return "errorCode" in payload || !("artifactRefs" in payload);
+}
+
+function isMatchingAgentExecutionFlow(
+  flow: ActiveAgentExecutionFlow | null,
+  taskId: string,
+  runId: string | null | undefined,
+): boolean {
+  return Boolean(flow && flow.taskId === taskId && flow.runId === runId);
+}
+
+function getFirstIssueMessage(issues: unknown[]): string | null {
+  const firstIssue = issues[0];
+  if (
+    typeof firstIssue === "object" &&
+    firstIssue !== null &&
+    "message" in firstIssue &&
+    typeof firstIssue.message === "string"
+  ) {
+    return firstIssue.message;
+  }
+
+  return null;
+}
+
+function shouldSuppressGenericTaskFailureMessage(
+  suppression: BlockedTaskFailureSuppression | null,
+  event: Extract<BackendEvent, { type: "task.failed" }>,
+): boolean {
+  if (!suppression) {
+    return false;
+  }
+
+  return (
+    event.payload.runId === suppression.runId &&
+    event.payload.taskId === suppression.taskId &&
+    event.payload.errorCode === suppression.errorCode
+  );
 }
 
 function formatPermissionPrompt(
@@ -720,4 +1305,19 @@ function filterPendingRuntimeNotices(
   runId: string,
 ): PendingRuntimeNotice[] | undefined {
   return state.pendingRuntimeNotices?.filter((entry) => entry.runId !== runId);
+}
+
+function isSamePlanningConfirmationChoice(
+  left: PendingPlanningConfirmationChoice,
+  right: PendingPlanningConfirmationChoice,
+): boolean {
+  return (
+    left.runId === right.runId &&
+    left.threadId === right.threadId &&
+    left.graphId === right.graphId
+  );
+}
+
+function lastMessageContent(state: BackendEventState): string | null {
+  return state.messages[state.messages.length - 1]?.content ?? null;
 }

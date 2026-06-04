@@ -37,6 +37,102 @@ describe("useGraphRunController state reducer", () => {
     expect(next.dirty).toBe(true);
   });
 
+  it("passes agent plan graph compile readiness through wrapper reduction", () => {
+    const initial = createGraphRunControllerState();
+    const executionReadyPayload = {
+      taskId: "task-1",
+      runId: "run-planning-1",
+      threadId: "thread-planning-1",
+      graphId: "graph-1",
+      compileId: "compile-1",
+      nodeCount: 4,
+      edgeCount: 3,
+      toolNodeCount: 2,
+      modelNodeCount: 2,
+      permissionsRequired: ["read_project_files"],
+      expectedArtifacts: ["artifacts/report.md"],
+    };
+    const events: BackendEvent[] = [
+      {
+        type: "agent_plan_graph.execution_ready",
+        payload: executionReadyPayload,
+      },
+    ];
+
+    const next = reduceGraphRunControllerEvents(initial, events);
+
+    expect(next.agentCompileStatus).toBe("execution_ready");
+    expect(next.agentExecutionReadySummary).toEqual(executionReadyPayload);
+    expect(next.agentCompileFailure).toBeNull();
+    expect(next.activeRunId).toBeNull();
+  });
+
+  it("persists active agent execution flow across wrapper reductions", () => {
+    const initial = {
+      ...createGraphRunControllerState(),
+      activeRunId: "run-execution-1",
+      agentCompileStatus: "execution_ready" as const,
+    };
+
+    const started = reduceGraphRunControllerEvents(initial, [
+      {
+        type: "agent_execution.started",
+        payload: {
+          taskId: "task-1",
+          runId: "run-execution-1",
+          threadId: "thread-planning-1",
+          compileId: "compile-1",
+          graphId: "graph-1",
+        },
+      },
+    ]);
+    const taskCompleted = reduceGraphRunControllerEvents(started, [
+      {
+        type: "task.completed",
+        payload: {
+          taskId: "task-1",
+          runId: "run-execution-1",
+        },
+      },
+    ]);
+    const final = reduceGraphRunControllerEvents(taskCompleted, [
+      {
+        type: "agent_execution.final",
+        payload: {
+          taskId: "task-1",
+          runId: "run-execution-1",
+          threadId: "thread-planning-1",
+          compileId: "compile-1",
+          graphId: "graph-1",
+          status: "completed",
+          message: "Execution finished.",
+          artifactRefs: ["artifacts/report.md"],
+          completedNodeIds: ["write-report"],
+          checkpointIds: ["checkpoint-1"],
+          recoveryActions: [],
+        },
+      },
+    ]);
+
+    expect(started.activeAgentExecutionFlow).toEqual({
+      taskId: "task-1",
+      runId: "run-execution-1",
+    });
+    expect(taskCompleted.messages.map((message) => message.content)).toEqual([
+      "Agent 开始执行已确认的计划。",
+    ]);
+    expect(taskCompleted.runHistory[0]).toMatchObject({
+      runId: "run-execution-1",
+      status: "completed",
+    });
+    expect(final.messages.map((message) => message.content)).toEqual([
+      "Agent 开始执行已确认的计划。",
+      "Agent 执行完成并通过验证。\n产物：artifacts/report.md",
+    ]);
+    expect(final.activeAgentExecutionFlow).toBeNull();
+    expect(final.agentCompileStatus).toBe("execution_ready");
+  });
+
   it("stores runtime observability events beside existing graph run state", () => {
     const initial = createGraphRunControllerState();
     const events: BackendEvent[] = [

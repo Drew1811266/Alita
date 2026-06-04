@@ -31,6 +31,7 @@ class AgentMessageRequest(UserMessage):
     hasRunHistory: bool | None = Field(default=None, alias="has_run_history")
     artifactRefs: list[str] | None = Field(default=None, alias="artifact_refs")
     pendingChoice: dict[str, Any] | None = Field(default=None, alias="pending_choice")
+    projectPath: str | None = Field(default=None, alias="project_path")
 
     def to_user_message(self) -> UserMessage:
         return UserMessage(

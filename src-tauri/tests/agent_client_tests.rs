@@ -15,6 +15,7 @@ use alita_lib::commands::{agent_message_request_from_payload, SubmitMessagePaylo
 fn serializes_agent_message_request() {
     let request = AgentMessageRequest {
         task_id: "task-1".to_string(),
+        project_path: None,
         content: "整理成报告".to_string(),
         attachments: vec![AgentAttachment {
             attachment_id: "a1".to_string(),
@@ -44,6 +45,7 @@ fn serializes_agent_message_request() {
 fn serializes_agent_message_request_with_inquiry_choice() {
     let request = AgentMessageRequest {
         task_id: "task-1".to_string(),
+        project_path: None,
         content: "Research and compare current Python packaging tools".to_string(),
         attachments: vec![],
         inquiry_choice: Some(InquiryChoice::ResearchFlow),
@@ -75,6 +77,7 @@ fn deserializes_agent_message_request_inquiry_choice_as_enum() {
 fn maps_submit_message_payload_to_agent_request_with_inquiry_choice() {
     let request = agent_message_request_from_payload(SubmitMessagePayload {
         task_id: "task-1".to_string(),
+        project_path: None,
         content: "Research and compare current Python packaging tools".to_string(),
         attachments: vec![],
         inquiry_choice: Some(InquiryChoice::ResearchFlow),
@@ -90,9 +93,30 @@ fn maps_submit_message_payload_to_agent_request_with_inquiry_choice() {
 }
 
 #[test]
+fn maps_submit_message_payload_to_agent_request_with_project_path() {
+    let request = agent_message_request_from_payload(SubmitMessagePayload {
+        task_id: "task-1".to_string(),
+        project_path: Some("D:\\Project\\demo.alita".to_string()),
+        content: "Analyze this project.".to_string(),
+        attachments: vec![],
+        inquiry_choice: None,
+        current_graph: None,
+        has_run_history: None,
+        artifact_refs: None,
+        pending_choice: None,
+    });
+
+    assert_eq!(
+        request.project_path.as_deref(),
+        Some("D:\\Project\\demo.alita")
+    );
+}
+
+#[test]
 fn maps_submit_message_payload_to_agent_request_without_inquiry_choice() {
     let request = agent_message_request_from_payload(SubmitMessagePayload {
         task_id: "task-1".to_string(),
+        project_path: None,
         content: "hello".to_string(),
         attachments: vec![],
         inquiry_choice: None,
@@ -120,6 +144,7 @@ fn maps_submit_message_payload_to_agent_request_with_graph_feedback_context() {
 
     let request = agent_message_request_from_payload(SubmitMessagePayload {
         task_id: "task-1".to_string(),
+        project_path: None,
         content: "Change the existing graph".to_string(),
         attachments: vec![],
         inquiry_choice: None,

@@ -2,7 +2,7 @@
 
 Alita 是一个本地优先的 AI Agent 桌面工作台。它不是单纯的聊天窗口，而是把本地大模型、工程文件、节点化任务流程、文档工具、联网查询工具、语音输入、运行历史和 artifact 预览整合到一个 Windows 桌面应用中。
 
-当前仓库版本为 `0.35.1`。这个阶段的重点是：桌面工程闭环已经成型，并完成 Agent Runtime Mainline 优化：Agent 具备运行状态、统一工具网关、结构化路由、规划链、执行图、显式权限授权、manifest 驱动工具入口、受控 ReAct、运行 checkpoint、指定 checkpoint resume、低风险恢复继续、trace store、MCP lifecycle handoff、schema-aware tool planning、证据驱动研究、评估基线、项目记忆上下文和前后端 runtime 观测事件。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
+当前仓库版本为 `0.36.0`。这个阶段的重点是：桌面工程闭环已经成型，并完成 Agent Runtime Mainline 优化和 Deep Planning LangGraph Phase 2-5 开发：Agent 具备运行状态、统一工具网关、结构化路由、LangGraph 深度规划、计划 checkpoint、同线程 clarification/confirmation resume、显式权限授权、manifest 驱动工具入口、受控 ReAct、运行 checkpoint、指定 checkpoint id resume、低风险恢复继续、trace store、MCP lifecycle handoff、schema-aware tool planning、证据驱动研究、评估基线、项目记忆上下文、Agent Plan Graph 编译、执行验证修复和前后端 runtime 观测事件。项目仍处于开发期，不是稳定发行版，但已经不再只是 UI 原型。
 
 ## 当前阶段
 
@@ -11,7 +11,7 @@ Alita 目前达到了一个“本地 Agent 工作台 MVP+”阶段：
 - 可以创建、打开、保存 `.alita` 工程文件，并保存聊天、附件、节点图、运行历史和工具快照。
 - 可以通过 Tauri 桌面窗口运行完整工作台，而不是依赖浏览器页面。
 - 可以连接本地 `llama.cpp` OpenAI-compatible chat server 调用 GGUF Agent 模型。
-- 可以通过模型调用策略在快速聊天、快速事实问答、深度规划和节点推理之间切换。
+- 可以通过模型调用策略在快速聊天、快速事实问答、深度规划和节点推理之间切换；任务类入口默认进入 LangGraph 深度规划，不再静默回退到 legacy template graph。
 - 可以根据用户意图区分聊天、本地问答、简单联网问答、复杂联网研究、文档/任务流程和缺失输入。
 - 可以使用 Open-Meteo 天气工具回答天气问题。
 - 可以使用 Brave Search + DuckDuckGo fallback 的搜索 provider chain 执行联网搜索。
@@ -20,6 +20,7 @@ Alita 目前达到了一个“本地 Agent 工作台 MVP+”阶段：
 - 可以按显式 authority context 执行工具调用，默认不自动批准 CLI、Python plugin、项目写入或外部 MCP 调用等高风险能力。
 - 可以通过 manifest `entrypoint` 加载 Python function 工具运行时，减少新增内部工具时对执行器 adapter dict 的依赖。
 - 可以为节点运行写入 checkpoint，支持 latest checkpoint 和指定 checkpoint id resume，并在低风险失败补丁建议下进行一次受控自动继续。
+- 可以为深度规划写入 LangGraph checkpoint，把安全摘要镜像到 RuntimeStore，并在缺少澄清或等待用户确认时通过 LangGraph interrupt 暂停和恢复。
 - 可以在任务规划前读取项目 memory，并把工具成功/失败结果写回可追踪 memory。
 - 可以把研究报告拆成结构化 claim/evidence 记录，记录 citation excerpt 和 support 状态。
 - 可以在首选项中管理本地 Agent 模型和语音转文字模型。
@@ -46,20 +47,26 @@ Alita 目前达到了一个“本地 Agent 工作台 MVP+”阶段：
 
 ### 2. Agent 意图路由
 
-Python sidecar 使用 LangGraph 编排 Agent 主路由。入口消息会被分成几类：
+Python sidecar 现在由 `AgentRuntimeEngine` 统一入口。普通聊天和简单事实问题仍可走结构化路由；复杂调研、比较、方案、报告、文档处理和可执行任务默认进入 Deep Planning LangGraph，由模型先推理任务、生成 Agent Plan Graph，再通过 `planning.confirmation_required` 等待用户确认。
+
+当前主要入口行为包括：
 
 - `chat`：普通对话，走快速本地模型回复。
 - `local_inquiry`：不需要联网的本地知识问答。
 - `web_simple_inquiry`：当前信息、天气、版本、价格、法律、GitHub、官方文档等简单联网问题。
-- `web_complex_choice`：调研、比较、方案、报告等复杂联网问题，先让用户选择快速回答或研究流程。
-- `web_complex_research_flow`：生成研究节点图。
-- `task`：文档处理或可执行任务，生成任务节点图。
+- `deep_planning`：复杂调研、方案、报告、文档处理和可执行任务，生成待确认的 Agent Plan Graph。
+- `planning.clarification`：缺少关键信息时通过 LangGraph interrupt 暂停，并在用户补充后同线程恢复。
+- `planning.confirmation`：计划图生成后等待用户确认、修订或取消。
 - `missing_input`：缺少问题、缺少文档、缺少天气城市等输入。
+
+旧的 `web_complex_choice` / `web_complex_research_flow` 路径保留为兼容回归覆盖，但不是当前 HTTP Agent 任务入口的默认行为。
 
 路由代码主要位于：
 
 - `python/agent_service/intent.py`
 - `python/agent_service/graph.py`
+- `python/agent_service/agent_runtime_engine.py`
+- `python/agent_service/deep_agent_runtime_graph.py`
 - `python/agent_service/tool_router.py`
 
 ### 3. 模型调用策略
@@ -150,7 +157,9 @@ Will it rain in Boston?
 
 ### 6. 文档处理和任务节点图
 
-当用户添加文档附件并提出总结、整理、报告、导出等请求时，Agent 会生成任务节点图。当前文档处理路径包括：
+当用户添加文档附件并提出总结、整理、报告、导出等请求时，Agent 会先进入 LangGraph 深度规划，基于模型推理生成 Agent Plan Graph，并在前端展示为等待确认的计划图。计划图确认前不会被当作已经开始执行的 workflow；用户可以确认执行、要求修订或取消。缺少关键信息时，规划图会通过 clarification interrupt 暂停，并在用户补充信息后从同一个 LangGraph thread 恢复。
+
+确认后的文档处理执行路径仍然包含这些节点类型：
 
 - `document-input`：接收附件。
 - `document-parse`：通过 MarkItDown 转 Markdown。
@@ -159,7 +168,7 @@ Will it rain in Boston?
 - `typst-export`：通过 Typst 输出 `.typ` 和 PDF。
 - `file-export`：输出最终 Markdown 或 artifact。
 
-任务规划使用 `GoalSpec`、上下文构建、Planner V2、TaskGraph 和 GraphCompiler。图节点带有状态、依赖、端口、运行记录、资源估计、风险等级和权限信息。
+任务规划使用 LangGraph runtime state、`GoalSpec`、上下文构建、模型生成的 PlanDraft、PlanReview、GraphCompiler 和 GraphReview。图节点带有状态、依赖、端口、运行记录、资源估计、风险等级和权限信息。旧的 `task_planner` / template graph 路径仍保留在部分 legacy 回归测试和兼容路径中，但 HTTP Agent 任务入口在 deep planning 产生终止规划事件后不会静默回退到 legacy template。
 
 相关代码：
 

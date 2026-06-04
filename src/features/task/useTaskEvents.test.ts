@@ -53,6 +53,36 @@ describe("createSseEventParser", () => {
       },
     });
   });
+
+  it("parses agent plan graph execution readiness events", () => {
+    const events: BackendEvent[] = [];
+    const parser = createSseEventParser((event) => {
+      events.push(event);
+    });
+
+    parser(
+      'data: {"type":"agent_plan_graph.execution_ready","payload":{"taskId":"task-1","runId":"run-planning-1","threadId":"thread-planning-1","graphId":"graph-1","compileId":"compile-1","nodeCount":4,"edgeCount":3,"toolNodeCount":2,"modelNodeCount":2,"permissionsRequired":["read_project_files"],"expectedArtifacts":["artifacts/report.md"]}}\n\n',
+    );
+
+    expect(events).toEqual([
+      {
+        type: "agent_plan_graph.execution_ready",
+        payload: {
+          taskId: "task-1",
+          runId: "run-planning-1",
+          threadId: "thread-planning-1",
+          graphId: "graph-1",
+          compileId: "compile-1",
+          nodeCount: 4,
+          edgeCount: 3,
+          toolNodeCount: 2,
+          modelNodeCount: 2,
+          permissionsRequired: ["read_project_files"],
+          expectedArtifacts: ["artifacts/report.md"],
+        },
+      },
+    ]);
+  });
 });
 
 describe("runNodeGraphStream", () => {
@@ -65,6 +95,7 @@ describe("runNodeGraphStream", () => {
 
     await submitUserMessage({
       taskId: "task-1",
+      projectPath: "D:\\Project\\demo.alita",
       content: "Research and compare current Python packaging tools",
       attachments: [],
       inquiryChoice: "research_flow",
@@ -76,6 +107,7 @@ describe("runNodeGraphStream", () => {
         method: "POST",
         body: JSON.stringify({
           task_id: "task-1",
+          project_path: "D:\\Project\\demo.alita",
           content: "Research and compare current Python packaging tools",
           model_session_id: null,
           attachments: [],
@@ -94,6 +126,7 @@ describe("runNodeGraphStream", () => {
 
     await submitResearchChoice({
       taskId: "task-1",
+      projectPath: "D:\\Project\\demo.alita",
       content: "Research and compare current Python packaging tools",
       attachments: [],
       inquiryChoice: "research_flow",
@@ -105,6 +138,7 @@ describe("runNodeGraphStream", () => {
         method: "POST",
         body: JSON.stringify({
           task_id: "task-1",
+          project_path: "D:\\Project\\demo.alita",
           content: "Research and compare current Python packaging tools",
           model_session_id: null,
           attachments: [],
@@ -203,6 +237,41 @@ describe("runNodeGraphStream", () => {
         id: "confirm_overwrite",
         kind: "local_modification",
         pendingChoiceId: "pending-graph-overwrite",
+      },
+    });
+  });
+
+  it("serializes planning confirmation pending choices with an explicit decision", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await submitUserMessage({
+      taskId: "task-1",
+      content: "",
+      attachments: [],
+      pendingChoice: {
+        kind: "planning.confirmation",
+        runId: "run-planning-1",
+        threadId: "thread-planning-1",
+        graphId: "graph-planning-1",
+        decision: "approve",
+        revisionInstructions: [],
+      },
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      task_id: "task-1",
+      content: "",
+      pending_choice: {
+        kind: "planning.confirmation",
+        runId: "run-planning-1",
+        threadId: "thread-planning-1",
+        graphId: "graph-planning-1",
+        decision: "approve",
+        revisionInstructions: [],
       },
     });
   });

@@ -91,20 +91,27 @@ import {
 import { useGraphRuntimeController } from "../features/task/useGraphRuntimeController";
 import { WorkbenchTopBar } from "../features/workbench/WorkbenchTopBar";
 import {
+  toPlanningClarificationSubmitChoice,
+  toPlanningConfirmationSubmitChoice,
   toGraphOverwriteSubmitChoice,
   type PendingGraphOverwriteChoice,
+  type PendingPlanningClarificationChoice,
+  type PendingPlanningConfirmationChoice,
+  type PendingPlanningChoice,
   type PendingResearchChoice,
 } from "./backendEvents";
 import type {
   AlitaProject,
   AgentNode,
   ArtifactRef,
+  ChatAttachment,
   ChatMessage,
   NodeGraph,
   ProjectOpenResult,
   RunHistoryEntry,
 } from "../shared/types";
 import type { BackendEvent } from "../shared/events";
+import type { PlanningConfirmationChoiceId } from "../shared/events";
 import type { ResearchChoiceId } from "../shared/events";
 
 function resolveLocalStateAction<T>(action: LocalStateAction<T>, current: T): T {
@@ -134,6 +141,33 @@ type SubmitUserMessageWithStreamFallbackArgs = {
 
 type LocalStateAction<T> = T | ((current: T) => T);
 
+export class AgentMessageSubmitError extends Error {
+  readonly backendEventsApplied: boolean;
+  readonly originalError: unknown;
+
+  constructor(error: unknown, backendEventsApplied: boolean) {
+    super(formatUnknownError(error));
+    this.name = "AgentMessageSubmitError";
+    this.backendEventsApplied = backendEventsApplied;
+    this.originalError = error;
+  }
+}
+
+export function didApplyBackendEvents(error: unknown): boolean {
+  return error instanceof AgentMessageSubmitError
+    ? error.backendEventsApplied
+    : false;
+}
+
+function toAgentMessageSubmitError(
+  error: unknown,
+  backendEventsApplied: boolean,
+): AgentMessageSubmitError {
+  return error instanceof AgentMessageSubmitError
+    ? error
+    : new AgentMessageSubmitError(error, backendEventsApplied);
+}
+
 async function submitUserMessageWithStreamFallback({
   payload,
   createSession,
@@ -142,27 +176,33 @@ async function submitUserMessageWithStreamFallback({
   onEvent,
 }: SubmitUserMessageWithStreamFallbackArgs): Promise<void> {
   const streamModelSessionId = await createSession();
-  let receivedStreamEvent = false;
+  let backendEventsApplied = false;
+  const applyEvent = (event: BackendEvent) => {
+    backendEventsApplied = true;
+    onEvent(event);
+  };
+
   try {
     await submitStream(
       { ...payload, modelSessionId: streamModelSessionId },
-      (event) => {
-        receivedStreamEvent = true;
-        onEvent(event);
-      },
+      applyEvent,
     );
   } catch (streamError) {
-    if (receivedStreamEvent) {
-      throw streamError;
+    if (backendEventsApplied) {
+      throw toAgentMessageSubmitError(streamError, backendEventsApplied);
     }
 
-    const fallbackModelSessionId = await createSession();
-    const events = await submitFallback({
-      ...payload,
-      modelSessionId: fallbackModelSessionId,
-    });
-    for (const event of events) {
-      onEvent(event);
+    try {
+      const fallbackModelSessionId = await createSession();
+      const events = await submitFallback({
+        ...payload,
+        modelSessionId: fallbackModelSessionId,
+      });
+      for (const event of events) {
+        applyEvent(event);
+      }
+    } catch (fallbackError) {
+      throw toAgentMessageSubmitError(fallbackError, backendEventsApplied);
     }
   }
 }
@@ -229,11 +269,13 @@ export function App() {
     artifacts,
     pendingResearchChoice,
     pendingGraphOverwriteChoice,
+    pendingPlanningChoice,
     activeRunId,
     dirty,
   } = graphRunController.state;
   const setGraphRunState = graphRunController.setState;
   const messagesRef = useRef<ChatMessage[]>(initialMessages);
+  const pendingPlanningChoiceRef = useRef<PendingPlanningChoice | null>(null);
   const voiceInputController = useVoiceInputController({
     onTranscript: applyVoiceTranscript,
   });
@@ -344,6 +386,20 @@ export function App() {
     [setGraphRunState],
   );
 
+  const setPendingPlanningChoice = useCallback(
+    (action: LocalStateAction<PendingPlanningChoice | null>) => {
+      setGraphRunState((current) => {
+        const pendingPlanningChoice = resolveLocalStateAction(
+          action,
+          current.pendingPlanningChoice,
+        );
+        pendingPlanningChoiceRef.current = pendingPlanningChoice;
+        return { ...current, pendingPlanningChoice };
+      });
+    },
+    [setGraphRunState],
+  );
+
   const setActiveRunId = useCallback(
     (action: LocalStateAction<string | null>) => {
       setGraphRunState((current) => {
@@ -395,6 +451,10 @@ export function App() {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  useEffect(() => {
+    pendingPlanningChoiceRef.current = pendingPlanningChoice;
+  }, [pendingPlanningChoice]);
 
   useEffect(() => {
     syncPendingPermissionChoices({
@@ -500,6 +560,8 @@ export function App() {
     setActiveRunIdRef(null);
     setPendingResearchChoice(null);
     setPendingGraphOverwriteChoice(null);
+    setPendingPlanningChoice(null);
+    pendingPlanningChoiceRef.current = null;
     clearPendingPermissionChoices();
     setGraphRunning(false);
     setGraphCancelling(false);
@@ -599,6 +661,7 @@ export function App() {
       pendingResearchChoiceRef.current = next.pendingResearchChoice ?? null;
       pendingGraphOverwriteChoiceRef.current =
         next.pendingGraphOverwriteChoice ?? null;
+      pendingPlanningChoiceRef.current = next.pendingPlanningChoice ?? null;
       activeRunIdRef.current = next.activeRunId ?? null;
       runHistoryRef.current = next.runHistory;
       artifactsRef.current = next.artifacts;
@@ -786,6 +849,7 @@ export function App() {
     }
 
     const capturedGraphOverwriteChoice = pendingGraphOverwriteChoiceRef.current;
+    const capturedPlanningChoice = pendingPlanningChoiceRef.current;
     const sentAttachments = [...pendingAttachments];
     const agentAttachments = selectAgentAttachments({
       content,
@@ -806,31 +870,45 @@ export function App() {
     pendingResearchChoiceRef.current = null;
     setPendingGraphOverwriteChoice(null);
     pendingGraphOverwriteChoiceRef.current = null;
+    setPendingPlanningChoice(null);
+    pendingPlanningChoiceRef.current = null;
     setDirty(true);
 
     try {
       const currentGraph = graphRef.current;
+      const graphContext = currentGraph
+        ? {
+            currentGraph,
+            hasRunHistory: runHistoryRef.current.length > 0,
+            artifactRefs: artifactsRef.current.map(
+              (artifact) => artifact.artifactId,
+            ),
+          }
+        : {};
+      const pendingChoice = capturedPlanningChoice
+        ? capturedPlanningChoice.kind === "planning.confirmation"
+          ? toPlanningConfirmationSubmitChoice(
+              capturedPlanningChoice,
+              "revise",
+              planningRevisionInstructionsFromContent(userMessage.content),
+            )
+          : toPlanningClarificationSubmitChoice(
+              capturedPlanningChoice,
+              userMessage.content,
+            )
+        : capturedGraphOverwriteChoice
+          ? toGraphOverwriteSubmitChoice(
+              capturedGraphOverwriteChoice,
+              userMessage.content,
+            )
+          : null;
       const payload: SubmitMessagePayload = {
         taskId: activeProject.projectId,
+        projectPath: activeProject.path,
         content: userMessage.content,
         attachments: agentAttachments,
-        ...(currentGraph
-          ? {
-              currentGraph,
-              hasRunHistory: runHistoryRef.current.length > 0,
-              artifactRefs: artifactsRef.current.map(
-                (artifact) => artifact.artifactId,
-              ),
-              ...(capturedGraphOverwriteChoice
-                ? {
-                    pendingChoice: toGraphOverwriteSubmitChoice(
-                      capturedGraphOverwriteChoice,
-                      userMessage.content,
-                    ),
-                  }
-                : {}),
-            }
-          : {}),
+        ...graphContext,
+        ...(pendingChoice ? { pendingChoice } : {}),
       };
 
       await submitAgentMessagePayload(payload);
@@ -839,6 +917,80 @@ export function App() {
         setContextAttachments(sentAttachments);
       }
     } catch (error) {
+      const restoredPlanningChoice =
+        restorePendingPlanningChoiceAfterFailure(
+          capturedPlanningChoice,
+          didApplyBackendEvents(error),
+          pendingPlanningChoiceRef.current,
+        );
+      setPendingPlanningChoice(restoredPlanningChoice);
+      pendingPlanningChoiceRef.current = restoredPlanningChoice;
+      setMessages((current) => [
+        ...current,
+        createMessage("assistant", `后台 Agent 暂不可用：${String(error)}`),
+      ]);
+      setDirty(true);
+    }
+  };
+
+  const handlePlanningChoice = async (
+    choiceId: PlanningConfirmationChoiceId,
+  ) => {
+    if (!activeProject || !pendingPlanningChoiceRef.current) {
+      return;
+    }
+
+    const capturedPlanningChoice = pendingPlanningChoiceRef.current;
+    if (capturedPlanningChoice.kind !== "planning.confirmation") {
+      return;
+    }
+    const content = choiceId === "revise" ? draft.trim() : "";
+
+    if (content) {
+      const userMessage = createMessage("user", content, []);
+      setMessages((current) => [...current, userMessage]);
+      messagesRef.current = [...messagesRef.current, userMessage];
+    }
+
+    setDraft("");
+    setPendingAttachments([]);
+    setPendingResearchChoice(null);
+    pendingResearchChoiceRef.current = null;
+    setPendingGraphOverwriteChoice(null);
+    pendingGraphOverwriteChoiceRef.current = null;
+    setPendingPlanningChoice(null);
+    pendingPlanningChoiceRef.current = null;
+    setDirty(true);
+
+    try {
+      const currentGraph = graphRef.current;
+      const payload = buildPlanningChoiceSubmitPayload({
+        taskId: activeProject.projectId,
+        projectPath: activeProject.path,
+        pendingChoice: capturedPlanningChoice,
+        choiceId,
+        content,
+        ...(currentGraph
+          ? {
+              currentGraph,
+              hasRunHistory: runHistoryRef.current.length > 0,
+              artifactRefs: artifactsRef.current.map(
+                (artifact) => artifact.artifactId,
+              ),
+            }
+          : {}),
+      });
+
+      await submitAgentMessagePayload(payload);
+    } catch (error) {
+      const restoredPlanningChoice =
+        restorePendingPlanningChoiceAfterFailure(
+          capturedPlanningChoice,
+          didApplyBackendEvents(error),
+          pendingPlanningChoiceRef.current,
+        );
+      setPendingPlanningChoice(restoredPlanningChoice);
+      pendingPlanningChoiceRef.current = restoredPlanningChoice;
       setMessages((current) => [
         ...current,
         createMessage("assistant", `后台 Agent 暂不可用：${String(error)}`),
@@ -1212,11 +1364,17 @@ export function App() {
         <ChatPanel
           messages={messages}
           pendingAttachments={pendingAttachments}
+          pendingPlanningChoice={
+            pendingPlanningChoice?.kind === "planning.confirmation"
+              ? pendingPlanningChoice
+              : null
+          }
           pendingResearchChoice={pendingResearchChoice}
           draft={draft}
           onDraftChange={setDraft}
           onSend={handleSend}
           onAddFile={handleAddFile}
+          onPlanningChoice={handlePlanningChoice}
           onResearchChoice={handleResearchChoice}
           voiceInput={voiceInput}
           onVoiceToggle={handleVoiceToggle}
@@ -1298,6 +1456,91 @@ export function buildResearchChoiceSubmitPayload({
   };
 }
 
+export function buildPlanningChoiceSubmitPayload({
+  taskId,
+  projectPath,
+  pendingChoice,
+  choiceId,
+  content,
+  currentGraph,
+  hasRunHistory,
+  artifactRefs,
+}: {
+  taskId: string;
+  projectPath?: string;
+  pendingChoice: PendingPlanningConfirmationChoice;
+  choiceId: PlanningConfirmationChoiceId;
+  content: string;
+  currentGraph?: NodeGraph;
+  hasRunHistory?: boolean;
+  artifactRefs?: string[];
+}): SubmitMessagePayload {
+  const normalizedContent = choiceId === "revise" ? content.trim() : "";
+  const revisionInstructions =
+    choiceId === "revise"
+      ? planningRevisionInstructionsFromContent(normalizedContent)
+      : [];
+
+  return {
+    taskId,
+    ...(projectPath !== undefined ? { projectPath } : {}),
+    content: normalizedContent,
+    attachments: [],
+    ...(currentGraph
+      ? {
+          currentGraph,
+          ...(hasRunHistory !== undefined ? { hasRunHistory } : {}),
+          ...(artifactRefs ? { artifactRefs } : {}),
+        }
+      : {}),
+    pendingChoice: toPlanningConfirmationSubmitChoice(
+      pendingChoice,
+      choiceId,
+      revisionInstructions,
+    ),
+  };
+}
+
+export function buildPlanningClarificationSubmitPayload({
+  taskId,
+  projectPath,
+  pendingChoice,
+  content,
+  currentGraph,
+  hasRunHistory,
+  artifactRefs,
+  attachments,
+}: {
+  taskId: string;
+  projectPath?: string;
+  pendingChoice: PendingPlanningClarificationChoice;
+  content: string;
+  currentGraph?: NodeGraph;
+  hasRunHistory?: boolean;
+  artifactRefs?: string[];
+  attachments?: ChatAttachment[];
+}): SubmitMessagePayload {
+  const normalizedContent = content.trim();
+
+  return {
+    taskId,
+    ...(projectPath !== undefined ? { projectPath } : {}),
+    content: normalizedContent,
+    attachments: attachments ?? [],
+    ...(currentGraph
+      ? {
+          currentGraph,
+          ...(hasRunHistory !== undefined ? { hasRunHistory } : {}),
+          ...(artifactRefs ? { artifactRefs } : {}),
+        }
+      : {}),
+    pendingChoice: toPlanningClarificationSubmitChoice(
+      pendingChoice,
+      normalizedContent,
+    ),
+  };
+}
+
 export function buildTemporaryScriptPermissionSubmitPayload({
   taskId,
   node,
@@ -1323,6 +1566,19 @@ export function buildTemporaryScriptPermissionSubmitPayload({
       : {}),
     ...(currentGraph ? { currentGraph } : {}),
   });
+}
+
+export function restorePendingPlanningChoiceAfterFailure(
+  pendingChoice: PendingPlanningChoice | null,
+  backendEventsApplied = false,
+  currentPendingChoice: PendingPlanningChoice | null = null,
+): PendingPlanningChoice | null {
+  return backendEventsApplied ? currentPendingChoice : pendingChoice;
+}
+
+function planningRevisionInstructionsFromContent(content: string): string[] {
+  const normalized = content.trim();
+  return normalized ? [normalized] : [];
 }
 
 function speechToTextAssignmentId(view: PreferencesView | null): string | null {
