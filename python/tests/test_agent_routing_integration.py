@@ -1,22 +1,35 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
 from agent_service.app import app
 from agent_service.execution import run_graph_events
 from agent_service.graph import run_agent
-from agent_service.model_client import ChatMessage
+from agent_service.model_client import (
+    ChatDiagnosticsResponse,
+    ChatMessage,
+    ModelCallDiagnostics,
+)
 from agent_service.model_policy import ModelCallPolicy
 from agent_service.schemas import RunGraph, RunGraphRequest, UserMessage
 from agent_service.web_search import SearchResponse, SearchResult
 
 
 class FakeModelClient:
-    def __init__(self, reply: str) -> None:
+    def __init__(
+        self,
+        reply: str,
+        *,
+        deep_payloads: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.reply = reply
         self.calls: list[list[ChatMessage]] = []
+        self.deep_payloads = list(deep_payloads or [])
+        self.deep_calls: list[list[ChatMessage]] = []
 
     def chat(
         self,
@@ -29,6 +42,31 @@ class FakeModelClient:
         del temperature, max_tokens, policy
         self.calls.append(messages)
         return self.reply
+
+    def chat_with_diagnostics(
+        self,
+        messages: list[ChatMessage],
+        *,
+        policy: ModelCallPolicy | None = None,
+        **kwargs,
+    ) -> ChatDiagnosticsResponse:
+        del policy, kwargs
+        self.deep_calls.append(messages)
+        if len(self.deep_calls) > len(self.deep_payloads):
+            raise AssertionError("unexpected deep planning model call")
+        payload = self.deep_payloads[len(self.deep_calls) - 1]
+        return ChatDiagnosticsResponse(
+            content=json.dumps(payload),
+            diagnostics=ModelCallDiagnostics(
+                request_payload_had_thinking_params=True,
+                enable_thinking_sent=True,
+                preserve_thinking_sent=True,
+                enable_thinking_value=True,
+                preserve_thinking_value=True,
+                fallback_used="none",
+                effective_mode="deep",
+            ),
+        )
 
 
 class SequencedSearchProvider:
@@ -44,6 +82,85 @@ class SequencedSearchProvider:
         if not responses:
             raise AssertionError(f"unexpected search query: {query}")
         return responses.pop(0)
+
+
+def _reasoning_payload(next_action: str = "deep_planning") -> dict[str, Any]:
+    return {
+        "task_id": "task-deep",
+        "task_understanding": "User needs a planned task graph.",
+        "intent": "task",
+        "complexity": "graph_task" if next_action == "deep_planning" else "simple",
+        "why_this_path": "The request needs a reasoned plan before execution.",
+        "confidence": 0.9,
+        "needs_clarification": False,
+        "required_capabilities": ["model.reasoning"],
+        "next_action": next_action,
+    }
+
+
+def _plan_payload(step_ids: list[str]) -> dict[str, Any]:
+    return {
+        "plan_draft_id": "plan-dynamic",
+        "task_understanding": "Create a custom plan from the user request.",
+        "success_criteria": ["The plan directly addresses the user request."],
+        "inputs": [],
+        "assumptions": [],
+        "missing_information": [],
+        "candidate_strategies": [
+            {
+                "strategyId": "custom-plan",
+                "summary": "Reason from the request instead of applying a template.",
+                "tradeoffs": ["Requires confirmation before execution."],
+            }
+        ],
+        "recommended_strategy": "custom-plan",
+        "steps": [
+            {
+                "step_id": step_id,
+                "title": f"Step {step_id}",
+                "objective": f"Do {step_id}.",
+                "rationale": f"{step_id} is needed for the requested outcome.",
+                "inputs": [],
+                "required_capabilities": ["model.reasoning"],
+                "expected_output": f"Output for {step_id}.",
+                "verification_criteria": [f"Verify {step_id}."],
+                "depends_on": step_ids[:index],
+            }
+            for index, step_id in enumerate(step_ids)
+        ],
+        "required_capabilities": ["model.reasoning"],
+        "risks": [],
+        "verification_plan": ["Review the plan before execution."],
+    }
+
+
+def _patch_deep_planning_model(
+    monkeypatch,
+    *,
+    step_ids: list[str] | None = None,
+) -> FakeModelClient:
+    client = FakeModelClient(
+        "unused",
+        deep_payloads=[
+            _reasoning_payload(),
+            _plan_payload(step_ids or ["understand", "execute"]),
+        ],
+    )
+    monkeypatch.setattr(
+        "agent_service.app.create_model_client",
+        lambda *args, **kwargs: client,
+    )
+    return client
+
+
+def _phase2_graph_confirmation_event(events: list[dict[str, Any]]) -> dict[str, Any]:
+    event_types = [event["type"] for event in events]
+    assert event_types[-3:] == [
+        "node_graph.created",
+        "planning.confirmation_required",
+        "planning.interrupted",
+    ]
+    return next(event for event in events if event["type"] == "node_graph.created")
 
 
 def test_chat_message_returns_direct_assistant_response_with_no_graph() -> None:
@@ -100,7 +217,12 @@ def test_simple_web_inquiry_returns_source_metadata_with_no_graph() -> None:
     assert payload["sourceMetadata"]["rejected"] == payload["rejectedSources"]
 
 
-def test_complex_web_inquiry_first_asks_quick_vs_research_choice() -> None:
+def test_complex_web_inquiry_enters_deep_planning_confirmation(monkeypatch) -> None:
+    client = _patch_deep_planning_model(
+        monkeypatch,
+        step_ids=["compare_options", "recommend_path"],
+    )
+
     response = TestClient(app).post(
         "/agent/message",
         json={
@@ -112,15 +234,23 @@ def test_complex_web_inquiry_first_asks_quick_vs_research_choice() -> None:
 
     assert response.status_code == 200
     events = response.json()
-    assert [event["type"] for event in events] == ["research.choice_required"]
-    assert events[0]["payload"]["taskId"] == "complex-web"
-    assert [choice["id"] for choice in events[0]["payload"]["choices"]] == [
-        "quick_answer",
-        "research_flow",
-    ]
+    graph_event = _phase2_graph_confirmation_event(events)
+    assert len(client.deep_calls) == 2
+    assert "research.choice_required" not in [event["type"] for event in events]
+    graph = graph_event["payload"]["graph"]
+    assert graph["metadata"]["generatedBy"] == "deep_agent_runtime"
+    assert [
+        node["metadata"]["sourcePlanStepId"]
+        for node in graph["nodes"]
+        if "sourcePlanStepId" in node.get("metadata", {})
+    ] == ["compare_options", "recommend_path"]
 
 
-def test_research_choice_creates_graph_and_markdown_report(tmp_path: Path) -> None:
+def test_research_choice_enters_deep_planning_confirmation(monkeypatch) -> None:
+    client = _patch_deep_planning_model(
+        monkeypatch,
+        step_ids=["research_sources", "synthesize_report"],
+    )
     question = "Research and compare current Python packaging tools"
     response = TestClient(app).post(
         "/agent/research/choose",
@@ -132,59 +262,24 @@ def test_research_choice_creates_graph_and_markdown_report(tmp_path: Path) -> No
         },
     )
     assert response.status_code == 200
-    graph_event = response.json()[0]
-    assert graph_event["type"] == "node_graph.created"
+    events = response.json()
+    graph_event = _phase2_graph_confirmation_event(events)
+    assert len(client.deep_calls) == 2
     graph = graph_event["payload"]["graph"]
+    assert graph["metadata"]["generatedBy"] == "deep_agent_runtime"
+    assert [
+        node["metadata"]["sourcePlanStepId"]
+        for node in graph["nodes"]
+        if "sourcePlanStepId" in node.get("metadata", {})
+    ] == ["research_sources", "synthesize_report"]
 
-    provider = SequencedSearchProvider(
-        {
-            question: [
-                SearchResponse(
-                    results=[
-                        SearchResult(
-                            title="Python packaging guide",
-                            url="https://packaging.python.org/en/latest/",
-                            snippet="Official guide to Python packaging tools.",
-                        )
-                    ]
-                )
-            ],
-            f"{question} official sources": [
-                SearchResponse(
-                    results=[
-                        SearchResult(
-                            title="Python docs",
-                            url="https://docs.python.org/3/",
-                            snippet="Python documentation for packaging references.",
-                        )
-                    ]
-                )
-            ],
-        }
-    )
-    run_request = RunGraphRequest(
-        task_id="research-task",
-        run_id="research-run",
-        project_path=str(tmp_path / "project.alita"),
-        attachments=[],
-        graph=graph,
+
+def test_task_message_creates_deep_plan_graph_awaiting_confirmation(monkeypatch) -> None:
+    client = _patch_deep_planning_model(
+        monkeypatch,
+        step_ids=["inspect_csv", "write_counter"],
     )
 
-    run_events = list(run_graph_events(run_request, search_provider=provider))
-
-    assert provider.queries == [question, f"{question} official sources"]
-    assert graph["metadata"]["kind"] == "research"
-    artifact_event = next(event for event in run_events if event.type == "artifact.created")
-    report_path = Path(artifact_event.payload["path"])
-    assert report_path.suffix == ".md"
-    assert report_path.read_text(encoding="utf-8").startswith("# Research Report")
-    completed = next(event for event in run_events if event.type == "research.completed")
-    assert completed.payload["reportArtifactPath"] == str(report_path)
-    assert completed.payload["acceptedSources"]
-    assert run_events[-1].type == "task.completed"
-
-
-def test_task_message_creates_graph_with_planning_and_executable_nodes() -> None:
     response = TestClient(app).post(
         "/agent/message",
         json={
@@ -196,42 +291,30 @@ def test_task_message_creates_graph_with_planning_and_executable_nodes() -> None
 
     assert response.status_code == 200
     events = response.json()
-    assert [event["type"] for event in events] == ["node_graph.created"]
-    graph = events[0]["payload"]["graph"]
-    planning_nodes = [node for node in graph["nodes"] if node["nodeType"] == "planning"]
-    executable_nodes = [
-        node
+    graph_event = _phase2_graph_confirmation_event(events)
+    assert len(client.deep_calls) == 2
+    graph = graph_event["payload"]["graph"]
+    assert graph["metadata"]["generatedBy"] == "deep_agent_runtime"
+    assert "plannerChain" not in graph["metadata"]
+    assert [
+        node["metadata"]["sourcePlanStepId"]
         for node in graph["nodes"]
-        if node["nodeType"] in {"fixed_tool", "model", "temporary_script", "output"}
+        if "sourcePlanStepId" in node.get("metadata", {})
+    ] == ["inspect_csv", "write_counter"]
+    confirmation = next(
+        event for event in events if event["type"] == "planning.confirmation_required"
+    )
+    assert confirmation["payload"]["pendingChoice"]["kind"] == "planning.confirmation"
+    assert [choice["id"] for choice in confirmation["payload"]["choices"]] == [
+        "approve",
+        "revise",
+        "cancel",
     ]
-    assert [node["nodeId"] for node in planning_nodes] == [
-        "task-analysis",
-        "context-gathering",
-        "evidence-summary",
-        "plan-draft",
-        "capability-analysis",
-        "tool-selection",
-        "plan-review",
-        "execution-order-planning",
-    ]
-    assert graph["metadata"]["planningMode"] == "deep"
-    assert graph["metadata"]["planningTrace"]["review"]["hardBlockerCount"] == 0
-    assert [node["nodeId"] for node in executable_nodes] == [
-        "temporary-script-file-inspect",
-        "task-output",
-    ]
-    route_decision = graph["metadata"]["routeDecision"]
-    assert route_decision["intent"] == "task"
-    assert route_decision["source"] == "deterministic"
-    planner_chain = graph["metadata"]["plannerChain"]
-    assert planner_chain["version"] == "planner_chain.v1"
-    assert planner_chain["strategy"] == "legacy_task_planner"
-    assert executable_nodes[0]["scriptReview"]["status"] == "not_reviewed"
-    assert executable_nodes[0].get("estimate")
-    assert executable_nodes[1]["nodeType"] == "output"
 
 
-def test_route_metadata_does_not_change_graph_created_event_shape() -> None:
+def test_route_metadata_does_not_change_graph_created_event_shape(monkeypatch) -> None:
+    _patch_deep_planning_model(monkeypatch, step_ids=["shape_check"])
+
     response = TestClient(app).post(
         "/agent/message",
         json={
@@ -243,12 +326,11 @@ def test_route_metadata_does_not_change_graph_created_event_shape() -> None:
 
     assert response.status_code == 200
     events = response.json()
-    assert [event["type"] for event in events] == ["node_graph.created"]
-    assert set(events[0].keys()) == {"type", "payload"}
-    assert set(events[0]["payload"].keys()) == {"graph"}
-    graph = events[0]["payload"]["graph"]
-    assert "routeDecision" in graph["metadata"]
-    assert graph["metadata"]["routeDecision"]["intent"] == "task"
+    graph_event = _phase2_graph_confirmation_event(events)
+    assert set(graph_event.keys()) == {"type", "payload"}
+    assert set(graph_event["payload"].keys()) == {"graph"}
+    graph = graph_event["payload"]["graph"]
+    assert graph["metadata"]["generatedBy"] == "deep_agent_runtime"
 
 
 def test_high_risk_temporary_script_blocks_execution_until_approved(
@@ -333,7 +415,8 @@ def test_graph_feedback_updates_target_and_downstream_nodes_preserving_unaffecte
     }
 
 
-def test_full_replan_asks_for_overwrite_confirmation_when_artifacts_exist() -> None:
+def test_full_replan_creates_deep_plan_confirmation_before_execution(monkeypatch) -> None:
+    _patch_deep_planning_model(monkeypatch, step_ids=["replan_from_feedback"])
     graph = _feedback_graph()
 
     response = TestClient(app).post(
@@ -349,14 +432,18 @@ def test_full_replan_asks_for_overwrite_confirmation_when_artifacts_exist() -> N
 
     assert response.status_code == 200
     events = response.json()
-    assert [event["type"] for event in events] == [
-        "graph.overwrite_confirmation_required"
-    ]
-    payload = events[0]["payload"]
-    assert payload["previousGraphId"] == graph.graphId
-    assert payload["pendingChoice"]["kind"] == "full_replan"
-    assert [choice["id"] for choice in payload["choices"]] == [
-        "confirm_overwrite",
+    event_types = [event["type"] for event in events]
+    assert "graph.overwrite_confirmation_required" not in event_types
+    graph_event = _phase2_graph_confirmation_event(events)
+    planned_graph = graph_event["payload"]["graph"]
+    assert planned_graph["metadata"]["generatedBy"] == "deep_agent_runtime"
+    confirmation = next(
+        event for event in events if event["type"] == "planning.confirmation_required"
+    )
+    assert confirmation["payload"]["pendingChoice"]["kind"] == "planning.confirmation"
+    assert [choice["id"] for choice in confirmation["payload"]["choices"]] == [
+        "approve",
+        "revise",
         "cancel",
     ]
 

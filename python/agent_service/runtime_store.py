@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from agent_service.run_journal import RunJournal
 from agent_service.runtime_loop import RuntimeCheckpoint
 from agent_service.runtime_state import RuntimeState, RuntimeStateDelta
@@ -26,6 +28,18 @@ class RuntimeStore:
             RuntimeStateDelta.model_validate(payload)
             for payload in self.journal.read_runtime_deltas()
         ]
+
+    def write_planning_checkpoint_summary(self, payload: dict[str, Any]) -> None:
+        self.journal.write_planning_checkpoint_summary(payload)
+
+    def read_planning_checkpoint_summaries(self) -> list[dict[str, Any]]:
+        return self.journal.read_planning_checkpoint_summaries()
+
+    def read_latest_planning_checkpoint_summary(self) -> dict[str, Any] | None:
+        summaries = self.read_planning_checkpoint_summaries()
+        if not summaries:
+            return None
+        return summaries[-1]
 
     def write_checkpoint(self, checkpoint: RuntimeCheckpoint) -> None:
         self.journal.write_checkpoint(checkpoint)

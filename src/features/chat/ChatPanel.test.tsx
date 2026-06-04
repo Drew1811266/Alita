@@ -5,10 +5,12 @@ import type { ReactElement, ReactNode } from "react";
 import {
   ChatPanel,
   createComposerKeyDownHandler,
+  type PendingPlanningChoice,
   type PendingResearchChoice,
   type VoiceInputView,
   scrollMessageListToBottom,
 } from "./ChatPanel";
+import type { PlanningConfirmationChoiceId } from "../../shared/events";
 import type { ChatAttachment, ChatMessage } from "../../shared/types";
 
 const sourceAttachment: ChatAttachment = {
@@ -102,6 +104,26 @@ const pendingResearchChoice: PendingResearchChoice = {
   },
 };
 
+const pendingPlanningChoice: PendingPlanningChoice = {
+  kind: "planning.confirmation",
+  taskId: "task-1",
+  runId: "run-planning-1",
+  threadId: "thread-planning-1",
+  graphId: "graph-planning-1",
+  summary: "Review the generated plan before execution.",
+  pendingChoice: {
+    kind: "planning.confirmation",
+    runId: "run-planning-1",
+    threadId: "thread-planning-1",
+    graphId: "graph-planning-1",
+  },
+  choices: [
+    { id: "approve", label: "确认执行" },
+    { id: "revise", label: "要求修订" },
+    { id: "cancel", label: "取消" },
+  ],
+};
+
 type MockTextarea = {
   selectionStart: number;
   selectionEnd: number;
@@ -133,14 +155,18 @@ function renderChatPanel(voiceInput: VoiceInputView = idleVoiceInput) {
 
 async function renderInteractiveChatPanel({
   onDraftSelectionChange = () => undefined,
+  onPlanningChoice = () => undefined,
   onResearchChoice = () => undefined,
   onVoiceToggle,
+  pendingPlanningChoice,
   pendingResearchChoice,
   textarea,
 }: {
   onDraftSelectionChange?: (selection: { start: number; end: number } | null) => void;
+  onPlanningChoice?: (choiceId: PlanningConfirmationChoiceId) => void;
   onResearchChoice?: (choiceId: "quick_answer" | "research_flow") => void;
   onVoiceToggle(selection: { start: number; end: number } | null): void;
+  pendingPlanningChoice?: PendingPlanningChoice | null;
   pendingResearchChoice?: PendingResearchChoice | null;
   textarea: MockTextarea;
 }) {
@@ -168,11 +194,13 @@ async function renderInteractiveChatPanel({
   const tree = InteractiveChatPanel({
     messages,
     pendingAttachments: [pendingAttachment],
+    pendingPlanningChoice,
     pendingResearchChoice,
     draft: "请总结重点",
     onDraftChange: () => undefined,
     onSend: () => undefined,
     onAddFile: () => undefined,
+    onPlanningChoice,
     onResearchChoice,
     voiceInput: idleVoiceInput,
     onVoiceToggle,
@@ -275,6 +303,28 @@ describe("ChatPanel", () => {
     expect(markup).toContain('aria-label="Choose Research flow"');
   });
 
+  it("renders pending planning choices as accessible buttons", () => {
+    const markup = renderToStaticMarkup(
+      <ChatPanel
+        messages={messages}
+        pendingAttachments={[]}
+        pendingPlanningChoice={pendingPlanningChoice}
+        draft=""
+        onDraftChange={() => undefined}
+        onSend={() => undefined}
+        onAddFile={() => undefined}
+        onPlanningChoice={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("确认执行");
+    expect(markup).toContain("要求修订");
+    expect(markup).toContain("取消");
+    expect(markup).toContain('aria-label="Choose planning option: 确认执行"');
+    expect(markup).toContain('aria-label="Choose planning option: 要求修订"');
+    expect(markup).toContain('aria-label="Choose planning option: 取消"');
+  });
+
   it("renders accepted source links for sourced assistant messages", () => {
     const markup = renderToStaticMarkup(
       <ChatPanel
@@ -307,6 +357,26 @@ describe("ChatPanel", () => {
     findElementByProp(tree, "aria-label", "Choose Research flow").props.onClick?.();
 
     expect(selectedChoices).toEqual(["research_flow"]);
+  });
+
+  it("invokes the selected planning choice", async () => {
+    const selectedChoices: PlanningConfirmationChoiceId[] = [];
+    const tree = await renderInteractiveChatPanel({
+      textarea: { selectionStart: 0, selectionEnd: 0 },
+      pendingPlanningChoice,
+      onVoiceToggle: () => undefined,
+      onPlanningChoice: (choiceId) => {
+        selectedChoices.push(choiceId);
+      },
+    });
+
+    findElementByProp(
+      tree,
+      "aria-label",
+      "Choose planning option: 要求修订",
+    ).props.onClick?.();
+
+    expect(selectedChoices).toEqual(["revise"]);
   });
 
   it("disables voice input when the voice model is unavailable", () => {

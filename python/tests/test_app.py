@@ -137,6 +137,7 @@ def test_agent_message_endpoint_passes_agent_run_state_to_orchestrator(
             "artifact_refs": ["artifact-1"],
             "pending_choice": {"id": "confirm_overwrite", "kind": "full_replan"},
             "inquiry_choice": "quick_answer",
+            "project_path": "D:/Project/demo.alita",
         },
     )
 
@@ -153,6 +154,7 @@ def test_agent_message_endpoint_passes_agent_run_state_to_orchestrator(
         "id": "confirm_overwrite",
         "kind": "full_replan",
     }
+    assert run_state.project_path == "D:/Project/demo.alita"
 
 
 def test_research_choose_endpoint_passes_agent_run_state_to_orchestrator(
@@ -334,6 +336,83 @@ def test_agent_message_stream_returns_planning_progress_before_task_graph(
     assert "planning.graph_compiled" in response.text
 
 
+def test_agent_message_stream_exposes_public_deep_planning_sse_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_model(monkeypatch, [_reasoning_payload("deep_planning"), _plan_payload()])
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/message/stream",
+        json={
+            "task_id": "task-stream-public-contract",
+            "content": "Create a Python script that counts rows in a CSV file.",
+            "attachments": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "reasoning.decision_created" in response.text
+    assert "planning.started" in response.text
+    assert "planning.draft_created" in response.text
+    assert "node_graph.created" in response.text
+    assert "runtime.run_started" not in response.text
+    assert "runtime.state_delta" not in response.text
+
+
+def test_agent_message_rejects_planning_confirmation_without_decision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_model(monkeypatch, [_reasoning_payload("deep_planning"), _plan_payload()])
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/agent/message",
+        json={
+            "task_id": "task-confirm-missing-decision",
+            "content": "Continue.",
+            "attachments": [],
+            "pending_choice": {
+                "kind": "planning.confirmation",
+                "runId": "run-confirm-missing-decision",
+                "threadId": "thread-confirm-missing-decision",
+                "graphId": "graph-confirm-missing-decision",
+            },
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["errorCode"] == "invalid_planning_resume"
+
+
+def test_agent_message_stream_returns_error_for_planning_confirmation_without_decision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_model(monkeypatch, [_reasoning_payload("deep_planning"), _plan_payload()])
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/agent/message/stream",
+        json={
+            "task_id": "task-confirm-missing-decision-stream",
+            "content": "Continue.",
+            "attachments": [],
+            "pending_choice": {
+                "kind": "planning.confirmation",
+                "runId": "run-confirm-missing-decision-stream",
+                "threadId": "thread-confirm-missing-decision-stream",
+                "graphId": "graph-confirm-missing-decision-stream",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "planning.failed" in response.text
+    assert "invalid_planning_resume" in response.text
+
+
 def test_agent_message_complex_inquiry_default_returns_research_choice_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -374,7 +453,7 @@ def test_agent_message_complex_inquiry_default_returns_research_choice_payload(
     }
 
 
-def test_agent_message_complex_inquiry_research_flow_choice_returns_graph(
+def test_agent_message_complex_inquiry_research_flow_choice_blocks_legacy_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_fake_model(monkeypatch, [_reasoning_payload("simple_answer")])
@@ -395,9 +474,18 @@ def test_agent_message_complex_inquiry_research_flow_choice_returns_graph(
     assert [event["type"] for event in events] == [
         "reasoning.decision_created",
         "reasoning.completed",
-        "node_graph.created",
+        "runtime.legacy_graph_blocked",
+        "task.failed",
     ]
-    assert events[-1]["payload"]["graph"]["graphId"] == "task-research-flow-research-graph"
+    assert events[-2]["payload"]["taskId"] == "task-research-flow"
+    assert events[-2]["payload"]["threadId"] == "thread-task-research-flow"
+    assert events[-2]["payload"]["reason"] == (
+        "legacy graph event emitted from response-only fallback"
+    )
+    assert events[-2]["payload"]["blockedEventTypes"] == ["node_graph.created"]
+    assert events[-1]["payload"]["runId"] == events[-2]["payload"]["runId"]
+    assert events[-1]["payload"]["errorCode"] == "legacy_graph_blocked"
+    assert events[-1]["payload"]["taskId"] == "task-research-flow"
 
 
 def test_research_choose_accepts_choice_request(
@@ -421,12 +509,21 @@ def test_research_choose_accepts_choice_request(
     assert [event["type"] for event in events] == [
         "reasoning.decision_created",
         "reasoning.completed",
-        "node_graph.created",
+        "runtime.legacy_graph_blocked",
+        "task.failed",
     ]
-    assert events[-1]["payload"]["graph"]["graphId"] == "task-research-command-research-graph"
+    assert events[-2]["payload"]["taskId"] == "task-research-command"
+    assert events[-2]["payload"]["threadId"] == "thread-task-research-command"
+    assert events[-2]["payload"]["reason"] == (
+        "legacy graph event emitted from response-only fallback"
+    )
+    assert events[-2]["payload"]["blockedEventTypes"] == ["node_graph.created"]
+    assert events[-1]["payload"]["runId"] == events[-2]["payload"]["runId"]
+    assert events[-1]["payload"]["errorCode"] == "legacy_graph_blocked"
+    assert events[-1]["payload"]["taskId"] == "task-research-command"
 
 
-def test_agent_message_stream_research_flow_choice_returns_graph_sse(
+def test_agent_message_stream_research_flow_choice_blocks_legacy_graph_sse(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_fake_model(monkeypatch, [_reasoning_payload("simple_answer")])
@@ -444,8 +541,10 @@ def test_agent_message_stream_research_flow_choice_returns_graph_sse(
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert "node_graph.created" in response.text
-    assert "research-parallel-search" in response.text
+    assert "runtime.legacy_graph_blocked" in response.text
+    assert "legacy_graph_blocked" in response.text
+    assert '"type":"node_graph.created"' not in response.text
+    assert "research-parallel-search" not in response.text
     assert "research.choice_required" not in response.text
 
 

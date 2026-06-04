@@ -53,6 +53,8 @@ pub struct SubmitAttachmentPayload {
 #[serde(rename_all = "camelCase")]
 pub struct SubmitMessagePayload {
     pub task_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
     pub content: String,
     pub attachments: Vec<SubmitAttachmentPayload>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -449,6 +451,7 @@ pub async fn submit_user_message(
 pub fn agent_message_request_from_payload(payload: SubmitMessagePayload) -> AgentMessageRequest {
     AgentMessageRequest {
         task_id: payload.task_id,
+        project_path: payload.project_path,
         content: payload.content,
         inquiry_choice: payload.inquiry_choice,
         current_graph: payload.current_graph,

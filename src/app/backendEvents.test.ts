@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { reduceBackendEvents, toGraphOverwriteSubmitChoice } from "./backendEvents";
-import type { PendingGraphOverwriteChoice } from "./backendEvents";
+import {
+  reduceBackendEvents,
+  toGraphOverwriteSubmitChoice,
+  toPlanningClarificationSubmitChoice,
+  toPlanningConfirmationSubmitChoice,
+} from "./backendEvents";
+import type {
+  PendingGraphOverwriteChoice,
+  PendingPlanningClarificationChoice,
+  PendingPlanningConfirmationChoice,
+  PendingPlanningChoice,
+} from "./backendEvents";
 import type { BackendEvent } from "../shared/events";
 import type { ChatMessage, NodeGraph } from "../shared/types";
 
@@ -31,6 +41,36 @@ const replannedGraph: NodeGraph = {
   graphId: "task-1-graph-replanned",
   nodes: [],
   edges: [],
+};
+
+const pendingPlanningChoice: PendingPlanningConfirmationChoice = {
+  kind: "planning.confirmation",
+  taskId: "task-1",
+  runId: "run-planning-1",
+  threadId: "thread-planning-1",
+  graphId: "task-1-graph",
+  summary: "Create a report. Steps: read, analyze, write.",
+  pendingChoice: {
+    kind: "planning.confirmation",
+    runId: "run-planning-1",
+    threadId: "thread-planning-1",
+    graphId: "task-1-graph",
+  },
+  choices: [
+    { id: "approve", label: "确认执行" },
+    { id: "revise", label: "要求修订" },
+    { id: "cancel", label: "取消" },
+  ],
+};
+
+const pendingPlanningClarificationChoice: PendingPlanningClarificationChoice = {
+  kind: "planning.clarification",
+  taskId: "task-clarify",
+  runId: "run-clarify",
+  threadId: "thread-clarify",
+  question: "Who is the report for?",
+  missingInputs: ["audience"],
+  prompt: "Who is the report for?",
 };
 
 const graphWithNode: NodeGraph = {
@@ -343,7 +383,12 @@ describe("reduceBackendEvents", () => {
       {
         type: "planning.clarification_required",
         payload: {
+          kind: "planning.clarification",
           taskId: "task-clarify",
+          runId: "run-clarify",
+          threadId: "thread-clarify",
+          question: "Please provide the target audience.",
+          missingInputs: ["audience"],
           prompt: "Please provide the target audience.",
         },
       },
@@ -370,6 +415,1703 @@ describe("reduceBackendEvents", () => {
       "Please provide the target audience.",
       "规划失败：The local reasoning model is not configured.",
     ]);
+  });
+
+  it("marks planning stage changes dirty without adding a chat message", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph: null,
+        dirty: false,
+      },
+      [
+        {
+          type: "planning.stage_changed",
+          payload: {
+            taskId: "task-1",
+            stage: "build_context",
+            label: "构建上下文",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages).toEqual([existingMessage]);
+    expect(result.dirty).toBe(true);
+  });
+
+  it("records planning checkpoints without adding a chat message", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph: null,
+        dirty: false,
+        planningCheckpoints: [],
+      },
+      [
+        {
+          type: "planning.checkpoint_recorded",
+          payload: {
+            checkpoint: {
+              runId: "run-planning-1",
+              threadId: "thread-planning-1",
+              checkpointId: "checkpoint-1",
+              stage: "review_plan",
+              node: "review_plan",
+              revisionCount: 1,
+              hasPlanDraft: true,
+              hasCompiledGraph: false,
+              hasAgentCompiledGraph: false,
+              executionReady: false,
+              createdAt: "2026-06-02T00:00:00.000Z",
+            },
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages).toEqual([existingMessage]);
+    expect(result.planningCheckpoints).toEqual([
+      {
+        runId: "run-planning-1",
+        threadId: "thread-planning-1",
+        checkpointId: "checkpoint-1",
+        stage: "review_plan",
+        node: "review_plan",
+        revisionCount: 1,
+        hasPlanDraft: true,
+        hasCompiledGraph: false,
+        hasAgentCompiledGraph: false,
+        executionReady: false,
+        createdAt: "2026-06-02T00:00:00.000Z",
+      },
+    ]);
+    expect(result.dirty).toBe(true);
+  });
+
+  it("stores planning confirmation choices and clears other pending choices", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        pendingResearchChoice: {
+          taskId: "task-1",
+          prompt: "Choose research path.",
+          choices: [{ id: "quick_answer", label: "Quick answer" }],
+        },
+        pendingGraphOverwriteChoice: {
+          taskId: "task-1",
+          previousGraphId: graph.graphId,
+          summary: "Overwrite graph?",
+          pendingChoice: { id: "pending-graph", kind: "full_replan" },
+          choices: [{ id: "cancel", label: "Cancel" }],
+        },
+      },
+      [
+        {
+          type: "planning.confirmation_required",
+          payload: pendingPlanningChoice,
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.pendingPlanningChoice).toEqual(pendingPlanningChoice);
+    expect(result.pendingResearchChoice).toBeNull();
+    expect(result.pendingGraphOverwriteChoice).toBeNull();
+    expect(result.messages[1].content).toContain(
+      "Create a report. Steps: read, analyze, write.",
+    );
+    expect(result.messages[1].content).toContain("确认执行");
+    expect(result.messages[1].content).toContain("要求修订");
+    expect(result.messages[1].content).toContain("取消");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("stores planning confirmation choices from interrupted events", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        pendingPlanningChoice: {
+          ...pendingPlanningChoice,
+          threadId: "stale-thread",
+        },
+      },
+      [
+        {
+          type: "planning.interrupted",
+          payload: pendingPlanningChoice,
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.pendingPlanningChoice).toEqual(pendingPlanningChoice);
+    expect(result.messages[1].content).toContain(
+      "Create a report. Steps: read, analyze, write.",
+    );
+    expect(result.messages[1].content).toContain("确认执行");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("does not duplicate planning confirmation prompts when interrupted follows required", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+      },
+      [
+        {
+          type: "planning.confirmation_required",
+          payload: pendingPlanningChoice,
+        },
+        {
+          type: "planning.interrupted",
+          payload: pendingPlanningChoice,
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.pendingPlanningChoice).toEqual(pendingPlanningChoice);
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[1].content).toContain("确认执行");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("stores clarification choices from interrupted clarification events", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph: null,
+        dirty: false,
+        pendingPlanningChoice,
+      },
+      [
+        {
+          type: "planning.interrupted",
+          payload: {
+            kind: "planning.clarification",
+            taskId: "task-clarify",
+            runId: "run-clarify",
+            threadId: "thread-clarify",
+            question: "Who is the report for?",
+            missingInputs: ["audience"],
+            prompt: "Who is the report for?",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.pendingPlanningChoice).toEqual(pendingPlanningClarificationChoice);
+    expect(result.messages[1].content).toBe("Who is the report for?");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("does not duplicate clarification prompts when interrupted follows required", () => {
+    const clarificationPayload = {
+      kind: "planning.clarification" as const,
+      taskId: "task-clarify",
+      runId: "run-clarify",
+      threadId: "thread-clarify",
+      question: "Who is the report for?",
+      missingInputs: ["audience"],
+      prompt: "Who is the report for?",
+    };
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph: null,
+        dirty: false,
+      },
+      [
+        {
+          type: "planning.clarification_required",
+          payload: clarificationPayload,
+        },
+        {
+          type: "planning.interrupted",
+          payload: clarificationPayload,
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages.map((message) => message.content)).toEqual([
+      "你好",
+      "Who is the report for?",
+    ]);
+    expect(result.pendingPlanningChoice).toEqual(clarificationPayload);
+    expect(result.dirty).toBe(true);
+  });
+
+  it("stores clarification choices from required events", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        pendingResearchChoice: {
+          taskId: "task-1",
+          prompt: "Choose research path.",
+          choices: [{ id: "quick_answer", label: "Quick answer" }],
+        },
+        pendingGraphOverwriteChoice: {
+          taskId: "task-1",
+          previousGraphId: graph.graphId,
+          summary: "Overwrite graph?",
+          pendingChoice: { id: "pending-graph", kind: "full_replan" },
+          choices: [{ id: "cancel", label: "Cancel" }],
+        },
+        pendingPlanningChoice,
+      },
+      [
+        {
+          type: "planning.clarification_required",
+          payload: pendingPlanningClarificationChoice,
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.pendingPlanningChoice).toEqual(pendingPlanningClarificationChoice);
+    expect(result.pendingResearchChoice).toBeNull();
+    expect(result.pendingGraphOverwriteChoice).toBeNull();
+    expect(result.messages[1].content).toBe("Who is the report for?");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("clears planning confirmation choices when planning is confirmed", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        pendingPlanningChoice,
+      },
+      [
+        {
+          type: "planning.confirmed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-planning-1",
+            threadId: "thread-planning-1",
+            graphId: "task-1-graph",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.pendingPlanningChoice).toBeNull();
+    expect(result.messages[1].content).toBe(
+      "规划已确认，正在编译执行准备。",
+    );
+    expect(result.dirty).toBe(true);
+  });
+
+  it("resets stale agent plan graph compile state when a new graph is created", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph: null,
+        dirty: false,
+        agentCompileStatus: "failed",
+        agentExecutionReadySummary: {
+          taskId: "task-1",
+          runId: "run-planning-1",
+          threadId: "thread-planning-1",
+          graphId: "stale-graph",
+          compileId: "compile-stale",
+          nodeCount: 4,
+          edgeCount: 3,
+          toolNodeCount: 2,
+          modelNodeCount: 2,
+          permissionsRequired: ["network"],
+          expectedArtifacts: ["report.md"],
+        },
+        agentCompileFailure: {
+          taskId: "task-1",
+          runId: "run-planning-1",
+          threadId: "thread-planning-1",
+          graphId: "stale-graph",
+          compileId: "compile-stale",
+          reason: "stale compile failure",
+          issues: [
+            {
+              code: "missing_binding",
+              message: "Missing model binding.",
+              severity: "error",
+            },
+          ],
+          unsupportedCapabilities: ["browser"],
+          missingBindings: ["model:reasoning"],
+        },
+      },
+      [
+        {
+          type: "node_graph.created",
+          payload: {
+            graph,
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.graph).toBe(graph);
+    expect(result.agentCompileStatus).toBe("idle");
+    expect(result.agentExecutionReadySummary).toBeNull();
+    expect(result.agentCompileFailure).toBeNull();
+  });
+
+  it("tracks the agent plan graph compile lifecycle without starting execution", () => {
+    const executionReadyPayload = {
+      taskId: "task-1",
+      runId: "run-planning-1",
+      threadId: "thread-planning-1",
+      graphId: "task-1-graph",
+      compileId: "compile-1",
+      nodeCount: 5,
+      edgeCount: 4,
+      toolNodeCount: 3,
+      modelNodeCount: 2,
+      permissionsRequired: ["read_project_files", "network"],
+      expectedArtifacts: ["artifacts/report.md"],
+    };
+
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph,
+        dirty: false,
+        activeRunId: null,
+        runHistory: [],
+        pendingPlanningChoice,
+      },
+      [
+        {
+          type: "agent_plan_graph.compile_started",
+          payload: {
+            taskId: "task-1",
+            runId: "run-planning-1",
+            threadId: "thread-planning-1",
+            graphId: "task-1-graph",
+          },
+        },
+        {
+          type: "agent_plan_graph.compiled",
+          payload: {
+            taskId: "task-1",
+            runId: "run-planning-1",
+            threadId: "thread-planning-1",
+            graphId: "task-1-graph",
+            compileId: "compile-1",
+          },
+        },
+        {
+          type: "agent_plan_graph.compile_review_completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-planning-1",
+            threadId: "thread-planning-1",
+            graphId: "task-1-graph",
+            compileId: "compile-1",
+          },
+        },
+        {
+          type: "agent_plan_graph.execution_ready",
+          payload: executionReadyPayload,
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.agentCompileStatus).toBe("execution_ready");
+    expect(result.agentExecutionReadySummary).toEqual(executionReadyPayload);
+    expect(result.agentCompileFailure).toBeNull();
+    expect(result.activeRunId).toBeNull();
+    expect(result.runHistory).toEqual([]);
+    expect(result.pendingPlanningChoice).toEqual(pendingPlanningChoice);
+    expect(result.messages).toEqual([]);
+    expect(result.dirty).toBe(true);
+  });
+
+  it("adds a visible message when agent execution starts and preserves execution-ready compile state", () => {
+    const executionReadySummary = {
+      taskId: "task-1",
+      runId: "run-planning-1",
+      threadId: "thread-planning-1",
+      graphId: "task-1-graph",
+      compileId: "compile-1",
+      nodeCount: 5,
+      edgeCount: 4,
+      toolNodeCount: 3,
+      modelNodeCount: 2,
+      permissionsRequired: ["read_project_files"],
+      expectedArtifacts: ["artifacts/report.md"],
+    };
+
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        agentCompileStatus: "execution_ready",
+        agentExecutionReadySummary: executionReadySummary,
+      },
+      [
+        {
+          type: "agent_execution.started",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages.map((message) => message.content)).toEqual([
+      existingMessage.content,
+      "Agent 开始执行已确认的计划。",
+    ]);
+    expect(result.agentCompileStatus).toBe("execution_ready");
+    expect(result.agentExecutionReadySummary).toEqual(executionReadySummary);
+    expect(result.dirty).toBe(true);
+  });
+
+  it("adds a final execution message with artifact paths and preserves compile state", () => {
+    const executionReadySummary = {
+      taskId: "task-1",
+      runId: "run-planning-1",
+      threadId: "thread-planning-1",
+      graphId: "task-1-graph",
+      compileId: "compile-1",
+      nodeCount: 5,
+      edgeCount: 4,
+      toolNodeCount: 3,
+      modelNodeCount: 2,
+      permissionsRequired: [],
+      expectedArtifacts: ["artifacts/report.md"],
+    };
+
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        agentCompileStatus: "execution_ready",
+        agentExecutionReadySummary: executionReadySummary,
+      },
+      [
+        {
+          type: "agent_execution.final",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "completed",
+            message: "Execution finished.",
+            artifactRefs: ["artifacts/report.md"],
+            completedNodeIds: ["write-report"],
+            checkpointIds: ["checkpoint-1"],
+            recoveryActions: [],
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages[1].content).toContain(
+      "Agent 执行完成并通过验证。",
+    );
+    expect(result.messages[1].content).toContain("artifacts/report.md");
+    expect(result.agentCompileStatus).toBe("execution_ready");
+    expect(result.agentExecutionReadySummary).toEqual(executionReadySummary);
+    expect(result.dirty).toBe(true);
+  });
+
+  it("adds a direct summary failed execution message outside an agent flow", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        agentCompileStatus: "execution_ready",
+      },
+      [
+        {
+          type: "agent_execution.failed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "failed",
+            artifactRefs: [],
+            completedNodeIds: [],
+            checkpointIds: [],
+            recoveryActions: [],
+            failedNodeId: "write-report",
+            reason: "tool_failed",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages[1].content).toBe("Agent 执行失败：tool_failed");
+    expect(result.agentCompileStatus).toBe("execution_ready");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("adds an exception failed execution message using errorCode before reason", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph,
+        dirty: false,
+        agentCompileStatus: "execution_ready",
+      },
+      [
+        {
+          type: "agent_execution.failed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            graphId: "task-1-graph",
+            status: "failed",
+            reason: "execution_bridge_failed",
+            errorCode: "bridge_timeout",
+            issues: [],
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages[0].content).toBe(
+      "Agent 执行失败：bridge_timeout",
+    );
+    expect(result.agentCompileStatus).toBe("execution_ready");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("adds a repair-proposed message and preserves compile status", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        agentCompileStatus: "execution_ready",
+      },
+      [
+        {
+          type: "agent_execution.repair_proposed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "failed",
+            artifactRefs: [],
+            completedNodeIds: [],
+            checkpointIds: ["checkpoint-1"],
+            recoveryActions: [],
+            actions: [{ kind: "retry_node", nodeId: "write-report" }],
+            issues: [],
+            reason: "tool_failed",
+            failedNodeId: "write-report",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages[1].content).toBe(
+      "Agent 已提出执行修复方案。（1 个动作）",
+    );
+    expect(result.agentCompileStatus).toBe("execution_ready");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("keeps completed execution state-only and adds interrupted execution messages", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph,
+        dirty: false,
+        agentCompileStatus: "execution_ready",
+      },
+      [
+        {
+          type: "agent_execution.completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "completed",
+            artifactRefs: [],
+            completedNodeIds: ["write-report"],
+            checkpointIds: ["checkpoint-1"],
+            recoveryActions: [],
+          },
+        },
+        {
+          type: "agent_execution.interrupted",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "interrupted",
+            artifactRefs: [],
+            completedNodeIds: ["write-report"],
+            checkpointIds: ["checkpoint-1"],
+            recoveryActions: [],
+            reason: "human_input_required",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages.map((message) => message.content)).toEqual([
+      "Agent 执行已中断：human_input_required",
+    ]);
+    expect(result.agentCompileStatus).toBe("execution_ready");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("marks verification completion dirty without duplicating approved chat messages", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        agentCompileStatus: "execution_ready",
+      },
+      [
+        {
+          type: "agent_execution.verify_completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "approved",
+            isValid: true,
+            issues: [],
+            finalArtifacts: ["artifacts/report.md"],
+            repairRequired: false,
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages).toEqual([existingMessage]);
+    expect(result.agentCompileStatus).toBe("execution_ready");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("keeps verification completion dirty-only for failed and repair statuses", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        agentCompileStatus: "execution_ready",
+      },
+      [
+        {
+          type: "agent_execution.verify_completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "needs_repair",
+            isValid: false,
+            issues: [{ message: "Missing final artifact." }],
+            finalArtifacts: [],
+            repairRequired: true,
+          },
+        },
+        {
+          type: "agent_execution.verify_completed",
+          payload: {
+            taskId: "task-2",
+            runId: "run-execution-2",
+            threadId: "thread-planning-2",
+            compileId: "compile-2",
+            graphId: "task-2-graph",
+            status: "failed",
+            isValid: false,
+            issues: [{ message: "Verifier failed." }],
+            finalArtifacts: [],
+            repairRequired: false,
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages).toEqual([existingMessage]);
+    expect(result.agentCompileStatus).toBe("execution_ready");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("suppresses duplicate messages in a full successful agent execution stream", () => {
+    const executionReadySummary = {
+      taskId: "task-1",
+      runId: "run-planning-1",
+      threadId: "thread-planning-1",
+      graphId: "task-1-graph",
+      compileId: "compile-1",
+      nodeCount: 5,
+      edgeCount: 4,
+      toolNodeCount: 3,
+      modelNodeCount: 2,
+      permissionsRequired: [],
+      expectedArtifacts: ["artifacts/report.md"],
+    };
+
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph,
+        dirty: false,
+        activeRunId: "run-execution-1",
+        runHistory: [],
+        agentCompileStatus: "execution_ready",
+        agentExecutionReadySummary: executionReadySummary,
+      },
+      [
+        {
+          type: "agent_execution.started",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+          },
+        },
+        {
+          type: "task.completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+          },
+        },
+        {
+          type: "agent_execution.completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "completed",
+            artifactRefs: ["artifacts/report.md"],
+            completedNodeIds: ["write-report"],
+            checkpointIds: ["checkpoint-1"],
+            recoveryActions: [],
+          },
+        },
+        {
+          type: "agent_execution.verify_completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "approved",
+            isValid: true,
+            issues: [],
+            finalArtifacts: ["artifacts/report.md"],
+            repairRequired: false,
+          },
+        },
+        {
+          type: "agent_execution.final",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "completed",
+            message: "Execution finished.",
+            artifactRefs: ["artifacts/report.md"],
+            completedNodeIds: ["write-report"],
+            checkpointIds: ["checkpoint-1"],
+            recoveryActions: [],
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages.map((message) => message.content)).toEqual([
+      "Agent 开始执行已确认的计划。",
+      "Agent 执行完成并通过验证。\n产物：artifacts/report.md",
+    ]);
+    expect(result.runHistory?.[0]).toMatchObject({
+      runId: "run-execution-1",
+      status: "completed",
+    });
+    expect(result.agentCompileStatus).toBe("execution_ready");
+    expect(result.agentExecutionReadySummary).toEqual(executionReadySummary);
+    expect(result.dirty).toBe(true);
+  });
+
+  it("suppresses duplicate messages across sequential successful agent execution reducer calls", () => {
+    const executionReadySummary = {
+      taskId: "task-1",
+      runId: "run-planning-1",
+      threadId: "thread-planning-1",
+      graphId: "task-1-graph",
+      compileId: "compile-1",
+      nodeCount: 5,
+      edgeCount: 4,
+      toolNodeCount: 3,
+      modelNodeCount: 2,
+      permissionsRequired: [],
+      expectedArtifacts: ["artifacts/report.md"],
+    };
+    let state = reduceBackendEvents(
+      {
+        messages: [],
+        graph,
+        dirty: false,
+        activeRunId: "run-execution-1",
+        runHistory: [],
+        agentCompileStatus: "execution_ready",
+        agentExecutionReadySummary: executionReadySummary,
+      },
+      [
+        {
+          type: "agent_execution.started",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    state = reduceBackendEvents(
+      state,
+      [
+        {
+          type: "task.completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    state = reduceBackendEvents(
+      state,
+      [
+        {
+          type: "agent_execution.completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "completed",
+            artifactRefs: ["artifacts/report.md"],
+            completedNodeIds: ["write-report"],
+            checkpointIds: ["checkpoint-1"],
+            recoveryActions: [],
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    state = reduceBackendEvents(
+      state,
+      [
+        {
+          type: "agent_execution.verify_completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "approved",
+            isValid: true,
+            issues: [],
+            finalArtifacts: ["artifacts/report.md"],
+            repairRequired: false,
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    state = reduceBackendEvents(
+      state,
+      [
+        {
+          type: "agent_execution.final",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "completed",
+            message: "Execution finished.",
+            artifactRefs: ["artifacts/report.md"],
+            completedNodeIds: ["write-report"],
+            checkpointIds: ["checkpoint-1"],
+            recoveryActions: [],
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "Agent 开始执行已确认的计划。",
+      "Agent 执行完成并通过验证。\n产物：artifacts/report.md",
+    ]);
+    expect(state.runHistory?.[0]).toMatchObject({
+      runId: "run-execution-1",
+      status: "completed",
+    });
+    expect(state.agentCompileStatus).toBe("execution_ready");
+    expect(state.agentExecutionReadySummary).toEqual(executionReadySummary);
+    expect(state.activeAgentExecutionFlow).toBeNull();
+  });
+
+  it("suppresses duplicate messages in a full repair agent execution stream", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph,
+        dirty: false,
+        activeRunId: "run-execution-1",
+        runHistory: [],
+        agentCompileStatus: "execution_ready",
+      },
+      [
+        {
+          type: "agent_execution.started",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+          },
+        },
+        {
+          type: "task.failed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            error: "Tool failed.",
+            errorCode: "tool_failed",
+          },
+        },
+        {
+          type: "agent_execution.failed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "failed",
+            artifactRefs: [],
+            completedNodeIds: ["extract-data"],
+            checkpointIds: ["checkpoint-1"],
+            recoveryActions: [{ kind: "retry_node", nodeId: "write-report" }],
+            failedNodeId: "write-report",
+            reason: "tool_failed",
+          },
+        },
+        {
+          type: "agent_execution.verify_completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "needs_repair",
+            isValid: false,
+            issues: [{ message: "Missing final artifact." }],
+            finalArtifacts: [],
+            repairRequired: true,
+          },
+        },
+        {
+          type: "agent_execution.repair_proposed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "failed",
+            artifactRefs: [],
+            completedNodeIds: ["extract-data"],
+            checkpointIds: ["checkpoint-1"],
+            recoveryActions: [],
+            actions: [{ kind: "retry_node", nodeId: "write-report" }],
+            issues: [{ message: "Missing final artifact." }],
+            reason: "tool_failed",
+            failedNodeId: "write-report",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages.map((message) => message.content)).toEqual([
+      "Agent 开始执行已确认的计划。",
+      "Agent 已提出执行修复方案。（1 个动作）",
+    ]);
+    expect(result.runHistory?.[0]).toMatchObject({
+      runId: "run-execution-1",
+      status: "failed",
+    });
+    expect(result.agentCompileStatus).toBe("execution_ready");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("suppresses duplicate messages across sequential repair agent execution reducer calls", () => {
+    let state = reduceBackendEvents(
+      {
+        messages: [],
+        graph,
+        dirty: false,
+        activeRunId: "run-execution-1",
+        runHistory: [],
+        agentCompileStatus: "execution_ready",
+      },
+      [
+        {
+          type: "agent_execution.started",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    state = reduceBackendEvents(
+      state,
+      [
+        {
+          type: "task.failed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            error: "Tool failed.",
+            errorCode: "tool_failed",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    state = reduceBackendEvents(
+      state,
+      [
+        {
+          type: "agent_execution.failed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "failed",
+            artifactRefs: [],
+            completedNodeIds: ["extract-data"],
+            checkpointIds: ["checkpoint-1"],
+            recoveryActions: [{ kind: "retry_node", nodeId: "write-report" }],
+            failedNodeId: "write-report",
+            reason: "tool_failed",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    state = reduceBackendEvents(
+      state,
+      [
+        {
+          type: "agent_execution.verify_completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "needs_repair",
+            isValid: false,
+            issues: [{ message: "Missing final artifact." }],
+            finalArtifacts: [],
+            repairRequired: true,
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    state = reduceBackendEvents(
+      state,
+      [
+        {
+          type: "agent_execution.repair_proposed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "failed",
+            artifactRefs: [],
+            completedNodeIds: ["extract-data"],
+            checkpointIds: ["checkpoint-1"],
+            recoveryActions: [],
+            actions: [{ kind: "retry_node", nodeId: "write-report" }],
+            issues: [{ message: "Missing final artifact." }],
+            reason: "tool_failed",
+            failedNodeId: "write-report",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "Agent 开始执行已确认的计划。",
+      "Agent 已提出执行修复方案。（1 个动作）",
+    ]);
+    expect(state.runHistory?.[0]).toMatchObject({
+      runId: "run-execution-1",
+      status: "failed",
+    });
+    expect(state.agentCompileStatus).toBe("execution_ready");
+    expect(state.activeAgentExecutionFlow).toBeNull();
+  });
+
+  it("surfaces unrecoverable summary failures across sequential agent execution reducer calls", () => {
+    let state = reduceBackendEvents(
+      {
+        messages: [],
+        graph,
+        dirty: false,
+        activeRunId: "run-execution-1",
+        runHistory: [],
+        agentCompileStatus: "execution_ready",
+      },
+      [
+        {
+          type: "agent_execution.started",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    state = reduceBackendEvents(
+      state,
+      [
+        {
+          type: "task.failed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            error: "Tool failed.",
+            errorCode: "tool_failed",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    state = reduceBackendEvents(
+      state,
+      [
+        {
+          type: "agent_execution.failed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "failed",
+            artifactRefs: [],
+            completedNodeIds: ["extract-data"],
+            checkpointIds: ["checkpoint-1"],
+            recoveryActions: [],
+            failedNodeId: "write-report",
+            reason: "tool_failed",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    state = reduceBackendEvents(
+      state,
+      [
+        {
+          type: "agent_execution.verify_completed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+            status: "failed",
+            isValid: false,
+            issues: [{ message: "No repair available." }],
+            finalArtifacts: [],
+            repairRequired: false,
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(state.messages.map((message) => message.content)).toEqual([
+      "Agent 开始执行已确认的计划。",
+      "Agent 执行失败：tool_failed",
+    ]);
+    expect(state.runHistory?.[0]).toMatchObject({
+      runId: "run-execution-1",
+      status: "failed",
+    });
+    expect(state.agentCompileStatus).toBe("execution_ready");
+    expect(state.activeAgentExecutionFlow).toBeNull();
+  });
+
+  it("surfaces exception failures in an agent execution stream without a low-level task failure", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph,
+        dirty: false,
+        agentCompileStatus: "execution_ready",
+      },
+      [
+        {
+          type: "agent_execution.started",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            compileId: "compile-1",
+            graphId: "task-1-graph",
+          },
+        },
+        {
+          type: "agent_execution.failed",
+          payload: {
+            taskId: "task-1",
+            runId: "run-execution-1",
+            threadId: "thread-planning-1",
+            graphId: "task-1-graph",
+            status: "failed",
+            reason: "execution_bridge_failed",
+            errorCode: "bridge_timeout",
+            issues: [{ message: "Runner timed out." }],
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages.map((message) => message.content)).toEqual([
+      "Agent 开始执行已确认的计划。",
+      "Agent 执行失败：bridge_timeout\nRunner timed out.",
+    ]);
+    expect(result.agentCompileStatus).toBe("execution_ready");
+    expect(result.dirty).toBe(true);
+  });
+
+  it("keeps ordinary task terminal messages outside agent execution flows", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [],
+        graph,
+        dirty: false,
+        activeRunId: "ordinary-run-1",
+        runHistory: [],
+      },
+      [
+        {
+          type: "task.completed",
+          payload: {
+            taskId: "ordinary-task-1",
+            runId: "ordinary-run-1",
+          },
+        },
+        {
+          type: "task.failed",
+          payload: {
+            taskId: "ordinary-task-2",
+            runId: "ordinary-run-2",
+            error: "Ordinary task failed.",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.messages.map((message) => message.content)).toEqual([
+      "流程执行完成。",
+      "流程执行失败：Ordinary task failed.",
+    ]);
+    expect(result.runHistory).toEqual([
+      expect.objectContaining({
+        runId: "ordinary-run-1",
+        status: "completed",
+      }),
+      expect.objectContaining({
+        runId: "ordinary-run-2",
+        status: "failed",
+      }),
+    ]);
+  });
+
+  it("stores agent plan graph compile failures and surfaces the reason", () => {
+    const failurePayload = {
+      taskId: "task-1",
+      runId: "run-planning-1",
+      threadId: "thread-planning-1",
+      graphId: "task-1-graph",
+      reason: "Graph uses unsupported capabilities.",
+      issues: [
+        {
+          code: "unsupported_capability",
+          message: "Browser automation is not available.",
+          nodeId: "browse-web",
+          severity: "error" as const,
+        },
+        {
+          code: "missing_binding",
+          message: "No model binding configured.",
+          severity: "warning" as const,
+        },
+      ],
+      unsupportedCapabilities: ["browser_automation"],
+      missingBindings: ["model:reasoning"],
+    };
+
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        pendingPlanningChoice,
+        agentCompileStatus: "compiling",
+        agentExecutionReadySummary: {
+          taskId: "task-1",
+          runId: "run-planning-1",
+          threadId: "thread-planning-1",
+          graphId: "task-1-graph",
+          compileId: "compile-stale",
+          nodeCount: 2,
+          edgeCount: 1,
+          toolNodeCount: 1,
+          modelNodeCount: 1,
+          permissionsRequired: [],
+          expectedArtifacts: [],
+        },
+      },
+      [
+        {
+          type: "agent_plan_graph.compile_failed",
+          payload: failurePayload,
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.agentCompileStatus).toBe("failed");
+    expect(result.agentCompileFailure).toEqual(failurePayload);
+    expect(result.agentExecutionReadySummary).toBeNull();
+    expect(result.pendingPlanningChoice).toBeNull();
+    expect(result.messages[1].content).toContain(
+      "Graph uses unsupported capabilities.",
+    );
+    expect(result.dirty).toBe(true);
+  });
+
+  it("surfaces blocked legacy graph fallback as a compile failure without duplicating task failure messages", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        activeRunId: null,
+        runHistory: [],
+        pendingResearchChoice: {
+          taskId: "task-1",
+          prompt: "Choose research path.",
+          choices: [{ id: "quick_answer", label: "Quick answer" }],
+        },
+        pendingGraphOverwriteChoice: {
+          taskId: "task-1",
+          previousGraphId: graph.graphId,
+          summary: "Overwrite graph?",
+          pendingChoice: { id: "pending-graph", kind: "full_replan" },
+          choices: [{ id: "cancel", label: "Cancel" }],
+        },
+        pendingPlanningChoice,
+        agentCompileStatus: "execution_ready",
+        agentExecutionReadySummary: {
+          taskId: "task-1",
+          runId: "run-stale",
+          threadId: "thread-stale",
+          graphId: "task-1-graph",
+          compileId: "compile-stale",
+          nodeCount: 2,
+          edgeCount: 1,
+          toolNodeCount: 1,
+          modelNodeCount: 1,
+          permissionsRequired: [],
+          expectedArtifacts: [],
+        },
+      },
+      [
+        {
+          type: "runtime.legacy_graph_blocked",
+          payload: {
+            runId: "run-block",
+            threadId: "thread-block",
+            taskId: "task-block",
+            reason: "legacy graph event emitted from response-only fallback",
+            blockedEventTypes: ["node_graph.created"],
+          },
+        },
+        {
+          type: "task.failed",
+          payload: {
+            taskId: "task-block",
+            runId: "run-block",
+            errorCode: "legacy_graph_blocked",
+            error:
+              "Legacy graph creation is blocked from the Agent Runtime product path.",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.activeRunId).toBeNull();
+    expect(result.runHistory?.[0]).toMatchObject({
+      runId: "run-block",
+      status: "failed",
+    });
+    expect(result.agentCompileStatus).toBe("failed");
+    expect(result.agentExecutionReadySummary).toBeNull();
+    expect(result.agentCompileFailure).toBeNull();
+    expect(result.pendingResearchChoice).toBeNull();
+    expect(result.pendingGraphOverwriteChoice).toBeNull();
+    expect(result.pendingPlanningChoice).toBeNull();
+    expect(result.messages.map((message) => message.content)).toEqual([
+      existingMessage.content,
+      "Legacy graph fallback was blocked. The Agent must produce the task graph through deep planning.",
+    ]);
+    expect(result.dirty).toBe(true);
+  });
+
+  it("does not suppress unrelated later blocked-code task failures", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        activeRunId: null,
+        runHistory: [],
+      },
+      [
+        {
+          type: "runtime.legacy_graph_blocked",
+          payload: {
+            runId: "run-block",
+            threadId: "thread-block",
+            taskId: "task-block",
+            reason: "legacy graph event emitted from response-only fallback",
+            blockedEventTypes: ["node_graph.created"],
+          },
+        },
+        {
+          type: "task.failed",
+          payload: {
+            taskId: "task-other",
+            runId: "run-other",
+            errorCode: "legacy_graph_blocked",
+            error: "Unrelated blocked task failed.",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.runHistory).toEqual([
+      expect.objectContaining({
+        runId: "run-other",
+        status: "failed",
+        summary: "Unrelated blocked task failed.",
+      }),
+    ]);
+    expect(result.messages.map((message) => message.content)).toEqual([
+      existingMessage.content,
+      "Legacy graph fallback was blocked. The Agent must produce the task graph through deep planning.",
+      "流程执行失败：Unrelated blocked task failed.",
+    ]);
+  });
+
+  it("surfaces incomplete Deep Agent product path as a compile failure without duplicating task failure messages", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        activeRunId: null,
+        runHistory: [],
+        pendingResearchChoice: {
+          taskId: "task-1",
+          prompt: "Choose research path.",
+          choices: [{ id: "research_flow", label: "Research flow" }],
+        },
+        pendingGraphOverwriteChoice: {
+          taskId: "task-1",
+          previousGraphId: graph.graphId,
+          summary: "Overwrite graph?",
+          pendingChoice: { id: "pending-graph", kind: "full_replan" },
+          choices: [{ id: "cancel", label: "Cancel" }],
+        },
+        pendingPlanningChoice,
+        agentCompileStatus: "compiling",
+      },
+      [
+        {
+          type: "runtime.deep_agent_product_path_blocked",
+          payload: {
+            runId: "run-incomplete",
+            threadId: "thread-incomplete",
+            taskId: "task-incomplete",
+            reason: "deep_agent_runtime_missing_terminal_event:deep_planning",
+          },
+        },
+        {
+          type: "task.failed",
+          payload: {
+            taskId: "task-incomplete",
+            runId: "run-incomplete",
+            errorCode: "deep_agent_product_path_incomplete",
+            error:
+              "Deep Agent runtime did not emit a terminal product-path event; legacy graph fallback is blocked.",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.activeRunId).toBeNull();
+    expect(result.runHistory?.[0]).toMatchObject({
+      runId: "run-incomplete",
+      status: "failed",
+    });
+    expect(result.agentCompileStatus).toBe("failed");
+    expect(result.agentExecutionReadySummary).toBeNull();
+    expect(result.agentCompileFailure).toBeNull();
+    expect(result.pendingResearchChoice).toBeNull();
+    expect(result.pendingGraphOverwriteChoice).toBeNull();
+    expect(result.pendingPlanningChoice).toBeNull();
+    expect(result.messages.map((message) => message.content)).toEqual([
+      existingMessage.content,
+      "Deep Agent planning did not reach a valid terminal state, and legacy graph fallback is blocked.",
+    ]);
+    expect(result.dirty).toBe(true);
+  });
+
+  it("clears planning confirmation choices when planning is cancelled", () => {
+    const result = reduceBackendEvents(
+      {
+        messages: [existingMessage],
+        graph,
+        dirty: false,
+        pendingPlanningChoice,
+      },
+      [
+        {
+          type: "planning.cancelled",
+          payload: {
+            taskId: "task-1",
+            runId: "run-planning-1",
+            threadId: "thread-planning-1",
+            graphId: "task-1-graph",
+          },
+        },
+      ],
+      createAssistantMessage,
+    );
+
+    expect(result.pendingPlanningChoice).toBeNull();
+    expect(result.messages[1].content).toBe("规划已取消。");
+    expect(result.dirty).toBe(true);
   });
 
   it("adds a chat prompt for research choice events", () => {
@@ -641,6 +2383,46 @@ describe("reduceBackendEvents", () => {
       id: "cancel",
       kind: "full_replan",
       previousGraphId: graph.graphId,
+    });
+  });
+
+  it("adds an explicit decision to planning confirmation submit choices", () => {
+    expect(
+      toPlanningConfirmationSubmitChoice(pendingPlanningChoice, "approve"),
+    ).toEqual({
+      kind: "planning.confirmation",
+      runId: "run-planning-1",
+      threadId: "thread-planning-1",
+      graphId: "task-1-graph",
+      decision: "approve",
+      revisionInstructions: [],
+    });
+
+    expect(
+      toPlanningConfirmationSubmitChoice(pendingPlanningChoice, "revise", [
+        "Add explicit verification.",
+      ]),
+    ).toEqual({
+      kind: "planning.confirmation",
+      runId: "run-planning-1",
+      threadId: "thread-planning-1",
+      graphId: "task-1-graph",
+      decision: "revise",
+      revisionInstructions: ["Add explicit verification."],
+    });
+  });
+
+  it("maps clarification answers into planning resume choices", () => {
+    expect(
+      toPlanningClarificationSubmitChoice(
+        pendingPlanningClarificationChoice,
+        "The report is for executives.",
+      ),
+    ).toEqual({
+      kind: "planning.clarification",
+      runId: "run-clarify",
+      threadId: "thread-clarify",
+      answer: "The report is for executives.",
     });
   });
 

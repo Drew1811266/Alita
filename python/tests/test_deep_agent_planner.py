@@ -10,6 +10,7 @@ from agent_service.deep_agent_planner import (
     DeepPlanningEngine,
     DeepPlanningError,
     ReasoningGateEngine,
+    _planning_prompt,
     review_plan,
 )
 from agent_service.model_client import (
@@ -493,3 +494,22 @@ def test_revision_instructions_appear_in_planning_prompt_and_local_path_is_scrub
     assert "Add a verification step for citations." in prompt
     assert "D:\\secret\\contract.pdf" not in prompt
     assert "D:\\context-secret\\context-contract.pdf" not in prompt
+
+
+def test_planning_prompt_includes_all_revision_instructions() -> None:
+    prompt = _planning_prompt(
+        _message(),
+        context_bundle=_context_bundle(),
+        revision_instructions=[
+            "Add verification criteria for step analyze.",
+            "Add a verification plan for the full plan.",
+            "Revise the plan to use only available capabilities or request support.",
+        ],
+    )
+
+    prompt_payload = json.loads(prompt)
+    assert prompt_payload["revision_instructions"] == [
+        "Add verification criteria for step analyze.",
+        "Add a verification plan for the full plan.",
+        "Revise the plan to use only available capabilities or request support.",
+    ]

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from agent_service.runtime_state import RuntimeStateDelta, initial_runtime_state
@@ -81,3 +82,115 @@ def test_runtime_store_restores_state_from_latest_or_requested_checkpoint(
     assert latest.stage == "plan"
     assert requested is not None
     assert requested.stage == "route"
+
+
+def test_runtime_store_writes_and_reads_planning_checkpoint_summary_sanitizing_extras(
+    tmp_path: Path,
+) -> None:
+    store = RuntimeStore(project_path=str(tmp_path / "demo.alita"), run_id="run-planning")
+
+    store.write_planning_checkpoint_summary(
+        {
+            "runId": "run-planning",
+            "threadId": "thread-1",
+            "checkpointId": "checkpoint-1",
+            "stage": "planning",
+            "node": "deep_plan",
+            "revisionCount": 3,
+            "hasPlanDraft": True,
+            "hasCompiledGraph": False,
+            "hasAgentCompiledGraph": True,
+            "executionReady": True,
+            "createdAt": "2026-06-02T00:00:00Z",
+            "rawReasoning": "should be removed",
+            "projectPath": "/tmp/project",
+            "planDraft": {"steps": [1]},
+        }
+    )
+
+    summaries = store.read_planning_checkpoint_summaries()
+    stored_payload = json.loads(
+        (
+            tmp_path
+            / "node-runs"
+            / "run-planning"
+            / "planning_checkpoints.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert summaries == [
+        {
+            "runId": "run-planning",
+            "threadId": "thread-1",
+            "checkpointId": "checkpoint-1",
+            "stage": "planning",
+            "node": "deep_plan",
+            "revisionCount": 3,
+            "hasPlanDraft": True,
+            "hasCompiledGraph": False,
+            "hasAgentCompiledGraph": True,
+            "executionReady": True,
+            "createdAt": "2026-06-02T00:00:00Z",
+        }
+    ]
+    assert list(stored_payload) == ["checkpoints"]
+
+
+def test_runtime_store_reads_latest_planning_checkpoint_summary(tmp_path: Path) -> None:
+    store = RuntimeStore(project_path=str(tmp_path / "demo.alita"), run_id="run-latest")
+
+    assert store.read_latest_planning_checkpoint_summary() is None
+
+    store.write_planning_checkpoint_summary(
+        {
+            "runId": "run-latest",
+            "threadId": "thread-1",
+            "checkpointId": "checkpoint-1",
+            "stage": "planning",
+            "revisionCount": 0,
+            "hasPlanDraft": False,
+            "hasCompiledGraph": False,
+            "hasAgentCompiledGraph": False,
+            "executionReady": False,
+            "createdAt": "2026-06-02T00:00:01Z",
+        }
+    )
+    store.write_planning_checkpoint_summary(
+        {
+            "runId": "run-latest",
+            "threadId": "thread-1",
+            "checkpointId": "checkpoint-2",
+            "stage": "graph",
+            "revisionCount": 1,
+            "hasPlanDraft": True,
+            "hasCompiledGraph": True,
+            "hasAgentCompiledGraph": True,
+            "executionReady": True,
+            "createdAt": "2026-06-02T00:00:02Z",
+        }
+    )
+
+    latest = store.read_latest_planning_checkpoint_summary()
+
+    assert latest is not None
+    assert latest["checkpointId"] == "checkpoint-2"
+    assert latest["revisionCount"] == 1
+    assert latest["hasAgentCompiledGraph"] is True
+    assert latest["executionReady"] is True
+
+
+def test_runtime_store_read_nodes_still_ignores_control_files(tmp_path: Path) -> None:
+    from agent_service.run_journal import RunJournal
+
+    journal = RunJournal(project_path=str(tmp_path / "demo.alita"), run_id="run-read-nodes")
+    journal.write_node("step", {"nodeId": "step", "status": "completed"})
+    journal._write_json(journal.base_dir / "runtime_state.json", {"state": {}})
+    journal._write_json(journal.base_dir / "runtime_deltas.json", {"deltas": []})
+    journal._write_json(
+        journal.base_dir / "planning_checkpoints.json",
+        {"checkpoints": []},
+    )
+
+    records = journal.read_nodes()
+
+    assert records == [{"nodeId": "step", "status": "completed"}]

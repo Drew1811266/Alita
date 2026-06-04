@@ -3,13 +3,24 @@ import { describe, expect, it } from "vitest";
 
 import {
   App,
+  buildPlanningClarificationSubmitPayload,
+  buildPlanningChoiceSubmitPayload,
   buildResearchChoiceSubmitPayload,
   buildTemporaryScriptPermissionSubmitPayload,
+  didApplyBackendEvents,
+  restorePendingPlanningChoiceAfterFailure,
   shouldRefreshAsrForPreferencesUpdate,
+  submitUserMessageWithStreamFallbackForTest,
 } from "./App";
 import { selectAgentAttachments } from "../features/chat/useChatSessionController";
 import type { AgentNode, ChatAttachment, NodeGraph } from "../shared/types";
-import type { PendingResearchChoice } from "./backendEvents";
+import type { BackendEvent } from "../shared/events";
+import type {
+  PendingPlanningClarificationChoice,
+  PendingPlanningConfirmationChoice,
+  PendingPlanningChoice,
+  PendingResearchChoice,
+} from "./backendEvents";
 import type { PreferencesView } from "../features/preferences/preferencesApi";
 
 // @ts-expect-error Vitest runs in Node, but the app tsconfig intentionally only includes browser types.
@@ -117,6 +128,7 @@ describe("App", () => {
       ],
       submittedPayload: {
         taskId: "task-1",
+        projectPath: "D:\\Project\\demo.alita",
         content: "Research current packaging tools",
         attachments: [originalAttachment],
       },
@@ -129,9 +141,122 @@ describe("App", () => {
       }),
     ).toEqual({
       taskId: "task-1",
+      projectPath: "D:\\Project\\demo.alita",
       content: "Research current packaging tools",
       attachments: [originalAttachment],
       inquiryChoice: "research_flow",
+    });
+  });
+
+  it("builds planning confirmation submit payloads with explicit decisions", () => {
+    const pendingChoice: PendingPlanningConfirmationChoice = {
+      kind: "planning.confirmation",
+      taskId: "task-1",
+      runId: "run-planning-1",
+      threadId: "thread-planning-1",
+      graphId: "graph-planning-1",
+      summary: "Review the generated plan.",
+      pendingChoice: {
+        kind: "planning.confirmation",
+        runId: "run-planning-1",
+        threadId: "thread-planning-1",
+        graphId: "graph-planning-1",
+      },
+      choices: [
+        { id: "approve", label: "确认执行" },
+        { id: "revise", label: "要求修订" },
+        { id: "cancel", label: "取消" },
+      ],
+    };
+    const graph: NodeGraph = { graphId: "graph-planning-1", nodes: [], edges: [] };
+
+    expect(
+      buildPlanningChoiceSubmitPayload({
+        taskId: "task-1",
+        projectPath: "D:\\Project\\demo.alita",
+        pendingChoice,
+        choiceId: "approve",
+        content: "ignored for approval",
+        currentGraph: graph,
+        hasRunHistory: true,
+        artifactRefs: ["artifact-1"],
+      }),
+    ).toEqual({
+      taskId: "task-1",
+      projectPath: "D:\\Project\\demo.alita",
+      content: "",
+      attachments: [],
+      currentGraph: graph,
+      hasRunHistory: true,
+      artifactRefs: ["artifact-1"],
+      pendingChoice: {
+        kind: "planning.confirmation",
+        runId: "run-planning-1",
+        threadId: "thread-planning-1",
+        graphId: "graph-planning-1",
+        decision: "approve",
+        revisionInstructions: [],
+      },
+    });
+
+    expect(
+      buildPlanningChoiceSubmitPayload({
+        taskId: "task-1",
+        pendingChoice,
+        choiceId: "revise",
+        content: "Add an explicit verification step.",
+      }),
+    ).toEqual({
+      taskId: "task-1",
+      content: "Add an explicit verification step.",
+      attachments: [],
+      pendingChoice: {
+        kind: "planning.confirmation",
+        runId: "run-planning-1",
+        threadId: "thread-planning-1",
+        graphId: "graph-planning-1",
+        decision: "revise",
+        revisionInstructions: ["Add an explicit verification step."],
+      },
+    });
+  });
+
+  it("builds planning clarification submit payloads for checkpoint resume", () => {
+    const pendingChoice: PendingPlanningClarificationChoice = {
+      kind: "planning.clarification",
+      taskId: "task-clarify",
+      runId: "run-clarify",
+      threadId: "thread-clarify",
+      question: "Who is the report for?",
+      missingInputs: ["audience"],
+      prompt: "Who is the report for?",
+    };
+    const graph: NodeGraph = { graphId: "graph-planning-1", nodes: [], edges: [] };
+
+    expect(
+      buildPlanningClarificationSubmitPayload({
+        taskId: "task-clarify",
+        projectPath: "D:\\Project\\demo.alita",
+        pendingChoice,
+        content: "The report is for executives.",
+        currentGraph: graph,
+        hasRunHistory: true,
+        artifactRefs: ["artifact-1"],
+      }),
+    ).toEqual({
+      taskId: "task-clarify",
+      projectPath: "D:\\Project\\demo.alita",
+      content: "The report is for executives.",
+      attachments: [],
+      currentGraph: graph,
+      hasRunHistory: true,
+      artifactRefs: ["artifact-1"],
+      pendingChoice: {
+        kind: "planning.clarification",
+        runId: "run-clarify",
+        threadId: "thread-clarify",
+        answer: "The report is for executives.",
+      },
     });
   });
 
@@ -281,5 +406,153 @@ describe("App", () => {
     expect(appSource).toContain("submitTemporaryScriptPermission(");
     expect(appSource).toContain("onApproveTemporaryScript={handleApproveTemporaryScript}");
     expect(appSource).toContain("onRejectTemporaryScript={handleRejectTemporaryScript}");
+  });
+
+  it("wires planning confirmation pending choices through the chat submit path", () => {
+    expect(appSource).toContain("pendingPlanningChoiceRef");
+    expect(appSource).toContain("setPendingPlanningChoice");
+    expect(appSource).toContain("toPlanningConfirmationSubmitChoice");
+    expect(appSource).toContain("onPlanningChoice={handlePlanningChoice}");
+  });
+
+  it("restores old planning choices only when no backend events were applied", () => {
+    const pendingChoice: PendingPlanningChoice = {
+      kind: "planning.confirmation",
+      taskId: "task-1",
+      runId: "run-planning-1",
+      threadId: "thread-planning-1",
+      graphId: "graph-planning-1",
+      summary: "Review the generated plan.",
+      pendingChoice: {
+        kind: "planning.confirmation",
+        runId: "run-planning-1",
+        threadId: "thread-planning-1",
+        graphId: "graph-planning-1",
+      },
+      choices: [{ id: "approve", label: "确认执行" }],
+    };
+    const newerPendingChoice: PendingPlanningChoice = {
+      ...pendingChoice,
+      runId: "run-planning-2",
+      threadId: "thread-planning-2",
+      summary: "Review the revised plan.",
+      pendingChoice: {
+        ...pendingChoice.pendingChoice,
+        runId: "run-planning-2",
+        threadId: "thread-planning-2",
+      },
+    };
+
+    expect(
+      restorePendingPlanningChoiceAfterFailure(pendingChoice, false),
+    ).toBe(pendingChoice);
+    expect(
+      restorePendingPlanningChoiceAfterFailure(
+        pendingChoice,
+        true,
+        newerPendingChoice,
+      ),
+    ).toBe(newerPendingChoice);
+    expect(
+      restorePendingPlanningChoiceAfterFailure(pendingChoice, true, null),
+    ).toBeNull();
+    expect(restorePendingPlanningChoiceAfterFailure(null)).toBeNull();
+  });
+
+  it("preserves newer planning choices after stream failures with backend progress", async () => {
+    const planningEvent: BackendEvent = {
+      type: "planning.confirmation_required",
+      payload: {
+        kind: "planning.confirmation",
+        summary: "Review the new plan.",
+        taskId: "task-1",
+        runId: "run-planning-2",
+        threadId: "thread-planning-2",
+        graphId: "graph-planning-2",
+        choices: [{ id: "approve", label: "确认执行" }],
+        pendingChoice: {
+          kind: "planning.confirmation",
+          runId: "run-planning-2",
+          threadId: "thread-planning-2",
+          graphId: "graph-planning-2",
+        },
+      },
+    };
+    const oldPendingChoice: PendingPlanningChoice = {
+      kind: "planning.confirmation",
+      taskId: "task-1",
+      runId: "run-planning-1",
+      threadId: "thread-planning-1",
+      graphId: "graph-planning-1",
+      summary: "Review the old plan.",
+      pendingChoice: {
+        kind: "planning.confirmation",
+        runId: "run-planning-1",
+        threadId: "thread-planning-1",
+        graphId: "graph-planning-1",
+      },
+      choices: [{ id: "approve", label: "确认执行" }],
+    };
+    const newerPendingChoice: PendingPlanningChoice = {
+      kind: "planning.confirmation",
+      taskId: planningEvent.payload.taskId,
+      runId: planningEvent.payload.runId,
+      threadId: planningEvent.payload.threadId,
+      graphId: planningEvent.payload.graphId,
+      summary: planningEvent.payload.summary,
+      pendingChoice: planningEvent.payload.pendingChoice,
+      choices: planningEvent.payload.choices,
+    };
+    const streamError = new Error("stream interrupted");
+    const appliedEvents: BackendEvent[] = [];
+    let currentPendingChoice: PendingPlanningChoice | null = oldPendingChoice;
+    let fallbackCalled = false;
+    let caughtError: unknown = null;
+
+    try {
+      await submitUserMessageWithStreamFallbackForTest({
+        payload: {
+          taskId: "task-1",
+          content: "Confirm plan",
+          attachments: [],
+        },
+        createSession: async () => "model-session-1",
+        submitStream: async (_payload, onEvent) => {
+          onEvent(planningEvent);
+          throw streamError;
+        },
+        submitFallback: async () => {
+          fallbackCalled = true;
+          return [];
+        },
+        onEvent: (event) => {
+          appliedEvents.push(event);
+          currentPendingChoice = newerPendingChoice;
+        },
+      });
+    } catch (error) {
+      caughtError = error;
+    }
+
+    expect(didApplyBackendEvents(caughtError)).toBe(true);
+    expect(
+      restorePendingPlanningChoiceAfterFailure(
+        oldPendingChoice,
+        didApplyBackendEvents(caughtError),
+        currentPendingChoice,
+      ),
+    ).toBe(newerPendingChoice);
+
+    expect(appliedEvents).toEqual([planningEvent]);
+    expect(fallbackCalled).toBe(false);
+  });
+
+  it("restores pending planning choices in typed and button submit failure paths", () => {
+    const restoreCalls =
+      appSource.match(
+        /restorePendingPlanningChoiceAfterFailure\(\s*capturedPlanningChoice,\s*didApplyBackendEvents\(error\),\s*pendingPlanningChoiceRef\.current,\s*\)/g,
+      ) ?? [];
+
+    expect(restoreCalls).toHaveLength(2);
   });
 });

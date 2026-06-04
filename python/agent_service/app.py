@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 
 from agent_service.asr import (
     ASRError,
@@ -239,21 +240,32 @@ def _run_message_with_runtime(
     *,
     model_client,
 ) -> list[AgentEvent]:
-    result = _runtime_engine().run_from_state(
-        AgentRunState.from_message_request(request),
-        model_client=model_client,
-    )
+    try:
+        result = _runtime_engine().run_from_state(
+            AgentRunState.from_message_request(request),
+            model_client=model_client,
+        )
+    except ValidationError as error:
+        if _is_planning_resume_request(request):
+            raise _invalid_planning_resume_http_exception(error) from error
+        raise
     return _public_agent_events(result.events)
 
 
 def _serialize_sse_events(request: AgentMessageRequest, *, model_client):
-    run_state = AgentRunState.from_message_request(request)
-    for event in _runtime_engine().stream_from_state(
-        run_state,
-        model_client=model_client,
-    ):
-        if _is_runtime_control_event(event):
-            continue
+    try:
+        run_state = AgentRunState.from_message_request(request)
+        for event in _runtime_engine().stream_from_state(
+            run_state,
+            model_client=model_client,
+        ):
+            if _is_runtime_control_event(event):
+                continue
+            yield f"data: {event.model_dump_json()}\n\n"
+    except ValidationError as error:
+        if not _is_planning_resume_request(request):
+            raise
+        event = _invalid_planning_resume_event(error)
         yield f"data: {event.model_dump_json()}\n\n"
 
 
@@ -307,3 +319,30 @@ def _public_agent_events(events: list[AgentEvent]) -> list[AgentEvent]:
 
 def _is_runtime_control_event(event: AgentEvent) -> bool:
     return event.type in {"runtime.run_started", "runtime.state_delta"}
+
+
+def _is_planning_resume_request(request: AgentMessageRequest) -> bool:
+    pending_choice = request.pendingChoice
+    if not isinstance(pending_choice, dict):
+        return False
+    return str(pending_choice.get("kind") or "").startswith("planning.")
+
+
+def _invalid_planning_resume_http_exception(error: ValidationError) -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail={
+            "errorCode": "invalid_planning_resume",
+            "error": str(error),
+        },
+    )
+
+
+def _invalid_planning_resume_event(error: ValidationError) -> AgentEvent:
+    return AgentEvent(
+        type="planning.failed",
+        payload={
+            "reason": "invalid_planning_resume",
+            "message": str(error),
+        },
+    )

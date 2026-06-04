@@ -8,6 +8,7 @@ const SIDECAR_TOKEN_HEADER = "X-Alita-Sidecar-Token";
 
 export type SubmitMessagePayload = {
   taskId: string;
+  projectPath?: string;
   content: string;
   attachments: ChatAttachment[];
   inquiryChoice?: "quick_answer" | "research_flow";
@@ -282,6 +283,9 @@ async function getSidecarAuthToken(): Promise<string | null> {
 function toSidecarMessage(payload: SubmitMessagePayload) {
   return {
     task_id: payload.taskId,
+    ...(payload.projectPath !== undefined
+      ? { project_path: payload.projectPath }
+      : {}),
     content: payload.content,
     model_session_id: payload.modelSessionId ?? null,
     attachments: payload.attachments.map(toSidecarAttachment),

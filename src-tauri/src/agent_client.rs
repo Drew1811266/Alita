@@ -13,6 +13,8 @@ pub struct AgentAttachment {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentMessageRequest {
     pub task_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
     pub content: String,
     pub attachments: Vec<AgentAttachment>,
     #[serde(skip_serializing_if = "Option::is_none")]

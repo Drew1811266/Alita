@@ -102,6 +102,7 @@ def test_engine_step_plan_uses_legacy_planner_and_records_action_graph():
     engine = AgentRuntimeEngine(
         route_runner=fake_runner,
         deep_runtime_runner=_simple_deep_runtime,
+        allow_legacy_task_product_path=True,
     )
     started = engine.start_run(
         message=UserMessage(
@@ -163,8 +164,9 @@ def test_engine_run_from_agent_state_wraps_legacy_events_with_runtime_events():
         "message.created",
     ]
     assert result.state.stage == "plan"
-    assert result.events[3].payload["delta"]["decision"]["kind"] == (
-        "legacy_route_and_plan"
+    assert (
+        result.events[3].payload["delta"]["decision"]["kind"]
+        == "legacy_response_only"
     )
 
 
@@ -176,8 +178,8 @@ def test_engine_run_from_agent_state_persists_runtime_state_and_delta(tmp_path):
         del run_state, kwargs
         return [
             AgentEvent(
-                type="node_graph.created",
-                payload={"graph": {"graphId": "graph-1", "nodes": [], "edges": []}},
+                type="message.created",
+                payload={"message": {"content": "ok"}},
             )
         ]
 
@@ -200,7 +202,55 @@ def test_engine_run_from_agent_state_persists_runtime_state_and_delta(tmp_path):
     assert restored.stage == "plan"
     assert restored.run_id == "run-store-engine"
     assert [delta.stage_after for delta in deltas] == ["plan"]
-    assert deltas[0].decision == {"kind": "legacy_route_and_plan"}
+    assert deltas[0].decision == {"kind": "legacy_response_only"}
+
+
+def test_engine_step_plan_blocks_legacy_planner_by_default():
+    legacy_calls: list[AgentRunState] = []
+
+    def fake_runner(run_state: AgentRunState, **kwargs) -> list[AgentEvent]:
+        del kwargs
+        legacy_calls.append(run_state)
+        return [
+            AgentEvent(
+                type="node_graph.created",
+                payload={"graph": {"graphId": "graph-1", "nodes": [], "edges": []}},
+            )
+        ]
+
+    engine = AgentRuntimeEngine(
+        route_runner=fake_runner,
+        deep_runtime_runner=_simple_deep_runtime,
+    )
+    started = engine.start_run(
+        message=UserMessage(
+            task_id="task-engine-plan-default-blocked",
+            content="Use a document tool.",
+        ),
+        project_path="D:/Project/demo.alita",
+        run_id="run-engine-plan-default-blocked",
+    )
+    plan_state = started.state.model_copy(update={"stage": "plan"})
+
+    events = engine.step(plan_state)
+
+    assert legacy_calls == []
+    assert [event.type for event in events] == [
+        "runtime.state_delta",
+        "runtime.legacy_graph_blocked",
+        "task.failed",
+    ]
+    delta = events[0].payload["delta"]
+    assert delta["stage_before"] == "plan"
+    assert delta["stage_after"] == "failed"
+    assert delta["decision"] == {
+        "kind": "legacy_graph_blocked",
+        "blockedEventTypes": ["legacy_plan_action_graph"],
+    }
+    assert events[-2].payload["reason"] == (
+        "legacy plan action graph is blocked from the Agent Runtime product path"
+    )
+    assert events[-1].payload["errorCode"] == "legacy_graph_blocked"
 
 
 def test_engine_stream_terminal_deep_runtime_persists_plan_state(tmp_path):

@@ -1,6 +1,11 @@
 import { useEffect, useRef, type ChangeEvent } from "react";
 
-import type { ResearchChoiceId, ResearchChoicePayload } from "../../shared/events";
+import type {
+  PlanningConfirmationChoiceId,
+  PlanningConfirmationRequiredPayload,
+  ResearchChoiceId,
+  ResearchChoicePayload,
+} from "../../shared/events";
 import type { ChatAttachment, ChatMessage } from "../../shared/types";
 import { AudioTrack } from "../voice/AudioTrack";
 import type { DraftSelection } from "../voice/draftInsertion";
@@ -26,14 +31,18 @@ export type PendingResearchChoice = ResearchChoicePayload & {
   submittedPayload?: unknown;
 };
 
+export type PendingPlanningChoice = PlanningConfirmationRequiredPayload;
+
 type ChatPanelProps = {
   messages: ChatMessage[];
   pendingAttachments: ChatAttachment[];
+  pendingPlanningChoice?: PendingPlanningChoice | null;
   pendingResearchChoice?: PendingResearchChoice | null;
   draft: string;
   onDraftChange(value: string): void;
   onSend(): void;
   onAddFile(): void;
+  onPlanningChoice?(choiceId: PlanningConfirmationChoiceId): void;
   onResearchChoice?(choiceId: ResearchChoiceId): void;
   voiceInput?: VoiceInputView;
   onVoiceToggle?(selection: DraftSelection | null): void;
@@ -95,11 +104,13 @@ export function scrollMessageListToBottom(
 export function ChatPanel({
   messages,
   pendingAttachments,
+  pendingPlanningChoice = null,
   pendingResearchChoice = null,
   draft,
   onDraftChange,
   onSend,
   onAddFile,
+  onPlanningChoice = () => undefined,
   onResearchChoice = () => undefined,
   voiceInput = idleVoiceInput,
   onVoiceToggle = () => undefined,
@@ -189,6 +200,22 @@ export function ChatPanel({
               disabled={!pendingResearchChoice.submittedPayload}
               key={choice.id}
               onClick={() => onResearchChoice(choice.id)}
+              type="button"
+            >
+              {choice.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {pendingPlanningChoice ? (
+        <div className="researchChoiceBar" aria-label="Planning choices">
+          {pendingPlanningChoice.choices.map((choice) => (
+            <button
+              aria-label={`Choose planning option: ${choice.label}`}
+              className="secondaryButton researchChoiceButton"
+              key={choice.id}
+              onClick={() => onPlanningChoice(choice.id)}
               type="button"
             >
               {choice.label}

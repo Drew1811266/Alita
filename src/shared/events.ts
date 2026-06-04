@@ -25,6 +25,235 @@ export type ResearchChoicePayload = {
   }>;
 };
 
+export type PlanningConfirmationChoiceId = "approve" | "revise" | "cancel";
+
+export type PlanningConfirmationPendingChoice = {
+  kind: "planning.confirmation";
+  runId: string;
+  threadId: string;
+  graphId: string;
+};
+
+export type PlanningConfirmationSubmitChoice =
+  PlanningConfirmationPendingChoice & {
+    decision: PlanningConfirmationChoiceId;
+    revisionInstructions: string[];
+  };
+
+export type PlanningConfirmationChoice = {
+  id: PlanningConfirmationChoiceId;
+  label: string;
+  description?: string;
+};
+
+export type PlanningConfirmationRequiredPayload = {
+  kind: "planning.confirmation";
+  taskId: string;
+  runId: string;
+  threadId: string;
+  graphId: string;
+  summary: string;
+  pendingChoice: PlanningConfirmationPendingChoice;
+  choices: PlanningConfirmationChoice[];
+};
+
+export type PlanningClarificationPayload = {
+  kind: "planning.clarification";
+  taskId: string;
+  runId: string;
+  threadId: string;
+  question: string;
+  missingInputs: string[];
+  prompt: string;
+};
+
+export type PlanningCheckpointRecord = {
+  runId: string;
+  threadId: string;
+  checkpointId: string;
+  stage: string;
+  node?: string | null;
+  revisionCount: number;
+  hasPlanDraft: boolean;
+  hasCompiledGraph: boolean;
+  hasAgentCompiledGraph: boolean;
+  executionReady: boolean;
+  createdAt: string;
+};
+
+export type PlanningTerminalPayload = {
+  taskId: string;
+  runId: string;
+  threadId: string;
+  graphId: string;
+};
+
+export type AgentPlanGraphCompileStartedPayload = {
+  taskId: string;
+  runId: string;
+  threadId: string;
+  graphId: string;
+};
+
+export type AgentPlanGraphCompiledPayload =
+  AgentPlanGraphCompileStartedPayload & {
+    compileId: string;
+  };
+
+export type AgentPlanGraphCompileReviewCompletedPayload =
+  AgentPlanGraphCompiledPayload;
+
+export type AgentPlanGraphExecutionReadyPayload =
+  AgentPlanGraphCompiledPayload & {
+    nodeCount: number;
+    edgeCount: number;
+    toolNodeCount: number;
+    modelNodeCount: number;
+    permissionsRequired: string[];
+    expectedArtifacts: string[];
+  };
+
+export type AgentPlanGraphCompileFailedPayload =
+  AgentPlanGraphCompileStartedPayload & {
+    compileId?: string;
+    reason: string;
+    issues: Array<{
+      code: string;
+      message: string;
+      nodeId?: string;
+      severity: "error" | "warning";
+    }>;
+    unsupportedCapabilities: string[];
+    missingBindings: string[];
+  };
+
+export type AgentExecutionBasePayload = {
+  taskId: string;
+  runId: string;
+  threadId: string;
+  compileId: string;
+  graphId: string;
+};
+
+export type AgentExecutionStartedPayload = AgentExecutionBasePayload;
+
+export type AgentExecutionSummaryFields = {
+  artifactRefs: string[];
+  completedNodeIds: string[];
+  checkpointIds: string[];
+  recoveryActions: unknown[];
+};
+
+export type AgentExecutionCompletedPayload = AgentExecutionBasePayload &
+  AgentExecutionSummaryFields & {
+    status: "completed";
+    finalMessage?: string;
+  };
+
+export type AgentExecutionFailedSummaryPayload = AgentExecutionBasePayload &
+  AgentExecutionSummaryFields & {
+    status: "failed";
+    failedNodeId?: string;
+    reason: string;
+    finalMessage?: string;
+  };
+
+export type AgentExecutionFailedExceptionPayload = Omit<
+  AgentExecutionBasePayload,
+  "compileId"
+> & {
+  compileId?: string;
+  status: "failed";
+  reason: "execution_bridge_failed";
+  errorCode: string;
+  issues: unknown[];
+};
+
+export type AgentExecutionFailedPayload =
+  | AgentExecutionFailedSummaryPayload
+  | AgentExecutionFailedExceptionPayload;
+
+export type AgentExecutionInterruptedPayload = AgentExecutionBasePayload &
+  AgentExecutionSummaryFields & {
+    status: "interrupted";
+    reason: string;
+    failedNodeId?: string;
+    finalMessage?: string;
+  };
+
+export type AgentExecutionVerifyCompletedPayload = AgentExecutionBasePayload & {
+  status: "approved" | "failed" | "needs_repair";
+  isValid: boolean;
+  issues: unknown[];
+  finalArtifacts: string[];
+  repairRequired: boolean;
+};
+
+export type AgentExecutionRepairProposedPayload = AgentExecutionBasePayload &
+  AgentExecutionSummaryFields & {
+    status: "failed" | "interrupted";
+    actions: unknown[];
+    issues: unknown[];
+    reason: string;
+    failedNodeId?: string;
+    finalMessage?: string;
+  };
+
+export type AgentExecutionFinalPayload = AgentExecutionBasePayload &
+  AgentExecutionSummaryFields & {
+    status: "completed";
+    message: string;
+    finalMessage?: string;
+  };
+
+export type PlanningResumedPayload =
+  | {
+      kind: "planning.clarification";
+      taskId: string;
+      runId: string;
+      threadId: string;
+    }
+  | {
+      kind: "planning.confirmation";
+      taskId: string;
+      runId: string;
+      threadId: string;
+      decision: PlanningConfirmationChoiceId;
+      revisionInstructions: string[];
+    };
+
+export type PlanningRevisionRequestedPayload = {
+  taskId: string;
+  reason: string;
+  review?: Record<string, unknown>;
+  revisionCount: number;
+  revisionBudget: number;
+  instructions: string[];
+};
+
+export type PlanningRevisionStartedPayload = {
+  taskId: string;
+  revisionCount: number;
+  revisionBudget: number;
+  instructions: string[];
+};
+
+export type PlanningRevisionCompletedPayload = {
+  taskId: string;
+  revisionCount: number;
+  revisionBudget: number;
+  planDraftId: string;
+};
+
+export type PlanningRevisionExhaustedPayload = {
+  taskId: string;
+  reason: string;
+  review?: Record<string, unknown>;
+  revisionCount: number;
+  revisionBudget: number;
+  instructions?: string[];
+};
+
 export type BackendEvent =
   | {
       type: "run.started";
@@ -90,6 +319,20 @@ export type BackendEvent =
       };
     }
   | {
+      type: "planning.stage_changed";
+      payload: {
+        taskId: string;
+        stage: string;
+        label: string;
+      };
+    }
+  | {
+      type: "planning.checkpoint_recorded";
+      payload: {
+        checkpoint: PlanningCheckpointRecord;
+      };
+    }
+  | {
       type: "reasoning.decision_created";
       payload: {
         decision: Record<string, unknown>;
@@ -139,11 +382,92 @@ export type BackendEvent =
       };
     }
   | {
+      type: "planning.revision_requested";
+      payload: PlanningRevisionRequestedPayload;
+    }
+  | {
+      type: "planning.revision_started";
+      payload: PlanningRevisionStartedPayload;
+    }
+  | {
+      type: "planning.revision_completed";
+      payload: PlanningRevisionCompletedPayload;
+    }
+  | {
+      type: "planning.revision_exhausted";
+      payload: PlanningRevisionExhaustedPayload;
+    }
+  | {
       type: "planning.clarification_required";
-      payload: {
-        taskId: string;
-        prompt: string;
-      };
+      payload: PlanningClarificationPayload;
+    }
+  | {
+      type: "planning.confirmation_required";
+      payload: PlanningConfirmationRequiredPayload;
+    }
+  | {
+      type: "planning.confirmed";
+      payload: PlanningTerminalPayload;
+    }
+  | {
+      type: "agent_plan_graph.compile_started";
+      payload: AgentPlanGraphCompileStartedPayload;
+    }
+  | {
+      type: "agent_plan_graph.compiled";
+      payload: AgentPlanGraphCompiledPayload;
+    }
+  | {
+      type: "agent_plan_graph.compile_review_completed";
+      payload: AgentPlanGraphCompileReviewCompletedPayload;
+    }
+  | {
+      type: "agent_plan_graph.execution_ready";
+      payload: AgentPlanGraphExecutionReadyPayload;
+    }
+  | {
+      type: "agent_plan_graph.compile_failed";
+      payload: AgentPlanGraphCompileFailedPayload;
+    }
+  | {
+      type: "agent_execution.started";
+      payload: AgentExecutionStartedPayload;
+    }
+  | {
+      type: "agent_execution.completed";
+      payload: AgentExecutionCompletedPayload;
+    }
+  | {
+      type: "agent_execution.failed";
+      payload: AgentExecutionFailedPayload;
+    }
+  | {
+      type: "agent_execution.interrupted";
+      payload: AgentExecutionInterruptedPayload;
+    }
+  | {
+      type: "agent_execution.verify_completed";
+      payload: AgentExecutionVerifyCompletedPayload;
+    }
+  | {
+      type: "agent_execution.repair_proposed";
+      payload: AgentExecutionRepairProposedPayload;
+    }
+  | {
+      type: "agent_execution.final";
+      payload: AgentExecutionFinalPayload;
+    }
+  | {
+      type: "planning.cancelled";
+      payload: PlanningTerminalPayload;
+    }
+  | {
+      type: "planning.interrupted";
+      payload: PlanningClarificationPayload | PlanningConfirmationRequiredPayload;
+    }
+  | {
+      type: "planning.resumed";
+      payload: PlanningResumedPayload;
     }
   | {
       type: "planning.failed";
@@ -266,6 +590,25 @@ export type BackendEvent =
         taskId: string;
         checkpoint: RuntimeCheckpointRecord;
         pendingNodeIds: string[];
+      };
+    }
+  | {
+      type: "runtime.legacy_graph_blocked";
+      payload: {
+        runId: string;
+        threadId: string;
+        taskId: string;
+        reason: string;
+        blockedEventTypes: string[];
+      };
+    }
+  | {
+      type: "runtime.deep_agent_product_path_blocked";
+      payload: {
+        runId: string;
+        threadId: string;
+        taskId: string;
+        reason: string;
       };
     }
   | {

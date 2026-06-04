@@ -3,8 +3,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+from pydantic import ValidationError
+
 from agent_service.agent_run_state import AgentRunState
-from agent_service.agent_runtime_engine import AgentRuntimeEngine
+from agent_service.agent_runtime_engine import (
+    AgentRuntimeEngine,
+    planning_resume_command_from_pending_choice,
+)
+from agent_service.runtime_store import RuntimeStore
 from agent_service.model_client import ChatDiagnosticsResponse, ModelCallDiagnostics
 from agent_service.schemas import AgentEvent, UserMessage
 
@@ -102,10 +109,89 @@ def test_runtime_engine_task_request_uses_deep_agent_runtime_not_legacy_runner()
 
     assert legacy_calls == []
     assert model.calls == 2
-    assert [event.type for event in result.events][-1] == "node_graph.created"
-    graph = result.events[-1].payload["graph"]
+    assert [event.type for event in result.events][-3:] == [
+        "node_graph.created",
+        "planning.confirmation_required",
+        "planning.interrupted",
+    ]
+    graph_event = next(event for event in result.events if event.type == "node_graph.created")
+    graph = graph_event.payload["graph"]
     assert graph["metadata"]["generatedBy"] == "deep_agent_runtime"
     assert graph["nodes"][0]["metadata"]["sourcePlanStepId"] == "draft"
+
+
+def test_runtime_engine_stream_uses_deep_agent_stream_runner_without_legacy_fallback(
+    tmp_path,
+) -> None:
+    deep_stream_calls: list[dict[str, Any]] = []
+    legacy_route_calls: list[AgentRunState] = []
+    legacy_stream_calls: list[AgentRunState] = []
+    runtime_store = RuntimeStore(
+        project_path=str(tmp_path / "demo.alita"),
+        run_id="run-engine-stream",
+    )
+
+    def legacy_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_route_calls.append(run_state)
+        raise AssertionError("legacy route runner must not be used")
+
+    def legacy_stream_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_stream_calls.append(run_state)
+        raise AssertionError("legacy stream runner must not be used")
+
+    def deep_runtime_stream_runner(message: UserMessage, **kwargs):
+        deep_stream_calls.append({"message": message, **kwargs})
+        yield AgentEvent(
+            type="reasoning.decision_created",
+            payload={"decision": {"next_action": "deep_planning"}},
+        )
+        yield AgentEvent(
+            type="node_graph.created",
+            payload={
+                "graph": {
+                    "graphId": "graph-stream",
+                    "nodes": [],
+                    "edges": [],
+                    "metadata": {"generatedBy": "deep_agent_runtime"},
+                }
+            },
+        )
+
+    engine = AgentRuntimeEngine(
+        route_runner=legacy_runner,
+        stream_runner=legacy_stream_runner,
+        deep_runtime_stream_runner=deep_runtime_stream_runner,
+        runtime_store=runtime_store,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-engine-stream",
+            content="Create a streamed deep planning graph.",
+        )
+    ).model_copy(
+        update={
+            "project_path": str(tmp_path / "demo.alita"),
+            "run_id": "run-engine-stream",
+            "thread_id": "thread-engine-stream",
+        }
+    )
+
+    events = list(engine.stream_from_state(run_state, model_client=object()))
+
+    assert legacy_route_calls == []
+    assert legacy_stream_calls == []
+    assert len(deep_stream_calls) == 1
+    assert deep_stream_calls[0]["run_id"] == "run-engine-stream"
+    assert deep_stream_calls[0]["thread_id"] == "thread-engine-stream"
+    assert deep_stream_calls[0]["runtime_store"] is runtime_store
+    assert deep_stream_calls[0]["resume_command"] is None
+    assert [event.type for event in events] == [
+        "runtime.run_started",
+        "reasoning.decision_created",
+        "node_graph.created",
+    ]
 
 
 def test_runtime_engine_simple_request_passes_reasoning_gate_before_legacy_answer() -> None:
@@ -140,6 +226,422 @@ def test_runtime_engine_simple_request_passes_reasoning_gate_before_legacy_answe
     ]
 
 
+def test_deep_agent_incomplete_graph_task_stream_does_not_fall_back_to_legacy_graph() -> None:
+    legacy_calls: list[AgentRunState] = []
+
+    def legacy_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_calls.append(run_state)
+        return [
+            AgentEvent(
+                type="node_graph.created",
+                payload={
+                    "graph": {
+                        "graphId": "legacy-graph",
+                        "nodes": [],
+                        "edges": [],
+                        "metadata": {"plannerChain": {"strategy": "legacy_task_planner"}},
+                    }
+                },
+            )
+        ]
+
+    def incomplete_deep_runtime(message: UserMessage, **kwargs):
+        del message, kwargs
+        return [
+            AgentEvent(
+                type="reasoning.decision_created",
+                payload={
+                    "decision": {
+                        "next_action": "deep_planning",
+                        "complexity": "graph_task",
+                    }
+                },
+            )
+        ]
+
+    engine = AgentRuntimeEngine(
+        route_runner=legacy_runner,
+        deep_runtime_runner=incomplete_deep_runtime,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-incomplete-deep-agent",
+            content="Create a multi-step project analysis graph.",
+        )
+    ).model_copy(
+        update={"project_path": "D:/Project/demo.alita", "run_id": "run-incomplete"}
+    )
+
+    result = engine.run_from_state(run_state)
+
+    assert legacy_calls == []
+    assert [event.type for event in result.events] == [
+        "runtime.run_started",
+        "reasoning.decision_created",
+        "runtime.state_delta",
+        "runtime.deep_agent_product_path_blocked",
+        "task.failed",
+    ]
+    failed = result.events[-1]
+    assert failed.payload["errorCode"] == "deep_agent_product_path_incomplete"
+
+
+def test_simple_answer_legacy_response_path_blocks_legacy_graph_events() -> None:
+    legacy_calls: list[AgentRunState] = []
+
+    def legacy_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_calls.append(run_state)
+        return [
+            AgentEvent(
+                type="node_graph.created",
+                payload={
+                    "graph": {
+                        "graphId": "legacy-simple-graph",
+                        "nodes": [],
+                        "edges": [],
+                        "metadata": {"plannerChain": {"strategy": "legacy_task_planner"}},
+                    }
+                },
+            )
+        ]
+
+    model = FakeDeepModel([_reasoning_payload("simple_answer")])
+    engine = AgentRuntimeEngine(route_runner=legacy_runner)
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-simple-block-graph", content="Say hello.")
+    ).model_copy(
+        update={"project_path": "D:/Project/demo.alita", "run_id": "run-simple-block"}
+    )
+
+    result = engine.run_from_state(run_state, model_client=model)
+
+    assert len(legacy_calls) == 1
+    assert all(event.type != "node_graph.created" for event in result.events)
+    assert result.events[-2].type == "runtime.legacy_graph_blocked"
+    assert result.events[-1].type == "task.failed"
+    assert result.events[-1].payload["errorCode"] == "legacy_graph_blocked"
+
+
+def test_simple_answer_legacy_response_path_blocks_graph_feedback_events() -> None:
+    def legacy_runner(run_state: AgentRunState, **kwargs):
+        del run_state, kwargs
+        return [
+            AgentEvent(
+                type="graph.replanned",
+                payload={"graph": {"graphId": "legacy-replanned"}},
+            ),
+            AgentEvent(
+                type="graph.overwrite_confirmation_required",
+                payload={"taskId": "task-simple-block-feedback"},
+            ),
+        ]
+
+    model = FakeDeepModel([_reasoning_payload("simple_answer")])
+    engine = AgentRuntimeEngine(route_runner=legacy_runner)
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-simple-block-feedback", content="Say hello.")
+    ).model_copy(
+        update={"project_path": "D:/Project/demo.alita", "run_id": "run-feedback-block"}
+    )
+
+    result = engine.run_from_state(run_state, model_client=model)
+
+    assert all(
+        event.type
+        not in {"graph.replanned", "graph.overwrite_confirmation_required"}
+        for event in result.events
+    )
+    blocked = result.events[-2]
+    assert blocked.type == "runtime.legacy_graph_blocked"
+    assert blocked.payload["blockedEventTypes"] == [
+        "graph.replanned",
+        "graph.overwrite_confirmation_required",
+    ]
+    assert result.events[-1].payload["errorCode"] == "legacy_graph_blocked"
+
+
+def test_deep_agent_planning_failure_does_not_call_legacy_route_runner() -> None:
+    legacy_calls: list[AgentRunState] = []
+
+    def legacy_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_calls.append(run_state)
+        raise AssertionError("legacy route runner must not run after planning failure")
+
+    def failing_deep_runtime(message: UserMessage, **kwargs):
+        del kwargs
+        return [
+            AgentEvent(
+                type="planning.failed",
+                payload={
+                    "taskId": message.task_id,
+                    "runId": "run-planning-failed",
+                    "threadId": "thread-planning-failed",
+                    "errorCode": "deep_planning_unavailable",
+                    "error": "model unavailable",
+                },
+            )
+        ]
+
+    engine = AgentRuntimeEngine(
+        route_runner=legacy_runner,
+        deep_runtime_runner=failing_deep_runtime,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-planning-failed",
+            content="Build a detailed execution graph.",
+        )
+    ).model_copy(
+        update={
+            "project_path": "D:/Project/demo.alita",
+            "run_id": "run-planning-failed",
+            "thread_id": "thread-planning-failed",
+        }
+    )
+
+    result = engine.run_from_state(run_state)
+
+    assert legacy_calls == []
+    assert result.events[-1].type == "planning.failed"
+    assert result.state.stage == "failed"
+
+
+def test_streaming_deep_agent_planning_failure_persists_failed_state(tmp_path) -> None:
+    legacy_stream_calls: list[AgentRunState] = []
+    runtime_store = RuntimeStore(
+        project_path=str(tmp_path / "demo.alita"),
+        run_id="run-stream-planning-failed",
+    )
+
+    def legacy_stream_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_stream_calls.append(run_state)
+        raise AssertionError("legacy stream runner must not run after planning failure")
+
+    def failing_deep_stream(message: UserMessage, **kwargs):
+        del kwargs
+        yield AgentEvent(
+            type="planning.failed",
+            payload={
+                "taskId": message.task_id,
+                "runId": "run-stream-planning-failed",
+                "threadId": "thread-stream-planning-failed",
+                "errorCode": "deep_planning_unavailable",
+                "error": "model unavailable",
+            },
+        )
+
+    engine = AgentRuntimeEngine(
+        deep_runtime_stream_runner=failing_deep_stream,
+        stream_runner=legacy_stream_runner,
+        runtime_store=runtime_store,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-stream-planning-failed",
+            content="Build a detailed execution graph.",
+        )
+    ).model_copy(
+        update={
+            "project_path": str(tmp_path / "demo.alita"),
+            "run_id": "run-stream-planning-failed",
+            "thread_id": "thread-stream-planning-failed",
+        }
+    )
+
+    events = list(engine.stream_from_state(run_state))
+
+    assert legacy_stream_calls == []
+    assert events[-1].type == "planning.failed"
+    restored = runtime_store.read_state()
+    assert restored is not None
+    assert restored.stage == "failed"
+
+
+def test_streaming_deep_agent_incomplete_graph_task_blocks_and_persists_delta(
+    tmp_path,
+) -> None:
+    legacy_stream_calls: list[AgentRunState] = []
+    runtime_store = RuntimeStore(
+        project_path=str(tmp_path / "demo.alita"),
+        run_id="run-stream-incomplete",
+    )
+
+    def legacy_stream_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_stream_calls.append(run_state)
+        raise AssertionError("legacy stream runner must not run after incomplete graph task")
+
+    def incomplete_deep_stream(message: UserMessage, **kwargs):
+        del message, kwargs
+        yield AgentEvent(
+            type="reasoning.decision_created",
+            payload={
+                "decision": {
+                    "next_action": "deep_planning",
+                    "complexity": "graph_task",
+                }
+            },
+        )
+
+    engine = AgentRuntimeEngine(
+        deep_runtime_stream_runner=incomplete_deep_stream,
+        stream_runner=legacy_stream_runner,
+        runtime_store=runtime_store,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-stream-incomplete",
+            content="Create a multi-step project analysis graph.",
+        )
+    ).model_copy(
+        update={
+            "project_path": str(tmp_path / "demo.alita"),
+            "run_id": "run-stream-incomplete",
+            "thread_id": "thread-stream-incomplete",
+        }
+    )
+
+    events = list(engine.stream_from_state(run_state))
+
+    assert legacy_stream_calls == []
+    assert [event.type for event in events] == [
+        "runtime.run_started",
+        "reasoning.decision_created",
+        "runtime.state_delta",
+        "runtime.deep_agent_product_path_blocked",
+        "task.failed",
+    ]
+    assert events[-1].payload["errorCode"] == "deep_agent_product_path_incomplete"
+    restored = runtime_store.read_state()
+    assert restored is not None
+    assert restored.stage == "failed"
+    deltas = runtime_store.read_deltas()
+    assert deltas[-1].stage_after == "failed"
+    assert deltas[-1].decision["kind"] == "deep_agent_product_path_blocked"
+
+
+def test_streaming_simple_answer_suppresses_legacy_graph_event_and_fails(
+    tmp_path,
+) -> None:
+    runtime_store = RuntimeStore(
+        project_path=str(tmp_path / "demo.alita"),
+        run_id="run-stream-simple-block",
+    )
+
+    def deep_stream(message: UserMessage, **kwargs):
+        del message, kwargs
+        yield AgentEvent(
+            type="reasoning.completed",
+            payload={"taskId": "task-stream-simple-block", "nextAction": "simple_answer"},
+        )
+
+    def legacy_stream_runner(run_state: AgentRunState, **kwargs):
+        del run_state, kwargs
+        yield AgentEvent(
+            type="node_graph.created",
+            payload={"graph": {"graphId": "legacy-stream-graph", "nodes": [], "edges": []}},
+        )
+
+    engine = AgentRuntimeEngine(
+        deep_runtime_stream_runner=deep_stream,
+        stream_runner=legacy_stream_runner,
+        runtime_store=runtime_store,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-stream-simple-block", content="Say hello.")
+    ).model_copy(
+        update={
+            "project_path": str(tmp_path / "demo.alita"),
+            "run_id": "run-stream-simple-block",
+            "thread_id": "thread-stream-simple-block",
+        }
+    )
+
+    events = list(engine.stream_from_state(run_state))
+
+    assert all(event.type != "node_graph.created" for event in events)
+    assert [event.type for event in events] == [
+        "runtime.run_started",
+        "reasoning.completed",
+        "runtime.state_delta",
+        "runtime.legacy_graph_blocked",
+        "task.failed",
+    ]
+    assert events[-1].payload["errorCode"] == "legacy_graph_blocked"
+    restored = runtime_store.read_state()
+    assert restored is not None
+    assert restored.stage == "failed"
+
+
+def test_streaming_simple_answer_suppresses_legacy_graph_feedback_and_fails(
+    tmp_path,
+) -> None:
+    runtime_store = RuntimeStore(
+        project_path=str(tmp_path / "demo.alita"),
+        run_id="run-stream-feedback-block",
+    )
+
+    def deep_stream(message: UserMessage, **kwargs):
+        del message, kwargs
+        yield AgentEvent(
+            type="reasoning.completed",
+            payload={
+                "taskId": "task-stream-feedback-block",
+                "nextAction": "simple_answer",
+            },
+        )
+
+    def legacy_stream_runner(run_state: AgentRunState, **kwargs):
+        del run_state, kwargs
+        yield AgentEvent(
+            type="graph.replanned",
+            payload={"graph": {"graphId": "legacy-replanned"}},
+        )
+        yield AgentEvent(
+            type="graph.overwrite_confirmation_required",
+            payload={"taskId": "task-stream-feedback-block"},
+        )
+
+    engine = AgentRuntimeEngine(
+        deep_runtime_stream_runner=deep_stream,
+        stream_runner=legacy_stream_runner,
+        runtime_store=runtime_store,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-stream-feedback-block", content="Say hello.")
+    ).model_copy(
+        update={
+            "project_path": str(tmp_path / "demo.alita"),
+            "run_id": "run-stream-feedback-block",
+            "thread_id": "thread-stream-feedback-block",
+        }
+    )
+
+    events = list(engine.stream_from_state(run_state))
+
+    assert all(
+        event.type
+        not in {"graph.replanned", "graph.overwrite_confirmation_required"}
+        for event in events
+    )
+    assert [event.type for event in events] == [
+        "runtime.run_started",
+        "reasoning.completed",
+        "runtime.state_delta",
+        "runtime.legacy_graph_blocked",
+        "task.failed",
+    ]
+    assert events[-2].payload["blockedEventTypes"] == ["graph.replanned"]
+    assert events[-1].payload["errorCode"] == "legacy_graph_blocked"
+    restored = runtime_store.read_state()
+    assert restored is not None
+    assert restored.stage == "failed"
+
+
 def test_deep_agent_runtime_does_not_call_legacy_task_planner(monkeypatch) -> None:
     import agent_service.planner_chain as planner_chain
     import agent_service.task_planner as task_planner
@@ -164,6 +666,236 @@ def test_deep_agent_runtime_does_not_call_legacy_task_planner(monkeypatch) -> No
 
     result = engine.run_from_state(run_state, model_client=model)
 
-    assert result.events[-1].type == "node_graph.created"
-    graph = result.events[-1].payload["graph"]
+    assert result.events[-1].type == "planning.interrupted"
+    graph_event = next(event for event in result.events if event.type == "node_graph.created")
+    graph = graph_event.payload["graph"]
     assert graph["metadata"]["generatedBy"] == "deep_agent_runtime"
+
+
+def test_planning_resume_command_from_pending_choice_builds_clarification_answer() -> None:
+    command = planning_resume_command_from_pending_choice(
+        {
+            "kind": "planning.clarification",
+            "threadId": "thread-clarify",
+            "runId": "run-clarify",
+            "answer": "The report is for executives.",
+        }
+    )
+
+    assert command is not None
+    assert command.kind == "clarification_answer"
+    assert command.thread_id == "thread-clarify"
+    assert command.run_id == "run-clarify"
+    assert command.answer == "The report is for executives."
+
+
+def test_planning_resume_command_uses_answer_fallback() -> None:
+    command = planning_resume_command_from_pending_choice(
+        {
+            "kind": "planning.clarification",
+            "threadId": "thread-clarify",
+            "runId": "run-clarify",
+        },
+        answer_fallback="Use the executive audience.",
+    )
+
+    assert command is not None
+    assert command.answer == "Use the executive audience."
+
+
+def test_planning_resume_command_from_pending_choice_builds_confirmation_approval() -> None:
+    command = planning_resume_command_from_pending_choice(
+        {
+            "kind": "planning.confirmation",
+            "threadId": "thread-confirm",
+            "runId": "run-confirm",
+            "decision": "approve",
+        }
+    )
+
+    assert command is not None
+    assert command.kind == "confirmation"
+    assert command.thread_id == "thread-confirm"
+    assert command.run_id == "run-confirm"
+    assert command.decision == "approve"
+    assert command.revision_instructions == []
+
+
+def test_planning_resume_command_requires_explicit_confirmation_decision() -> None:
+    with pytest.raises(ValidationError, match="decision"):
+        planning_resume_command_from_pending_choice(
+            {
+                "kind": "planning.confirmation",
+                "threadId": "thread-confirm",
+                "runId": "run-confirm",
+            }
+        )
+
+
+def test_planning_resume_command_from_pending_choice_builds_confirmation_revision() -> None:
+    command = planning_resume_command_from_pending_choice(
+        {
+            "kind": "planning.confirmation",
+            "threadId": "thread-confirm",
+            "runId": "run-confirm",
+            "decision": "revise",
+            "revisionInstructions": ["Add a verification step."],
+        }
+    )
+
+    assert command is not None
+    assert command.kind == "confirmation"
+    assert command.decision == "revise"
+    assert command.revision_instructions == ["Add a verification step."]
+
+
+def test_planning_resume_command_rejects_malformed_pending_choice() -> None:
+    with pytest.raises(ValidationError, match="threadId"):
+        planning_resume_command_from_pending_choice(
+            {
+                "kind": "planning.clarification",
+                "runId": "run-clarify",
+                "answer": "The report is for executives.",
+            }
+        )
+    with pytest.raises(ValidationError, match="decision"):
+        planning_resume_command_from_pending_choice(
+            {
+                "kind": "planning.confirmation",
+                "threadId": "thread-confirm",
+                "runId": "run-confirm",
+            }
+        )
+
+
+def test_runtime_engine_passes_planning_clarification_resume_to_deep_runtime(
+    tmp_path,
+) -> None:
+    deep_calls: list[dict[str, Any]] = []
+    legacy_calls: list[AgentRunState] = []
+    runtime_store = RuntimeStore(
+        project_path=str(tmp_path / "demo.alita"),
+        run_id="run-engine-clarify",
+    )
+
+    def legacy_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_calls.append(run_state)
+        raise AssertionError("legacy runner must not be used for clarification resume")
+
+    def deep_runtime_runner(message: UserMessage, **kwargs):
+        deep_calls.append({"message": message, **kwargs})
+        return [
+            AgentEvent(
+                type="node_graph.created",
+                payload={
+                    "graph": {
+                        "graphId": "graph-clarify",
+                        "nodes": [],
+                        "edges": [],
+                        "metadata": {"generatedBy": "deep_agent_runtime"},
+                    }
+                },
+            )
+        ]
+
+    engine = AgentRuntimeEngine(
+        route_runner=legacy_runner,
+        deep_runtime_runner=deep_runtime_runner,
+        runtime_store=runtime_store,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-engine-clarify",
+            content="The report is for executives.",
+        ),
+        pending_choice={
+            "kind": "planning.clarification",
+            "threadId": "thread-engine-clarify",
+            "runId": "run-engine-clarify",
+            "answer": "The report is for executives.",
+        },
+    ).model_copy(
+        update={
+            "project_path": str(tmp_path / "demo.alita"),
+            "run_id": "run-engine-clarify",
+            "thread_id": "thread-engine-clarify",
+        }
+    )
+
+    result = engine.run_from_state(run_state)
+
+    assert legacy_calls == []
+    assert len(deep_calls) == 1
+    assert deep_calls[0]["run_id"] == "run-engine-clarify"
+    assert deep_calls[0]["thread_id"] == "thread-engine-clarify"
+    assert deep_calls[0]["runtime_store"] is runtime_store
+    assert deep_calls[0]["resume_command"] is not None
+    assert deep_calls[0]["resume_command"].answer == "The report is for executives."
+    assert result.events[-1].type == "node_graph.created"
+
+
+def test_runtime_engine_passes_planning_confirmation_resume_to_deep_runtime(
+    tmp_path,
+) -> None:
+    deep_calls: list[dict[str, Any]] = []
+    legacy_calls: list[AgentRunState] = []
+    runtime_store = RuntimeStore(
+        project_path=str(tmp_path / "demo.alita"),
+        run_id="run-engine-confirm",
+    )
+
+    def legacy_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_calls.append(run_state)
+        raise AssertionError("legacy runner must not be used for confirmation resume")
+
+    def deep_runtime_runner(message: UserMessage, **kwargs):
+        deep_calls.append({"message": message, **kwargs})
+        return [
+            AgentEvent(
+                type="planning.cancelled",
+                payload={
+                    "taskId": message.task_id,
+                    "runId": "run-engine-confirm",
+                    "threadId": "thread-engine-confirm",
+                    "graphId": "graph-confirm",
+                },
+            )
+        ]
+
+    engine = AgentRuntimeEngine(
+        route_runner=legacy_runner,
+        deep_runtime_runner=deep_runtime_runner,
+        runtime_store=runtime_store,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-engine-confirm",
+            content="Revise with another verification step.",
+        ),
+        pending_choice={
+            "kind": "planning.confirmation",
+            "threadId": "thread-engine-confirm",
+            "runId": "run-engine-confirm",
+            "decision": "revise",
+            "revisionInstructions": ["Add another verification step."],
+        },
+    ).model_copy(
+        update={
+            "project_path": str(tmp_path / "demo.alita"),
+            "run_id": "run-engine-confirm",
+            "thread_id": "thread-engine-confirm",
+        }
+    )
+
+    result = engine.run_from_state(run_state)
+
+    assert legacy_calls == []
+    assert len(deep_calls) == 1
+    command = deep_calls[0]["resume_command"]
+    assert command is not None
+    assert command.kind == "confirmation"
+    assert command.decision == "revise"
+    assert command.revision_instructions == ["Add another verification step."]
+    assert result.events[-1].type == "planning.cancelled"
