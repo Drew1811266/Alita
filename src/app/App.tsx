@@ -28,6 +28,8 @@ import {
 } from "../features/chat/useChatSessionController";
 import { usePermissionController } from "../features/permissions/usePermissionController";
 import { useVoiceInputController } from "../features/voice/useVoiceInputController";
+import { NodeCatalogPanel } from "../features/nodeCatalog/NodeCatalogPanel";
+import { useNodeCatalog } from "../features/nodeCatalog/useNodeCatalog";
 import {
   addModelFile,
   addSpeechToTextModelDirectory,
@@ -287,6 +289,7 @@ export function App() {
   } = voiceInputController;
   const graphRef = useRef<NodeGraph | null>(null);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [nodeCatalogOpen, setNodeCatalogOpen] = useState(false);
   const runHistoryRef = useRef<RunHistoryEntry[]>([]);
   const artifactsRef = useRef<ArtifactRef[]>([]);
   const artifactPreviewController = useArtifactPreviewController();
@@ -303,6 +306,7 @@ export function App() {
     error: artifactPreviewError,
   } = artifactPreviewController.state;
   const preferencesController = usePreferencesController();
+  const nodeCatalog = useNodeCatalog();
   const {
     preferences: preferencesView,
     loading: preferencesLoading,
@@ -1342,6 +1346,7 @@ export function App() {
     <main className="appShell">
       <WorkbenchTopBar
         dirty={dirty}
+        onOpenNodeCatalog={() => setNodeCatalogOpen(true)}
         onOpenPreferences={handleOpenPreferences}
         onSave={handleSaveProject}
         onSaveAs={handleSaveProjectAs}
@@ -1412,6 +1417,15 @@ export function App() {
         />
       </section>
       {preferencesDialog}
+      {nodeCatalogOpen ? (
+        <NodeCatalogPanel
+          catalog={nodeCatalog.catalog}
+          error={nodeCatalog.error}
+          loading={nodeCatalog.loading}
+          onClose={() => setNodeCatalogOpen(false)}
+          onReload={() => void nodeCatalog.refresh()}
+        />
+      ) : null}
     </main>
   );
 }
