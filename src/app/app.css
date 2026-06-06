@@ -1411,8 +1411,8 @@ button:focus-visible {
   right: 0;
   bottom: 0;
   z-index: 52;
-  display: grid;
-  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   width: min(560px, 100vw);
   max-width: 100vw;
   min-width: 0;
@@ -1560,6 +1560,7 @@ button:focus-visible {
 }
 
 .nodeCatalogList {
+  flex: 1 1 auto;
   display: grid;
   align-content: start;
   gap: 10px;
