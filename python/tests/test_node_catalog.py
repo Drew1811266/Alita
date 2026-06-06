@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi.encoders import jsonable_encoder
+
 from agent_service.node_catalog import (
     NodeAvailability,
     NodeCatalogBuilder,
@@ -89,3 +91,40 @@ def test_snapshot_records_duplicate_node_diagnostics() -> None:
         for diagnostic in snapshot.diagnostics
     )
     assert snapshot.node_by_id("duplicate.node").description == "First duplicate node."
+
+
+def test_snapshot_json_encoding_uses_sidecar_snake_case_fields() -> None:
+    snapshot = NodeCatalogBuilder(tool_registry=_registry()).build()
+
+    payload = jsonable_encoder(snapshot)
+    node = next(
+        node
+        for node in payload["nodes"]
+        if node["node_id"] == "document.convert.markdown"
+    )
+
+    assert "schema_version" in payload
+    assert "generated_at" in payload
+    assert "source_summary" in payload
+    assert "schemaVersion" not in payload
+    assert "generatedAt" not in payload
+    assert "sourceSummary" not in payload
+    assert "internal_tool_count" in payload["source_summary"]
+    assert "internalToolCount" not in payload["source_summary"]
+
+    assert "node_id" in node
+    assert "display_name" in node
+    assert "input_ports" in node
+    assert "output_ports" in node
+    assert "nodeId" not in node
+    assert "displayName" not in node
+    assert "inputPorts" not in node
+    assert "outputPorts" not in node
+    assert node["input_ports"][0]["data_type"] == "document"
+    assert "dataType" not in node["input_ports"][0]
+    assert node["execution"]["tool_id"] == "document.markitdown_convert"
+    assert "toolId" not in node["execution"]
+    assert node["permissions"]["risk_level"] == "high"
+    assert node["permissions"]["requires_approval"] is True
+    assert "riskLevel" not in node["permissions"]
+    assert "requiresApproval" not in node["permissions"]

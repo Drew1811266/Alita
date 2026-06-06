@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -33,7 +33,7 @@ class NodeCatalogModel(BaseModel):
 
 class NodeAvailability(NodeCatalogModel):
     status: AvailabilityStatus = "available"
-    reason_code: str | None = Field(default=None, alias="reasonCode")
+    reason_code: str | None = None
     message: str | None = None
 
 
@@ -50,7 +50,7 @@ class NodePortDefinition(NodeCatalogModel):
         "url",
         "query",
         "decision",
-    ] = Field(alias="dataType")
+    ]
     required: bool = True
     multiple: bool = False
     description: str = ""
@@ -58,20 +58,20 @@ class NodePortDefinition(NodeCatalogModel):
 
 class NodeExecutionBinding(NodeCatalogModel):
     type: Literal["tool", "model", "human", "verifier", "output"]
-    tool_id: str | None = Field(default=None, alias="toolId")
+    tool_id: str | None = None
     operation: str | None = None
     model_policy: Literal[
         "deep_reasoning",
         "node_reasoning",
         "fast_chat",
         "fast_factual",
-    ] | None = Field(default=None, alias="modelPolicy")
+    ] | None = None
     verifier_type: Literal[
         "artifact_exists",
         "citation_check",
         "schema_check",
         "coverage_check",
-    ] | None = Field(default=None, alias="verifierType")
+    ] | None = None
     output_type: Literal[
         "markdown",
         "docx",
@@ -79,13 +79,13 @@ class NodeExecutionBinding(NodeCatalogModel):
         "table",
         "checklist",
         "final_response",
-    ] | None = Field(default=None, alias="outputType")
+    ] | None = None
 
 
 class NodePermissionProfile(NodeCatalogModel):
     permissions: list[str] = Field(default_factory=list)
-    risk_level: RiskLevel = Field(default="low", alias="riskLevel")
-    requires_approval: bool = Field(default=False, alias="requiresApproval")
+    risk_level: RiskLevel = "low"
+    requires_approval: bool = False
     filesystem: Literal["none", "project_read", "project_write"] = "none"
     network: Literal["none", "external"] = "none"
     sandbox: Literal["none", "sidecar", "external"] = "none"
@@ -97,20 +97,14 @@ class NodeExample(NodeCatalogModel):
 
 
 class NodeDefinition(NodeCatalogModel):
-    node_id: str = Field(alias="nodeId")
+    node_id: str
     kind: NodeKind
-    display_name: str = Field(alias="displayName")
+    display_name: str
     description: str
     category: NodeCategory
     capabilities: list[str] = Field(default_factory=list)
-    input_ports: list[NodePortDefinition] = Field(
-        default_factory=list,
-        alias="inputPorts",
-    )
-    output_ports: list[NodePortDefinition] = Field(
-        default_factory=list,
-        alias="outputPorts",
-    )
+    input_ports: list[NodePortDefinition] = Field(default_factory=list)
+    output_ports: list[NodePortDefinition] = Field(default_factory=list)
     execution: NodeExecutionBinding
     permissions: NodePermissionProfile = Field(default_factory=NodePermissionProfile)
     examples: list[NodeExample] = Field(default_factory=list)
@@ -122,27 +116,25 @@ class NodeDefinition(NodeCatalogModel):
 class NodeCatalogDiagnostic(NodeCatalogModel):
     code: str
     message: str
-    node_id: str | None = Field(default=None, alias="nodeId")
+    node_id: str | None = None
 
 
 class NodeCatalogSourceSummary(NodeCatalogModel):
-    internal_tool_count: int = Field(default=0, alias="internalToolCount")
-    system_node_count: int = Field(default=0, alias="systemNodeCount")
-    mcp_node_count: int = Field(default=0, alias="mcpNodeCount")
-    plugin_node_count: int = Field(default=0, alias="pluginNodeCount")
+    internal_tool_count: int = 0
+    system_node_count: int = 0
+    mcp_node_count: int = 0
+    plugin_node_count: int = 0
 
 
 class NodeCatalogSnapshot(NodeCatalogModel):
-    schema_version: int = Field(default=1, alias="schemaVersion")
+    schema_version: int = 1
     generated_at: str = Field(
-        default_factory=lambda: datetime.now(UTC).isoformat(),
-        alias="generatedAt",
+        default_factory=lambda: datetime.now(timezone.utc).isoformat(),
     )
     nodes: list[NodeDefinition] = Field(default_factory=list)
     diagnostics: list[NodeCatalogDiagnostic] = Field(default_factory=list)
     source_summary: NodeCatalogSourceSummary = Field(
         default_factory=NodeCatalogSourceSummary,
-        alias="sourceSummary",
     )
 
     def node_by_id(self, node_id: str) -> NodeDefinition:
