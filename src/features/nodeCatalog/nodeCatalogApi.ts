@@ -10,6 +10,59 @@ import type {
 const SIDECAR_URL = "http://127.0.0.1:8765";
 const SIDECAR_TOKEN_HEADER = "X-Alita-Sidecar-Token";
 
+const nodeKinds = ["tool", "model", "human", "verifier", "output"] as const;
+const nodeCategories = [
+  "document",
+  "web",
+  "data",
+  "reasoning",
+  "human",
+  "verification",
+  "output",
+] as const;
+const portDataTypes = [
+  "text",
+  "markdown",
+  "document",
+  "table",
+  "json",
+  "artifact",
+  "url",
+  "query",
+  "decision",
+] as const;
+const executionTypes = ["tool", "model", "human", "verifier", "output"] as const;
+const riskLevels = ["low", "medium", "high"] as const;
+const filesystemModes = ["none", "project_read", "project_write"] as const;
+const networkModes = ["none", "external"] as const;
+const sandboxModes = ["none", "sidecar", "external"] as const;
+const nodeSources = ["internal_tool", "system", "mcp", "plugin"] as const;
+const modelPolicies = [
+  "deep_reasoning",
+  "node_reasoning",
+  "fast_chat",
+  "fast_factual",
+] as const;
+const verifierTypes = [
+  "artifact_exists",
+  "citation_check",
+  "schema_check",
+  "coverage_check",
+] as const;
+const outputTypes = [
+  "markdown",
+  "docx",
+  "pdf",
+  "table",
+  "checklist",
+  "final_response",
+] as const;
+const availabilityStatuses = [
+  "available",
+  "degraded",
+  "unavailable",
+] as const;
+
 type JsonRecord = Record<string, unknown>;
 
 export async function getNodeCatalog(): Promise<NodeCatalogSnapshot> {
@@ -42,148 +95,271 @@ function isTauriRuntime(): boolean {
 }
 
 function toCatalogSnapshot(payload: unknown): NodeCatalogSnapshot {
-  const data = asRecord(payload);
-  const sourceSummary = asRecord(data.source_summary);
-  const availableNodeCount = optionalNumber(sourceSummary.available_node_count);
+  const data = requiredObject(payload, "root");
+  const sourceSummary = requiredObject(data.source_summary, "source_summary");
+  const availableNodeCount = optionalFiniteNumber(
+    sourceSummary.available_node_count,
+    "source_summary.available_node_count",
+  );
 
   return {
-    schemaVersion: numberValue(data.schema_version),
-    generatedAt: stringValue(data.generated_at),
-    nodes: arrayValue(data.nodes).map(toCatalogNode),
-    diagnostics: arrayValue(data.diagnostics).map(toDiagnostic),
+    schemaVersion: requiredFiniteNumber(data.schema_version, "schema_version"),
+    generatedAt: requiredString(data.generated_at, "generated_at"),
+    nodes: requiredArray(data.nodes, "nodes").map((node, index) =>
+      toCatalogNode(node, `nodes[${index}]`),
+    ),
+    diagnostics: requiredArray(data.diagnostics, "diagnostics").map(
+      (diagnostic, index) => toDiagnostic(diagnostic, `diagnostics[${index}]`),
+    ),
     sourceSummary: {
-      internalToolCount: numberValue(sourceSummary.internal_tool_count),
-      systemNodeCount: numberValue(sourceSummary.system_node_count),
-      mcpNodeCount: numberValue(sourceSummary.mcp_node_count),
-      pluginNodeCount: numberValue(sourceSummary.plugin_node_count),
+      internalToolCount: requiredFiniteNumber(
+        sourceSummary.internal_tool_count,
+        "source_summary.internal_tool_count",
+      ),
+      systemNodeCount: requiredFiniteNumber(
+        sourceSummary.system_node_count,
+        "source_summary.system_node_count",
+      ),
+      mcpNodeCount: requiredFiniteNumber(
+        sourceSummary.mcp_node_count,
+        "source_summary.mcp_node_count",
+      ),
+      pluginNodeCount: requiredFiniteNumber(
+        sourceSummary.plugin_node_count,
+        "source_summary.plugin_node_count",
+      ),
       ...(availableNodeCount !== undefined ? { availableNodeCount } : {}),
     },
   };
 }
 
-function toCatalogNode(value: unknown): NodeCatalogEntry {
-  const node = asRecord(value);
-  const execution = asRecord(node.execution);
-  const permissions = asRecord(node.permissions);
-  const availability = asRecord(node.availability);
+function toCatalogNode(value: unknown, path: string): NodeCatalogEntry {
+  const node = requiredObject(value, path);
+  const execution = requiredObject(node.execution, `${path}.execution`);
+  const permissions = requiredObject(node.permissions, `${path}.permissions`);
+  const availability = requiredObject(node.availability, `${path}.availability`);
 
   return {
-    nodeId: stringValue(node.node_id),
-    kind: stringValue(node.kind, "tool") as NodeCatalogEntry["kind"],
-    displayName: stringValue(node.display_name),
-    description: stringValue(node.description),
-    category: stringValue(
-      node.category,
-      "reasoning",
-    ) as NodeCatalogEntry["category"],
-    capabilities: stringArray(node.capabilities),
-    inputPorts: arrayValue(node.input_ports).map(toPort),
-    outputPorts: arrayValue(node.output_ports).map(toPort),
+    nodeId: requiredString(node.node_id, `${path}.node_id`),
+    kind: requiredEnum(node.kind, `${path}.kind`, nodeKinds),
+    displayName: requiredString(node.display_name, `${path}.display_name`),
+    description: requiredString(node.description, `${path}.description`),
+    category: requiredEnum(node.category, `${path}.category`, nodeCategories),
+    capabilities: requiredStringArray(
+      node.capabilities,
+      `${path}.capabilities`,
+    ),
+    inputPorts: requiredArray(node.input_ports, `${path}.input_ports`).map(
+      (port, index) => toPort(port, `${path}.input_ports[${index}]`),
+    ),
+    outputPorts: requiredArray(node.output_ports, `${path}.output_ports`).map(
+      (port, index) => toPort(port, `${path}.output_ports[${index}]`),
+    ),
     execution: {
-      type: stringValue(
+      type: requiredEnum(
         execution.type,
-        "tool",
-      ) as NodeCatalogEntry["execution"]["type"],
-      toolId: nullableString(execution.tool_id),
-      operation: nullableString(execution.operation),
-      bindingRef: nullableString(execution.binding_ref),
-      modelPolicy: nullableString(execution.model_policy),
-      verifierType: nullableString(execution.verifier_type),
-      outputType: nullableString(execution.output_type),
+        `${path}.execution.type`,
+        executionTypes,
+      ),
+      toolId: optionalNullableString(
+        execution.tool_id,
+        `${path}.execution.tool_id`,
+      ),
+      operation: optionalNullableString(
+        execution.operation,
+        `${path}.execution.operation`,
+      ),
+      bindingRef: optionalNullableString(
+        execution.binding_ref,
+        `${path}.execution.binding_ref`,
+      ),
+      modelPolicy: optionalNullableEnum(
+        execution.model_policy,
+        `${path}.execution.model_policy`,
+        modelPolicies,
+      ),
+      verifierType: optionalNullableEnum(
+        execution.verifier_type,
+        `${path}.execution.verifier_type`,
+        verifierTypes,
+      ),
+      outputType: optionalNullableEnum(
+        execution.output_type,
+        `${path}.execution.output_type`,
+        outputTypes,
+      ),
     },
     permissions: {
-      permissions: stringArray(permissions.permissions),
-      riskLevel: stringValue(
+      permissions: requiredStringArray(
+        permissions.permissions,
+        `${path}.permissions.permissions`,
+      ),
+      riskLevel: requiredEnum(
         permissions.risk_level,
-        "low",
-      ) as NodeCatalogEntry["permissions"]["riskLevel"],
-      requiresApproval: Boolean(permissions.requires_approval),
-      filesystem: stringValue(
+        `${path}.permissions.risk_level`,
+        riskLevels,
+      ),
+      requiresApproval: requiredBoolean(
+        permissions.requires_approval,
+        `${path}.permissions.requires_approval`,
+      ),
+      filesystem: requiredEnum(
         permissions.filesystem,
-        "none",
-      ) as NodeCatalogEntry["permissions"]["filesystem"],
-      network: stringValue(
+        `${path}.permissions.filesystem`,
+        filesystemModes,
+      ),
+      network: requiredEnum(
         permissions.network,
-        "none",
-      ) as NodeCatalogEntry["permissions"]["network"],
-      sandbox: stringValue(
+        `${path}.permissions.network`,
+        networkModes,
+      ),
+      sandbox: requiredEnum(
         permissions.sandbox,
-        "none",
-      ) as NodeCatalogEntry["permissions"]["sandbox"],
+        `${path}.permissions.sandbox`,
+        sandboxModes,
+      ),
     },
-    examples: arrayValue(node.examples).map(toExample),
-    source: stringValue(node.source, "system") as NodeCatalogEntry["source"],
-    version: stringValue(node.version),
+    examples: requiredArray(node.examples, `${path}.examples`).map(
+      (example, index) => toExample(example, `${path}.examples[${index}]`),
+    ),
+    source: requiredEnum(node.source, `${path}.source`, nodeSources),
+    version: requiredString(node.version, `${path}.version`),
     availability: {
-      status: stringValue(
+      status: requiredEnum(
         availability.status,
-        "unavailable",
-      ) as NodeCatalogEntry["availability"]["status"],
-      reasonCode: nullableString(availability.reason_code),
-      message: nullableString(availability.message),
+        `${path}.availability.status`,
+        availabilityStatuses,
+      ),
+      reasonCode: optionalNullableString(
+        availability.reason_code,
+        `${path}.availability.reason_code`,
+      ),
+      message: optionalNullableString(
+        availability.message,
+        `${path}.availability.message`,
+      ),
     },
   };
 }
 
-function toPort(value: unknown): CatalogNodePort {
-  const port = asRecord(value);
+function toPort(value: unknown, path: string): CatalogNodePort {
+  const port = requiredObject(value, path);
   return {
-    id: stringValue(port.id),
-    label: stringValue(port.label),
-    dataType: stringValue(
-      port.data_type,
-      "text",
-    ) as CatalogNodePort["dataType"],
-    required: Boolean(port.required),
-    multiple: Boolean(port.multiple),
-    description: stringValue(port.description),
+    id: requiredString(port.id, `${path}.id`),
+    label: requiredString(port.label, `${path}.label`),
+    dataType: requiredEnum(port.data_type, `${path}.data_type`, portDataTypes),
+    required: requiredBoolean(port.required, `${path}.required`),
+    multiple: requiredBoolean(port.multiple, `${path}.multiple`),
+    description: requiredString(port.description, `${path}.description`),
   };
 }
 
-function toExample(value: unknown): CatalogNodeExample {
-  const example = asRecord(value);
+function toExample(value: unknown, path: string): CatalogNodeExample {
+  const example = requiredObject(value, path);
   return {
-    title: stringValue(example.title),
-    input: asRecord(example.input),
+    title: requiredString(example.title, `${path}.title`),
+    input: requiredObject(example.input, `${path}.input`),
   };
 }
 
-function toDiagnostic(value: unknown): NodeCatalogSnapshot["diagnostics"][number] {
-  const diagnostic = asRecord(value);
+function toDiagnostic(
+  value: unknown,
+  path: string,
+): NodeCatalogSnapshot["diagnostics"][number] {
+  const diagnostic = requiredObject(value, path);
   return {
-    code: stringValue(diagnostic.code),
-    nodeId: nullableString(diagnostic.node_id),
-    message: stringValue(diagnostic.message),
+    code: requiredString(diagnostic.code, `${path}.code`),
+    nodeId: optionalNullableString(diagnostic.node_id, `${path}.node_id`),
+    message: requiredString(diagnostic.message, `${path}.message`),
   };
 }
 
-function asRecord(value: unknown): JsonRecord {
+function requiredObject(value: unknown, path: string): JsonRecord {
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
     return value as JsonRecord;
   }
-  return {};
+  malformed(path, "expected object");
 }
 
-function arrayValue(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
+function requiredArray(value: unknown, path: string): unknown[] {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  malformed(path, "expected array");
 }
 
-function stringArray(value: unknown): string[] {
-  return arrayValue(value).map(String);
+function requiredString(value: unknown, path: string): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  malformed(path, "expected string");
 }
 
-function stringValue(value: unknown, fallback = ""): string {
-  return value == null ? fallback : String(value);
+function requiredStringArray(value: unknown, path: string): string[] {
+  return requiredArray(value, path).map((item, index) =>
+    requiredString(item, `${path}[${index}]`),
+  );
 }
 
-function nullableString(value: unknown): string | null {
-  return value == null ? null : String(value);
+function optionalNullableString(value: unknown, path: string): string | null {
+  if (value == null) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  malformed(path, "expected string or null");
 }
 
-function numberValue(value: unknown): number {
-  return Number(value ?? 0);
+function requiredFiniteNumber(value: unknown, path: string): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  malformed(path, "expected finite number");
 }
 
-function optionalNumber(value: unknown): number | undefined {
-  return value == null ? undefined : Number(value);
+function optionalFiniteNumber(
+  value: unknown,
+  path: string,
+): number | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  malformed(path, "expected finite number or null");
+}
+
+function requiredBoolean(value: unknown, path: string): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  malformed(path, "expected boolean");
+}
+
+function requiredEnum<T extends string>(
+  value: unknown,
+  path: string,
+  allowed: readonly T[],
+): T {
+  if (typeof value === "string" && allowed.includes(value as T)) {
+    return value as T;
+  }
+  malformed(path, `expected one of ${allowed.join(", ")}`);
+}
+
+function optionalNullableEnum<T extends string>(
+  value: unknown,
+  path: string,
+  allowed: readonly T[],
+): T | null {
+  if (value == null) {
+    return null;
+  }
+  return requiredEnum(value, path, allowed);
+}
+
+function malformed(path: string, reason: string): never {
+  throw new Error(`Malformed node catalog payload at ${path}: ${reason}`);
 }

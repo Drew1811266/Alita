@@ -9,6 +9,10 @@ export type NodeCatalogState = {
   error: string | null;
 };
 
+export type NodeCatalogRequestState = NodeCatalogState & {
+  activeRequestId: number;
+};
+
 export type UseNodeCatalogResult = NodeCatalogState & {
   refresh: () => Promise<NodeCatalogSnapshot | null>;
 };
@@ -18,6 +22,13 @@ export function createNodeCatalogState(): NodeCatalogState {
     catalog: null,
     loading: false,
     error: null,
+  };
+}
+
+export function createNodeCatalogRequestState(): NodeCatalogRequestState {
+  return {
+    ...createNodeCatalogState(),
+    activeRequestId: 0,
   };
 }
 
@@ -39,24 +50,77 @@ export function nodeCatalogFailed(
   return { ...state, loading: false, error };
 }
 
+export function nodeCatalogRequestLoading(
+  state: NodeCatalogRequestState,
+  requestId: number,
+): NodeCatalogRequestState {
+  return {
+    ...state,
+    activeRequestId: requestId,
+    loading: true,
+    error: null,
+  };
+}
+
+export function nodeCatalogRequestLoaded(
+  state: NodeCatalogRequestState,
+  requestId: number,
+  catalog: NodeCatalogSnapshot,
+): NodeCatalogRequestState {
+  if (state.activeRequestId !== requestId) {
+    return state;
+  }
+  return {
+    ...state,
+    catalog,
+    loading: false,
+    error: null,
+  };
+}
+
+export function nodeCatalogRequestFailed(
+  state: NodeCatalogRequestState,
+  requestId: number,
+  error: string,
+): NodeCatalogRequestState {
+  if (state.activeRequestId !== requestId) {
+    return state;
+  }
+  return {
+    ...state,
+    loading: false,
+    error,
+  };
+}
+
 export function useNodeCatalog(): UseNodeCatalogResult {
   const mountedRef = useRef(true);
-  const [state, setState] = useState<NodeCatalogState>(createNodeCatalogState);
+  const requestSequenceRef = useRef(0);
+  const [state, setState] = useState<NodeCatalogRequestState>(
+    createNodeCatalogRequestState,
+  );
 
   const refresh = useCallback(async () => {
+    requestSequenceRef.current += 1;
+    const requestId = requestSequenceRef.current;
+
     if (mountedRef.current) {
-      setState(nodeCatalogLoading);
+      setState((current) => nodeCatalogRequestLoading(current, requestId));
     }
 
     try {
       const catalog = await getNodeCatalog();
       if (mountedRef.current) {
-        setState((current) => nodeCatalogLoaded(current, catalog));
+        setState((current) =>
+          nodeCatalogRequestLoaded(current, requestId, catalog),
+        );
       }
       return catalog;
     } catch (error) {
       if (mountedRef.current) {
-        setState((current) => nodeCatalogFailed(current, errorMessage(error)));
+        setState((current) =>
+          nodeCatalogRequestFailed(current, requestId, errorMessage(error)),
+        );
       }
       return null;
     }
@@ -70,7 +134,8 @@ export function useNodeCatalog(): UseNodeCatalogResult {
     };
   }, [refresh]);
 
-  return { ...state, refresh };
+  const { activeRequestId: _activeRequestId, ...publicState } = state;
+  return { ...publicState, refresh };
 }
 
 function errorMessage(error: unknown): string {

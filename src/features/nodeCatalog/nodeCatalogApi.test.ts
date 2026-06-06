@@ -167,7 +167,12 @@ describe("node catalog API", () => {
           generated_at: "2026-06-06T00:00:00+00:00",
           nodes: [],
           diagnostics: [],
-          source_summary: {},
+          source_summary: {
+            internal_tool_count: 0,
+            system_node_count: 0,
+            mcp_node_count: 0,
+            plugin_node_count: 0,
+          },
         }),
       ),
     );
@@ -180,6 +185,53 @@ describe("node catalog API", () => {
       expect.objectContaining({
         headers: { "X-Alita-Sidecar-Token": "sidecar-token" },
       }),
+    );
+  });
+
+  it("rejects malformed required node fields instead of defaulting them", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          schema_version: 1,
+          generated_at: "2026-06-06T00:00:00+00:00",
+          nodes: [
+            {
+              node_id: "human.clarify",
+              kind: "human",
+              display_name: "Clarify",
+              description: "Ask the user a question.",
+              category: "human",
+              capabilities: ["human.clarify"],
+              input_ports: [],
+              output_ports: [],
+              execution: { type: "human" },
+              permissions: {
+                permissions: [],
+                risk_level: "low",
+                requires_approval: "false",
+                filesystem: "none",
+                network: "none",
+                sandbox: "none",
+              },
+              examples: [],
+              source: "system",
+              version: "1.0.0",
+              availability: { status: "available" },
+            },
+          ],
+          diagnostics: [],
+          source_summary: {
+            internal_tool_count: 0,
+            system_node_count: 1,
+            mcp_node_count: 0,
+            plugin_node_count: 0,
+          },
+        }),
+      ),
+    );
+
+    await expect(getNodeCatalog()).rejects.toThrow(
+      "Malformed node catalog payload at nodes[0].permissions.requires_approval",
     );
   });
 
