@@ -157,6 +157,26 @@ def test_agent_message_endpoint_passes_agent_run_state_to_orchestrator(
     assert run_state.project_path == "D:/Project/demo.alita"
 
 
+def test_node_catalog_endpoint_returns_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALITA_SIDECAR_TOKEN", "secret-token")
+    client = TestClient(app)
+
+    response = client.get(
+        "/agent/node-catalog",
+        headers={"X-Alita-Sidecar-Token": "secret-token"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema_version"] == 1
+    assert "schema_version" in payload
+    assert "schemaVersion" not in payload
+    node_ids = {node["node_id"] for node in payload["nodes"]}
+    assert "document.convert.markdown" in node_ids
+    assert "human.clarify" in node_ids
+    assert "output.final_response" in node_ids
+
+
 def test_research_choose_endpoint_passes_agent_run_state_to_orchestrator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

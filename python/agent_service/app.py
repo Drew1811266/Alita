@@ -21,6 +21,7 @@ from agent_service.agent_runtime_engine import AgentRuntimeEngine
 from agent_service.execution import run_graph_events
 from agent_service.model_client import AgentModelClientConfig, create_model_client
 from agent_service.model_sessions import DEFAULT_MODEL_SESSION_REGISTRY
+from agent_service.node_catalog import NodeCatalogBuilder, NodeCatalogSnapshot
 from agent_service.run_registry import DEFAULT_RUN_REGISTRY
 from agent_service.schemas import (
     AgentEvent,
@@ -35,6 +36,8 @@ from agent_service.schemas import (
     ScriptRejectionRequest,
 )
 from agent_service.script_review import script_review_fingerprint
+from agent_service.tool_execution import default_tool_packages_root
+from agent_service.tool_registry import ToolRegistry
 
 
 SIDECAR_TOKEN_ENV = "ALITA_SIDECAR_TOKEN"
@@ -109,6 +112,15 @@ def register_model_session(
 ) -> RegisterModelSessionResponse:
     session_id = DEFAULT_MODEL_SESSION_REGISTRY.register(request.model_config_value)
     return RegisterModelSessionResponse(modelSessionId=session_id)
+
+
+@app.get("/agent/node-catalog", response_model=NodeCatalogSnapshot)
+def node_catalog(
+    _auth: None = Depends(require_sidecar_token),
+) -> NodeCatalogSnapshot:
+    return NodeCatalogBuilder(
+        tool_registry=ToolRegistry.from_packages_root(default_tool_packages_root()),
+    ).build()
 
 
 @app.post("/agent/message", response_model=list[AgentEvent])
