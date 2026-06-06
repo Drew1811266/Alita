@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 from agent_service.deep_agent_graph_compile import (
     compile_agent_plan_graph,
     review_compiled_graph,
 )
 from agent_service.deep_agent_models import PlanDraft, PlanStep
+from agent_service.node_catalog_resolver import NodeCatalogResolutionError
 from agent_service.execution_graph import (
     compile_execution_graph,
     validate_execution_graph_bindings,
@@ -85,6 +88,7 @@ def test_compile_agent_plan_graph_traces_every_node_to_plan_step() -> None:
     assert first_node["createdBy"] == "agent"
     assert first_node["artifactRefs"] == []
     assert first_node["retryCount"] == 0
+    assert first_node["permissionsRequired"] == []
     assert first_node["position"] == {"x": 0.0, "y": 0.0}
     assert first_node["metadata"] == {
         "sourcePlanDraftId": draft.plan_draft_id,
@@ -93,6 +97,12 @@ def test_compile_agent_plan_graph_traces_every_node_to_plan_step() -> None:
         "expectedOutput": first_step.expected_output,
         "verificationCriteria": first_step.verification_criteria,
         "requiredCapabilities": first_step.required_capabilities,
+        "catalogNodeId": "model.reasoning",
+        "catalogDisplayName": "Model Reasoning",
+        "nodeSelectionReason": "matched_node_id:model.reasoning",
+        "executionKind": "model",
+        "catalogCapabilities": ["model.reasoning"],
+        "catalogRiskLevel": "low",
     }
 
     RunGraph.model_validate(graph)
@@ -220,6 +230,22 @@ def test_compile_document_capability_uses_fixed_tool_binding() -> None:
         "toolId": "document.read_write",
         "operation": "read",
     }
+    assert graph["nodes"][0]["permissionsRequired"] == [
+        "read_project_files",
+        "write_project_outputs",
+        "run_python_plugin",
+    ]
+    assert graph["nodes"][0]["metadata"]["catalogNodeId"] == "document.read"
+    assert graph["nodes"][0]["metadata"]["catalogDisplayName"] == "Read Document"
+    assert graph["nodes"][0]["metadata"]["nodeSelectionReason"] == (
+        "matched_node_id:document.read"
+    )
+    assert graph["nodes"][0]["metadata"]["executionKind"] == "tool"
+    assert graph["nodes"][0]["metadata"]["catalogCapabilities"] == [
+        "document.read",
+        "document.read_write",
+    ]
+    assert graph["nodes"][0]["metadata"]["catalogRiskLevel"] == "high"
     assert "modelRef" not in graph["nodes"][0]
     RunGraph.model_validate(graph)
 
@@ -261,6 +287,35 @@ def test_compile_document_write_capability_uses_explicit_write_operation() -> No
         "toolId": "document.read_write",
         "operation": "write_markdown",
     }
+    assert graph["nodes"][0]["metadata"]["catalogNodeId"] == "document.write_markdown"
+    assert graph["nodes"][0]["metadata"]["nodeSelectionReason"] == (
+        "ranked_match:document.write"
+    )
+    RunGraph.model_validate(graph)
+
+
+def test_compile_document_capability_uses_preferred_catalog_node_id() -> None:
+    draft = _draft(["write"])
+    document_step = draft.steps[0].model_copy(
+        update={
+            "required_capabilities": ["document.write"],
+            "preferred_node_ids": ["document.write_docx"],
+        }
+    )
+    draft = draft.model_copy(update={"steps": [document_step]})
+
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+
+    assert graph["nodes"][0]["nodeType"] == "fixed_tool"
+    assert graph["nodes"][0]["toolRef"] == "document.read_write"
+    assert graph["nodes"][0]["toolBinding"] == {
+        "toolId": "document.read_write",
+        "operation": "write_docx",
+    }
+    assert graph["nodes"][0]["metadata"]["catalogNodeId"] == "document.write_docx"
+    assert graph["nodes"][0]["metadata"]["nodeSelectionReason"] == (
+        "preferred_node_id:document.write_docx"
+    )
     RunGraph.model_validate(graph)
 
 
@@ -281,28 +336,38 @@ def test_compile_manifest_document_capabilities_use_fixed_tool_bindings() -> Non
         "toolId": "document.markitdown_convert",
         "operation": "convert_local_file",
     }
+    assert graph["nodes"][0]["metadata"]["catalogNodeId"] == (
+        "document.convert.markdown"
+    )
+    assert graph["nodes"][0]["metadata"]["nodeSelectionReason"] == (
+        "matched_node_id:document.convert.markdown"
+    )
     assert graph["nodes"][1]["toolRef"] == "document.typst_compile"
     assert graph["nodes"][1]["toolBinding"] == {
         "toolId": "document.typst_compile",
         "operation": "compile_report_pdf",
     }
+    assert graph["nodes"][1]["metadata"]["catalogNodeId"] == (
+        "document.render.typst_pdf"
+    )
+    assert graph["nodes"][1]["metadata"]["nodeSelectionReason"] == (
+        "matched_node_id:document.render.typst_pdf"
+    )
     RunGraph.model_validate(graph)
 
 
-def test_compile_unknown_document_capability_falls_back_to_model_node() -> None:
+def test_compile_unknown_document_capability_raises_resolution_error() -> None:
     draft = _draft(["inspect"])
     document_step = draft.steps[0].model_copy(
         update={"required_capabilities": ["document.unknown_operation"]}
     )
     draft = draft.model_copy(update={"steps": [document_step]})
 
-    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    with pytest.raises(NodeCatalogResolutionError) as error:
+        compile_agent_plan_graph(draft, task_id="task-1")
 
-    assert graph["nodes"][0]["nodeType"] == "model"
-    assert graph["nodes"][0]["modelRef"] == "local-task-reasoner"
-    assert "toolRef" not in graph["nodes"][0]
-    assert "toolBinding" not in graph["nodes"][0]
-    RunGraph.model_validate(graph)
+    assert error.value.code == "unsupported_capability"
+    assert error.value.capabilities == ["document.unknown_operation"]
 
 
 def test_review_compiled_graph_rejects_missing_provenance_detail() -> None:
@@ -327,6 +392,18 @@ def test_review_compiled_graph_rejects_missing_required_capabilities() -> None:
 
     assert review.status == "invalid"
     assert review.findings == ["missing_node_metadata:read:requiredCapabilities"]
+
+
+def test_review_compiled_graph_rejects_missing_catalog_metadata() -> None:
+    draft = _draft(["read"])
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    graph = deepcopy(graph)
+    del graph["nodes"][0]["metadata"]["catalogNodeId"]
+
+    review = review_compiled_graph(draft, graph)
+
+    assert review.status == "invalid"
+    assert review.findings == ["missing_node_metadata:read:catalogNodeId"]
 
 
 def test_review_compiled_graph_treats_missing_source_step_id_as_extra() -> None:

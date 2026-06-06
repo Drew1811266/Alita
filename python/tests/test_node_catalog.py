@@ -29,7 +29,11 @@ def test_builder_converts_tool_manifest_to_node_definition() -> None:
     assert node.kind == "tool"
     assert node.category == "document"
     assert node.source == "internal_tool"
-    assert node.capabilities == ["document.convert.markdown"]
+    assert node.capabilities == [
+        "document.convert",
+        "document.convert.markdown",
+        "document.markitdown_convert",
+    ]
     assert node.execution == NodeExecutionBinding(
         type="tool",
         tool_id="document.markitdown_convert",
@@ -46,16 +50,62 @@ def test_builder_converts_tool_manifest_to_node_definition() -> None:
     assert node.output_ports[0].data_type == "markdown"
 
 
+def test_builder_registers_document_read_write_and_render_tool_nodes() -> None:
+    snapshot = NodeCatalogBuilder(tool_registry=_registry()).build()
+
+    read_node = snapshot.node_by_id("document.read")
+    assert read_node.capabilities == ["document.read", "document.read_write"]
+    assert read_node.execution == NodeExecutionBinding(
+        type="tool",
+        tool_id="document.read_write",
+        operation="read",
+    )
+
+    markdown_node = snapshot.node_by_id("document.write_markdown")
+    assert markdown_node.capabilities == [
+        "document.write",
+        "document.write_markdown",
+    ]
+    assert markdown_node.execution == NodeExecutionBinding(
+        type="tool",
+        tool_id="document.read_write",
+        operation="write_markdown",
+    )
+
+    docx_node = snapshot.node_by_id("document.write_docx")
+    assert docx_node.capabilities == ["document.write", "document.write_docx"]
+    assert docx_node.execution == NodeExecutionBinding(
+        type="tool",
+        tool_id="document.read_write",
+        operation="write_docx",
+    )
+
+    render_node = snapshot.node_by_id("document.render.typst_pdf")
+    assert render_node.capabilities == [
+        "document.render",
+        "document.render_pdf",
+        "document.render.typst_pdf",
+        "document.typst_compile",
+    ]
+    assert render_node.execution == NodeExecutionBinding(
+        type="tool",
+        tool_id="document.typst_compile",
+        operation="compile_report_pdf",
+    )
+
+
 def test_builder_registers_system_model_human_verifier_and_output_nodes() -> None:
     snapshot = NodeCatalogBuilder(tool_registry=_registry()).build()
 
     node_ids = {node.node_id for node in snapshot.nodes}
 
+    assert "model.reasoning" in node_ids
     assert "document.summarize" in node_ids
     assert "research.synthesize" in node_ids
     assert "human.clarify" in node_ids
     assert "verify.artifact_exists" in node_ids
     assert "output.final_response" in node_ids
+    assert snapshot.node_by_id("model.reasoning").execution.type == "model"
     assert snapshot.node_by_id("document.summarize").execution.type == "model"
     assert snapshot.node_by_id("research.synthesize").execution.type == "model"
     assert snapshot.node_by_id("human.clarify").execution.type == "human"

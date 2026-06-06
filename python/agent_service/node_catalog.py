@@ -185,48 +185,194 @@ class NodeCatalogBuilder:
 
 
 def _nodes_from_tool_manifest(tool: ToolManifestSpec) -> list[NodeDefinition]:
-    if tool.tool_id != "document.markitdown_convert":
-        return []
-
-    return [
-        NodeDefinition(
-            node_id="document.convert.markdown",
-            kind="tool",
-            display_name=tool.name,
-            description=tool.description,
-            category="document",
-            capabilities=["document.convert.markdown"],
-            input_ports=[
-                NodePortDefinition(
-                    id="document-input",
-                    label="Document",
-                    data_type="document",
-                    description="Project or attachment document to convert.",
-                )
-            ],
-            output_ports=[
-                NodePortDefinition(
-                    id="markdown-output",
-                    label="Markdown",
-                    data_type="markdown",
-                    description="Converted Markdown text or artifact.",
-                )
-            ],
-            execution=NodeExecutionBinding(
-                type="tool",
-                tool_id=tool.tool_id,
-                operation="convert_local_file",
+    if tool.tool_id == "document.read_write":
+        return [
+            _tool_node(
+                tool=tool,
+                node_id="document.read",
+                display_name="Read Document",
+                description="Read text from project documents.",
+                capabilities=["document.read", "document.read_write"],
+                input_ports=[
+                    NodePortDefinition(
+                        id="document-input",
+                        label="Document",
+                        data_type="document",
+                        multiple=True,
+                        description="Project documents to read.",
+                    )
+                ],
+                output_ports=[
+                    NodePortDefinition(
+                        id="text-output",
+                        label="Text",
+                        data_type="text",
+                        description="Extracted document text.",
+                    )
+                ],
+                operation="read",
             ),
-            permissions=_permissions_from_tool(tool),
-            examples=_examples_from_tool(tool),
-            source="internal_tool",
-            version=tool.version,
-        )
-    ]
+            _tool_node(
+                tool=tool,
+                node_id="document.write_markdown",
+                display_name="Write Markdown",
+                description="Write Markdown content to a project artifact.",
+                capabilities=["document.write", "document.write_markdown"],
+                input_ports=[
+                    NodePortDefinition(
+                        id="markdown-input",
+                        label="Markdown",
+                        data_type="markdown",
+                        description="Markdown content to write.",
+                    )
+                ],
+                output_ports=[
+                    NodePortDefinition(
+                        id="artifact-output",
+                        label="Markdown Artifact",
+                        data_type="artifact",
+                        description="Written Markdown artifact.",
+                    )
+                ],
+                operation="write_markdown",
+            ),
+            _tool_node(
+                tool=tool,
+                node_id="document.write_docx",
+                display_name="Write Word Document",
+                description="Write document content to a Word artifact.",
+                capabilities=["document.write", "document.write_docx"],
+                input_ports=[
+                    NodePortDefinition(
+                        id="document-content-input",
+                        label="Document Content",
+                        data_type="markdown",
+                        description="Document content to write.",
+                    )
+                ],
+                output_ports=[
+                    NodePortDefinition(
+                        id="artifact-output",
+                        label="Word Artifact",
+                        data_type="artifact",
+                        description="Written Word document artifact.",
+                    )
+                ],
+                operation="write_docx",
+            ),
+        ]
+
+    if tool.tool_id == "document.markitdown_convert":
+        return [
+            _tool_node(
+                tool=tool,
+                node_id="document.convert.markdown",
+                display_name=tool.name,
+                description=tool.description,
+                capabilities=[
+                    "document.convert",
+                    "document.convert.markdown",
+                    "document.markitdown_convert",
+                ],
+                input_ports=[
+                    NodePortDefinition(
+                        id="document-input",
+                        label="Document",
+                        data_type="document",
+                        description="Project or attachment document to convert.",
+                    )
+                ],
+                output_ports=[
+                    NodePortDefinition(
+                        id="markdown-output",
+                        label="Markdown",
+                        data_type="markdown",
+                        description="Converted Markdown text or artifact.",
+                    )
+                ],
+                operation="convert_local_file",
+            )
+        ]
+
+    if tool.tool_id == "document.typst_compile":
+        return [
+            _tool_node(
+                tool=tool,
+                node_id="document.render.typst_pdf",
+                display_name="Render Typst PDF",
+                description="Compile report content into Typst source and PDF artifacts.",
+                capabilities=[
+                    "document.render",
+                    "document.render_pdf",
+                    "document.render.typst_pdf",
+                    "document.typst_compile",
+                ],
+                input_ports=[
+                    NodePortDefinition(
+                        id="report-input",
+                        label="Report",
+                        data_type="markdown",
+                        description="Report content to render.",
+                    )
+                ],
+                output_ports=[
+                    NodePortDefinition(
+                        id="pdf-output",
+                        label="PDF",
+                        data_type="artifact",
+                        description="Rendered PDF artifact.",
+                    )
+                ],
+                operation="compile_report_pdf",
+            )
+        ]
+
+    return []
+
+
+def _tool_node(
+    *,
+    tool: ToolManifestSpec,
+    node_id: str,
+    display_name: str,
+    description: str,
+    capabilities: list[str],
+    input_ports: list[NodePortDefinition],
+    output_ports: list[NodePortDefinition],
+    operation: str,
+) -> NodeDefinition:
+    return NodeDefinition(
+        node_id=node_id,
+        kind="tool",
+        display_name=display_name,
+        description=description,
+        category="document",
+        capabilities=capabilities,
+        input_ports=input_ports,
+        output_ports=output_ports,
+        execution=NodeExecutionBinding(
+            type="tool",
+            tool_id=tool.tool_id,
+            operation=operation,
+        ),
+        permissions=_permissions_from_tool(tool),
+        examples=_examples_from_tool(tool),
+        source="internal_tool",
+        version=tool.version,
+    )
 
 
 def _system_nodes() -> list[NodeDefinition]:
     return [
+        _model_node(
+            node_id="model.reasoning",
+            display_name="Model Reasoning",
+            description="Use the local task reasoner for general plan reasoning.",
+            category="reasoning",
+            capabilities=["model.reasoning"],
+            input_ports=[],
+            output_ports=[],
+        ),
         _model_node(
             node_id="document.summarize",
             display_name="Summarize Document",

@@ -78,6 +78,7 @@ class PlanStep(DeepAgentBaseModel):
     rationale: NonEmptyStr
     inputs: list[NonEmptyStr] = Field(default_factory=list)
     required_capabilities: list[NonEmptyStr] = Field(default_factory=list)
+    preferred_node_ids: list[NonEmptyStr] = Field(default_factory=list)
     expected_output: NonEmptyStr
     verification_criteria: list[NonEmptyStr] = Field(default_factory=list)
     depends_on: list[NonEmptyStr] = Field(default_factory=list)
