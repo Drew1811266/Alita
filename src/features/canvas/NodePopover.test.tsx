@@ -289,6 +289,31 @@ describe("NodePopover", () => {
     expect(markup).not.toContain("bad reason");
   });
 
+  it("filters malformed catalog provenance capability entries", () => {
+    const mixedMarkup = renderPopover({
+      ...toolNode,
+      metadata: {
+        catalogNodeId: "document.convert.markdown",
+        catalogCapabilities: [{ bad: true }, "safe.capability"],
+      } as unknown as AgentNode["metadata"],
+    });
+    const objectOnlyMarkup = renderPopover({
+      ...toolNode,
+      metadata: {
+        catalogNodeId: "human.clarify",
+        catalogCapabilities: [{ bad: true }],
+      } as unknown as AgentNode["metadata"],
+    });
+
+    expect(mixedMarkup).toContain("safe.capability");
+    expect(mixedMarkup).not.toContain("[object Object]");
+    expect(objectOnlyMarkup).toContain("节点库能力");
+    expect(objectOnlyMarkup).toContain(
+      '<span class="nodePopoverEmpty">无</span>',
+    );
+    expect(objectOnlyMarkup).not.toContain("[object Object]");
+  });
+
   it("renders temporary script risk, approval, preview, contracts, and usage", () => {
     const markup = renderToStaticMarkup(
       <NodePopover

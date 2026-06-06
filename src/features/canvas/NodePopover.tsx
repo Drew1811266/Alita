@@ -89,6 +89,27 @@ function renderStringList(values: unknown) {
   );
 }
 
+function renderCatalogCapabilityList(values: unknown) {
+  const capabilities = Array.isArray(values)
+    ? values.filter(
+        (value): value is string =>
+          typeof value === "string" && value.trim().length > 0,
+      )
+    : [];
+
+  if (capabilities.length === 0) {
+    return <span className="nodePopoverEmpty">无</span>;
+  }
+
+  return (
+    <ul className="nodePopoverPortList">
+      {capabilities.map((capability) => (
+        <li key={capability}>{capability}</li>
+      ))}
+    </ul>
+  );
+}
+
 function readableString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -243,7 +264,7 @@ function renderCatalogProvenance(metadata: AgentNode["metadata"]) {
       ) : null}
       <div>
         <dt>节点库能力</dt>
-        <dd>{renderStringList(metadata?.catalogCapabilities)}</dd>
+        <dd>{renderCatalogCapabilityList(metadata?.catalogCapabilities)}</dd>
       </div>
     </>
   );
