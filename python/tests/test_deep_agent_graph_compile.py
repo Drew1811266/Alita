@@ -101,6 +101,10 @@ def test_compile_agent_plan_graph_traces_every_node_to_plan_step() -> None:
         "catalogDisplayName": "Model Reasoning",
         "nodeSelectionReason": "matched_node_id:model.reasoning",
         "executionKind": "model",
+        "catalogExecution": {
+            "type": "model",
+            "model_policy": "node_reasoning",
+        },
         "catalogCapabilities": ["model.reasoning"],
         "catalogRiskLevel": "low",
     }
@@ -270,6 +274,111 @@ def test_compile_mixed_document_and_model_capabilities_uses_document_tool() -> N
         "matched_node_id:document.read"
     )
     assert "modelRef" not in graph["nodes"][0]
+    RunGraph.model_validate(graph)
+
+
+def test_compile_human_catalog_node_preserves_ports_and_execution_metadata() -> None:
+    draft = _draft(["clarify"])
+    human_step = draft.steps[0].model_copy(
+        update={"required_capabilities": ["human.clarify"]}
+    )
+    draft = draft.model_copy(update={"steps": [human_step]})
+
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    node = graph["nodes"][0]
+
+    assert node["nodeType"] == "planning"
+    assert node["metadata"]["catalogNodeId"] == "human.clarify"
+    assert node["inputPorts"] == [
+        {
+            "id": "question-input",
+            "label": "Question",
+            "data_type": "text",
+            "required": True,
+            "multiple": False,
+            "description": "",
+        }
+    ]
+    assert node["outputPorts"] == [
+        {
+            "id": "answer-output",
+            "label": "Answer",
+            "data_type": "text",
+            "required": True,
+            "multiple": False,
+            "description": "",
+        }
+    ]
+    assert node["metadata"]["catalogExecution"] == {"type": "human"}
+    RunGraph.model_validate(graph)
+
+
+def test_compile_verifier_catalog_node_preserves_ports_and_execution_metadata() -> None:
+    draft = _draft(["verify"])
+    verifier_step = draft.steps[0].model_copy(
+        update={"required_capabilities": ["verify.artifact_exists"]}
+    )
+    draft = draft.model_copy(update={"steps": [verifier_step]})
+
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    node = graph["nodes"][0]
+
+    assert node["nodeType"] == "planning"
+    assert node["metadata"]["catalogNodeId"] == "verify.artifact_exists"
+    assert node["inputPorts"] == [
+        {
+            "id": "artifact-input",
+            "label": "Artifact",
+            "data_type": "artifact",
+            "required": True,
+            "multiple": False,
+            "description": "",
+        }
+    ]
+    assert node["outputPorts"] == [
+        {
+            "id": "decision-output",
+            "label": "Decision",
+            "data_type": "decision",
+            "required": True,
+            "multiple": False,
+            "description": "",
+        }
+    ]
+    assert node["metadata"]["catalogExecution"] == {
+        "type": "verifier",
+        "verifier_type": "artifact_exists",
+    }
+    RunGraph.model_validate(graph)
+
+
+def test_compile_output_catalog_node_preserves_ports_and_execution_metadata() -> None:
+    draft = _draft(["respond"])
+    output_step = draft.steps[0].model_copy(
+        update={"required_capabilities": ["output.final_response"]}
+    )
+    draft = draft.model_copy(update={"steps": [output_step]})
+
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    node = graph["nodes"][0]
+
+    assert node["nodeType"] == "output"
+    assert node["metadata"]["catalogNodeId"] == "output.final_response"
+    assert node["inputPorts"] == [
+        {
+            "id": "response-input",
+            "label": "Response",
+            "data_type": "markdown",
+            "required": True,
+            "multiple": False,
+            "description": "",
+        }
+    ]
+    assert node["outputPorts"] == []
+    assert node["metadata"]["catalogExecution"] == {
+        "type": "output",
+        "output_type": "final_response",
+    }
     RunGraph.model_validate(graph)
 
 

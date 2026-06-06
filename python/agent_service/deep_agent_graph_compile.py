@@ -140,8 +140,12 @@ def _compile_step_node(
         "nodeType": node_type,
         "displayName": step.title,
         "status": "waiting",
-        "inputPorts": [],
-        "outputPorts": [],
+        "inputPorts": [
+            port.model_dump(mode="json") for port in catalog_node.input_ports
+        ],
+        "outputPorts": [
+            port.model_dump(mode="json") for port in catalog_node.output_ports
+        ],
         "dependencies": list(step.depends_on),
         "summary": step.objective,
         "createdBy": "agent",
@@ -160,6 +164,10 @@ def _compile_step_node(
             "catalogDisplayName": catalog_node.display_name,
             "nodeSelectionReason": resolution.selection_reason,
             "executionKind": catalog_node.execution.type,
+            "catalogExecution": catalog_node.execution.model_dump(
+                mode="json",
+                exclude_none=True,
+            ),
             "catalogCapabilities": list(catalog_node.capabilities),
             "catalogRiskLevel": catalog_node.permissions.risk_level,
         },
@@ -209,6 +217,7 @@ def _review_required_metadata(
         "catalogDisplayName",
         "nodeSelectionReason",
         "executionKind",
+        "catalogExecution",
         "catalogCapabilities",
         "catalogRiskLevel",
     )
