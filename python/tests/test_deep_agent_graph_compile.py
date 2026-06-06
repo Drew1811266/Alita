@@ -69,6 +69,7 @@ def test_compile_agent_plan_graph_traces_every_node_to_plan_step() -> None:
         "sourcePlanDraftId": draft.plan_draft_id,
         "planningTraceId": "task-1",
         "modelPolicy": "deep_reasoning",
+        "nodeCatalogSchemaVersion": 1,
         "successCriteria": draft.success_criteria,
         "verificationPlan": draft.verification_plan,
     }

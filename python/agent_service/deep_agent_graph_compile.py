@@ -22,7 +22,8 @@ def compile_agent_plan_graph(
     task_id: str,
     node_catalog: NodeCatalogSnapshot | None = None,
 ) -> dict:
-    resolver = NodeCatalogResolver(node_catalog or _default_node_catalog())
+    catalog = node_catalog or _default_node_catalog()
+    resolver = NodeCatalogResolver(catalog)
     nodes = [
         _compile_step_node(
             step,
@@ -50,6 +51,7 @@ def compile_agent_plan_graph(
             "sourcePlanDraftId": draft.plan_draft_id,
             "planningTraceId": task_id,
             "modelPolicy": "deep_reasoning",
+            "nodeCatalogSchemaVersion": catalog.schema_version,
             "successCriteria": list(draft.success_criteria),
             "verificationPlan": list(draft.verification_plan),
         },
