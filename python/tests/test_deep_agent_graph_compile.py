@@ -250,6 +250,29 @@ def test_compile_document_capability_uses_fixed_tool_binding() -> None:
     RunGraph.model_validate(graph)
 
 
+def test_compile_mixed_document_and_model_capabilities_uses_document_tool() -> None:
+    draft = _draft(["read"])
+    document_step = draft.steps[0].model_copy(
+        update={"required_capabilities": ["document.read", "model.reasoning"]}
+    )
+    draft = draft.model_copy(update={"steps": [document_step]})
+
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+
+    assert graph["nodes"][0]["nodeType"] == "fixed_tool"
+    assert graph["nodes"][0]["toolRef"] == "document.read_write"
+    assert graph["nodes"][0]["toolBinding"] == {
+        "toolId": "document.read_write",
+        "operation": "read",
+    }
+    assert graph["nodes"][0]["metadata"]["catalogNodeId"] == "document.read"
+    assert graph["nodes"][0]["metadata"]["nodeSelectionReason"] == (
+        "matched_node_id:document.read"
+    )
+    assert "modelRef" not in graph["nodes"][0]
+    RunGraph.model_validate(graph)
+
+
 def test_compiled_document_read_graph_has_supported_execution_binding() -> None:
     draft = _draft(["read"])
     document_step = draft.steps[0].model_copy(

@@ -108,6 +108,60 @@ def test_resolve_excludes_unavailable_nodes() -> None:
     assert resolution.node.node_id == "document.read.available"
 
 
+def test_resolve_mixed_tool_and_model_capabilities_uses_specific_tool_node() -> None:
+    resolver = _resolver(
+        _node(
+            "model.reasoning",
+            capabilities=["model.reasoning"],
+            risk_level="low",
+        ),
+        _node(
+            "document.read",
+            capabilities=["document.read"],
+            risk_level="high",
+        ),
+    )
+
+    resolution = resolver.resolve(
+        required_capabilities=["document.read", "model.reasoning"],
+        preferred_node_ids=[],
+    )
+
+    assert resolution.node.node_id == "document.read"
+    assert resolution.matched_capabilities == ["document.read"]
+    assert resolution.selection_reason == "matched_node_id:document.read"
+
+
+def test_resolve_rejects_partial_specific_capability_matches() -> None:
+    resolver = _resolver(
+        _node(
+            "document.read",
+            capabilities=["document.read"],
+            risk_level="low",
+        ),
+        _node(
+            "document.render.typst_pdf",
+            capabilities=["document.render.typst_pdf"],
+            risk_level="medium",
+        ),
+    )
+
+    with pytest.raises(NodeCatalogResolutionError) as error:
+        resolver.resolve(
+            required_capabilities=[
+                "document.read",
+                "document.render.typst_pdf",
+            ],
+            preferred_node_ids=[],
+        )
+
+    assert error.value.code == "unsupported_capability"
+    assert error.value.capabilities == [
+        "document.read",
+        "document.render.typst_pdf",
+    ]
+
+
 def test_resolve_raises_unsupported_capability_error() -> None:
     resolver = _resolver(
         _node("document.read", capabilities=["document.read"]),

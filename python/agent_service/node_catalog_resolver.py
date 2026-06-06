@@ -8,6 +8,7 @@ from agent_service.node_catalog import NodeCatalogSnapshot, NodeDefinition
 
 
 _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
+_GENERIC_MODEL_CAPABILITY = "model.reasoning"
 _DEFAULT_CAPABILITIES = ["model.reasoning"]
 
 
@@ -35,6 +36,7 @@ class NodeCatalogResolver:
         required = _dedupe_non_empty(required_capabilities)
         if not required:
             required = list(_DEFAULT_CAPABILITIES)
+        effective_required = _effective_required_capabilities(required)
         preferred = _dedupe_non_empty(preferred_node_ids)
         available_nodes = [
             node
@@ -44,7 +46,7 @@ class NodeCatalogResolver:
 
         unsupported = [
             capability
-            for capability in required
+            for capability in effective_required
             if not any(
                 _node_matches_capability(node, capability)
                 for node in available_nodes
@@ -61,8 +63,16 @@ class NodeCatalogResolver:
         candidates = [
             (index, node, matched)
             for index, node in enumerate(available_nodes)
-            if (matched := _matched_capabilities(node, required))
+            if _node_satisfies_capabilities(node, effective_required)
+            if (matched := _matched_capabilities(node, effective_required))
         ]
+        if not candidates:
+            raise NodeCatalogResolutionError(
+                code="unsupported_capability",
+                message="Unsupported catalog capability set: "
+                + ", ".join(effective_required),
+                capabilities=effective_required,
+            )
 
         for preferred_node_id in preferred:
             for _, node, matched in candidates:
@@ -98,6 +108,29 @@ def _dedupe_non_empty(values: Iterable[str]) -> list[str]:
         seen.add(normalized)
         result.append(normalized)
     return result
+
+
+def _effective_required_capabilities(required_capabilities: list[str]) -> list[str]:
+    if (
+        len(required_capabilities) > 1
+        and _GENERIC_MODEL_CAPABILITY in required_capabilities
+    ):
+        return [
+            capability
+            for capability in required_capabilities
+            if capability != _GENERIC_MODEL_CAPABILITY
+        ]
+    return list(required_capabilities)
+
+
+def _node_satisfies_capabilities(
+    node: NodeDefinition,
+    required_capabilities: list[str],
+) -> bool:
+    return all(
+        _node_matches_capability(node, capability)
+        for capability in required_capabilities
+    )
 
 
 def _matched_capabilities(
