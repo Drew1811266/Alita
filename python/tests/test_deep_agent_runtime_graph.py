@@ -239,6 +239,73 @@ def test_runtime_review_and_compile_use_same_state_node_catalog() -> None:
     assert node["metadata"]["nodeSelectionReason"] == "preferred_node_id:custom.reason"
 
 
+@pytest.mark.parametrize(
+    "disabled_tool_id",
+    ["document.markitdown_convert", "internal:document.markitdown_convert"],
+)
+def test_disabled_catalog_tool_is_unavailable_for_runtime_review_and_compile(
+    disabled_tool_id: str,
+) -> None:
+    message = UserMessage(
+        task_id="task-disabled-catalog",
+        content="Convert this document to markdown.",
+    )
+    context_update = build_context(
+        {
+            "message": message,
+            "project_path": "D:/Project/demo.alita",
+            "disabled_tool_ids": [disabled_tool_id],
+        }
+    )
+    catalog_node = next(
+        (
+            node
+            for node in context_update["node_catalog"]["nodes"]
+            if node["node_id"] == "document.convert.markdown"
+        ),
+        None,
+    )
+    context_node_ids = {
+        node["node_id"]
+        for node in context_update["context_bundle"]["available_nodes"]
+    }
+
+    assert (
+        catalog_node is None
+        or catalog_node["availability"]["status"] == "unavailable"
+    )
+    assert "document.convert.markdown" not in context_node_ids
+    assert "document.convert.markdown" not in context_update["available_capabilities"]
+
+    payload = _plan_payload(["convert"])
+    payload["steps"][0]["required_capabilities"] = ["document.convert.markdown"]
+    payload["steps"][0]["preferred_node_ids"] = ["document.convert.markdown"]
+    payload["required_capabilities"] = ["document.convert.markdown"]
+    draft = PlanDraft.model_validate(payload)
+    state = {
+        **context_update,
+        "message": message,
+        "plan_draft": draft,
+        "revision_count": 0,
+        "revision_budget": 0,
+        "events": [],
+    }
+
+    review_command = review_plan_node(state)
+    review = review_command.update["plan_review"]
+    assert review_command.goto == "deep_agent_failed"
+    assert review.status == "invalid"
+    assert "document.convert.markdown" in review.unsupported_capabilities
+
+    try:
+        compile_agent_plan_graph_node(state)
+    except Exception as error:
+        assert getattr(error, "code", None) == "unsupported_capability"
+        assert "document.convert.markdown" in getattr(error, "capabilities", [])
+    else:
+        raise AssertionError("disabled catalog node was compiled")
+
+
 def test_runtime_invoke_input_defaults_to_execute_after_compile() -> None:
     invoke_input = _runtime_invoke_input(
         UserMessage(task_id="task-default-execute", content="Write a report."),

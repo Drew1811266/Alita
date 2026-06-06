@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from time import perf_counter
 
@@ -18,7 +18,7 @@ from agent_service.runtime_events import utc_now_iso
 from agent_service.runtime_trace import RuntimeSpan, next_span_id, trace_id_for_run
 from agent_service.schemas import UserMessage
 from agent_service.tool_gateway import UnifiedToolGateway
-from agent_service.tool_protocol import UnifiedToolDefinition
+from agent_service.tool_protocol import UnifiedToolDefinition, equivalent_tool_ids
 from agent_service.tool_registry import ToolRegistry
 from agent_service.tool_resolver import resolve_tools_for_task
 
@@ -144,10 +144,7 @@ def build_context_bundle(
         external_tools or [],
         disabled_tool_ids or [],
     )
-    available_tool_ids = {
-        _normalize_tool_id(tool.tool_id)
-        for tool in available_tools
-    }
+    available_tool_ids = _expanded_tool_ids(tool.tool_id for tool in available_tools)
     return ContextBundle(
         project_path=project_path,
         artifact_dir=str(project_file.parent / "artifacts"),
@@ -213,9 +210,11 @@ def _catalog_node_is_available_for_context(
     if not tool_id:
         return False
 
-    normalized_tool_id = _normalize_tool_id(tool_id)
-    disabled = {_normalize_tool_id(tool_id) for tool_id in disabled_tool_ids}
-    return normalized_tool_id in available_tool_ids and normalized_tool_id not in disabled
+    tool_equivalents = equivalent_tool_ids(tool_id)
+    disabled = _expanded_tool_ids(disabled_tool_ids)
+    return bool(tool_equivalents & available_tool_ids) and not (
+        tool_equivalents & disabled
+    )
 
 
 def _catalog_node_summary(node: NodeDefinition) -> CatalogNodeSummary:
@@ -281,25 +280,25 @@ def _merge_tool_capabilities(
     external_tools: list[ToolCapability],
     disabled_tool_ids: list[str],
 ) -> list[ToolCapability]:
-    disabled = {_normalize_tool_id(tool_id) for tool_id in disabled_tool_ids}
+    disabled = _expanded_tool_ids(disabled_tool_ids)
     merged: list[ToolCapability] = []
     seen: set[str] = set()
     for tool in [*base_tools, *external_tools]:
-        normalized_tool_id = _normalize_tool_id(tool.tool_id)
-        if normalized_tool_id in disabled:
+        tool_equivalents = equivalent_tool_ids(tool.tool_id)
+        if tool_equivalents & disabled:
             continue
-        if normalized_tool_id in seen:
+        if tool_equivalents & seen:
             continue
-        seen.add(normalized_tool_id)
+        seen.update(tool_equivalents)
         merged.append(tool)
     return merged
 
 
-def _normalize_tool_id(tool_id: str) -> str:
-    normalized = str(tool_id).strip()
-    if normalized.startswith("internal:"):
-        return normalized.removeprefix("internal:")
-    return normalized
+def _expanded_tool_ids(tool_ids: Iterable[str]) -> set[str]:
+    expanded: set[str] = set()
+    for tool_id in tool_ids:
+        expanded.update(equivalent_tool_ids(str(tool_id)))
+    return expanded
 
 
 def _operation_names_from_schema(schema: dict) -> list[str]:

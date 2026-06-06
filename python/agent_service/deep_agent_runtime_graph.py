@@ -52,9 +52,15 @@ from agent_service.deep_agent_runtime_models import PlanningResumeCommand
 from agent_service.execution import run_graph_events
 from agent_service.goal_spec import parse_goal_spec
 from agent_service.model_client import LlamaCppModelClient
-from agent_service.node_catalog import NodeCatalogBuilder, NodeCatalogSnapshot
+from agent_service.node_catalog import (
+    NodeAvailability,
+    NodeCatalogBuilder,
+    NodeCatalogSnapshot,
+    NodeDefinition,
+)
 from agent_service.schemas import AgentEvent, RunGraph, RunGraphRequest, UserMessage
 from agent_service.tool_execution import default_tool_packages_root
+from agent_service.tool_protocol import equivalent_tool_ids
 from agent_service.runtime_store import RuntimeStore
 from agent_service.tool_registry import ToolRegistry
 
@@ -67,6 +73,7 @@ class DeepAgentRuntimeState(TypedDict, total=False):
     reasoning_decision: ReasoningDecision
     context_bundle: dict[str, Any]
     node_catalog: dict[str, Any]
+    disabled_tool_ids: list[str]
     available_capabilities: set[str]
     plan_draft: PlanDraft
     thinking_status: ThinkingStatus
@@ -115,6 +122,7 @@ def run_deep_agent_runtime(
     require_confirmation: bool = True,
     execute_after_compile: bool = True,
     execution_event_runner: AgentExecutionEventRunner | None = None,
+    disabled_tool_ids: list[str] | None = None,
 ) -> list[AgentEvent]:
     resolved_run_id = run_id or message.task_id
     resolved_thread_id = thread_id or f"thread-{message.task_id}"
@@ -148,6 +156,7 @@ def run_deep_agent_runtime(
         revision_budget=revision_budget,
         require_confirmation=require_confirmation,
         execute_after_compile=execute_after_compile,
+        disabled_tool_ids=disabled_tool_ids,
     )
     try:
         previous_state = app.get_state(config=config)
@@ -182,6 +191,7 @@ def stream_deep_agent_runtime_events(
     require_confirmation: bool = True,
     execute_after_compile: bool = True,
     execution_event_runner: AgentExecutionEventRunner | None = None,
+    disabled_tool_ids: list[str] | None = None,
 ):
     resolved_run_id = run_id or message.task_id
     resolved_thread_id = thread_id or f"thread-{message.task_id}"
@@ -214,6 +224,7 @@ def stream_deep_agent_runtime_events(
         revision_budget=revision_budget,
         require_confirmation=require_confirmation,
         execute_after_compile=execute_after_compile,
+        disabled_tool_ids=disabled_tool_ids,
     )
 
     try:
@@ -242,6 +253,7 @@ def _runtime_invoke_input(
     revision_budget: int,
     require_confirmation: bool,
     execute_after_compile: bool = True,
+    disabled_tool_ids: list[str] | None = None,
 ) -> dict[str, Any] | Command:
     if resume_command is not None:
         return Command(
@@ -256,6 +268,7 @@ def _runtime_invoke_input(
         "thread_id": thread_id,
         "reasoning_decision": None,
         "context_bundle": {},
+        "disabled_tool_ids": list(disabled_tool_ids or []),
         "available_capabilities": set(),
         "plan_draft": None,
         "thinking_status": None,
@@ -520,13 +533,18 @@ def reasoning_gate(
 def build_context(state: DeepAgentRuntimeState) -> dict[str, Any]:
     message = state["message"]
     tool_registry = ToolRegistry.from_packages_root(default_tool_packages_root())
-    node_catalog = NodeCatalogBuilder(tool_registry=tool_registry).build()
+    disabled_tool_ids = list(state.get("disabled_tool_ids") or [])
+    node_catalog = _node_catalog_with_disabled_tools_unavailable(
+        NodeCatalogBuilder(tool_registry=tool_registry).build(),
+        disabled_tool_ids=disabled_tool_ids,
+    )
     goal_spec = parse_goal_spec(message)
     context = build_context_bundle(
         message=message,
         goal_spec=goal_spec,
         project_path=state["project_path"],
         tool_registry=tool_registry,
+        disabled_tool_ids=disabled_tool_ids,
         node_catalog=node_catalog,
         memory_records=[],
         memory_store=None,
@@ -535,6 +553,7 @@ def build_context(state: DeepAgentRuntimeState) -> dict[str, Any]:
     return {
         "context_bundle": context_bundle,
         "node_catalog": node_catalog.model_dump(),
+        "disabled_tool_ids": disabled_tool_ids,
         "available_capabilities": _available_capabilities(
             context_bundle,
             node_catalog=node_catalog,
@@ -2077,6 +2096,44 @@ def _node_catalog_from_state(
     return None
 
 
+def _node_catalog_with_disabled_tools_unavailable(
+    node_catalog: NodeCatalogSnapshot,
+    *,
+    disabled_tool_ids: list[str],
+) -> NodeCatalogSnapshot:
+    disabled = _expanded_tool_ids(disabled_tool_ids)
+    if not disabled:
+        return node_catalog
+
+    return node_catalog.model_copy(
+        update={
+            "nodes": [
+                _node_with_disabled_availability(node, disabled)
+                for node in node_catalog.nodes
+            ]
+        }
+    )
+
+
+def _node_with_disabled_availability(
+    node: NodeDefinition,
+    disabled_tool_ids: set[str],
+) -> NodeDefinition:
+    tool_id = node.execution.tool_id
+    if not tool_id or not (equivalent_tool_ids(tool_id) & disabled_tool_ids):
+        return node
+
+    return node.model_copy(
+        update={
+            "availability": NodeAvailability(
+                status="unavailable",
+                reason_code="disabled_tool",
+                message="The backing tool is disabled for this run.",
+            )
+        }
+    )
+
+
 def _available_capabilities(
     context_bundle: dict[str, Any],
     *,
@@ -2115,6 +2172,13 @@ def _catalog_declared_capabilities(node_catalog: NodeCatalogSnapshot) -> set[str
         capabilities.add(node.node_id)
         capabilities.update(node.capabilities)
     return capabilities
+
+
+def _expanded_tool_ids(tool_ids: Iterable[str]) -> set[str]:
+    expanded: set[str] = set()
+    for tool_id in tool_ids:
+        expanded.update(equivalent_tool_ids(str(tool_id)))
+    return expanded
 
 
 class _SanitizedDeepAgentRuntimeGraph:
