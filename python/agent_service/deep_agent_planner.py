@@ -213,7 +213,11 @@ def review_plan(
     coverage_findings: list[str] = []
     revision_instructions: list[str] = []
     unsupported_capabilities: list[str] = []
-    catalog_resolver = NodeCatalogResolver(node_catalog or _default_node_catalog())
+    catalog = node_catalog or _default_node_catalog()
+    effective_available_capabilities = set(available_capabilities) | (
+        catalog.available_capabilities()
+    )
+    catalog_resolver = NodeCatalogResolver(catalog)
 
     if not draft.success_criteria:
         coverage_findings.append("missing_success_criteria")
@@ -231,7 +235,7 @@ def review_plan(
         revision_instructions.append("Add a verification plan for the full plan.")
 
     for capability in draft.required_capabilities:
-        if capability not in available_capabilities:
+        if capability not in effective_available_capabilities:
             _add_unsupported_capability(
                 capability,
                 unsupported_capabilities,
@@ -261,7 +265,7 @@ def review_plan(
                 f"Add an expected output for step {step.step_id}."
             )
         for capability in step.required_capabilities:
-            if capability not in available_capabilities:
+            if capability not in effective_available_capabilities:
                 _add_unsupported_capability(
                     capability,
                     unsupported_capabilities,

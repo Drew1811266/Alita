@@ -60,6 +60,8 @@ def test_builder_registers_document_read_write_and_render_tool_nodes() -> None:
         tool_id="document.read_write",
         operation="read",
     )
+    assert read_node.availability.status == "unavailable"
+    assert read_node.availability.reason_code == "runtime_not_supported"
 
     markdown_node = snapshot.node_by_id("document.write_markdown")
     assert markdown_node.capabilities == [
@@ -71,6 +73,8 @@ def test_builder_registers_document_read_write_and_render_tool_nodes() -> None:
         tool_id="document.read_write",
         operation="write_markdown",
     )
+    assert markdown_node.availability.status == "unavailable"
+    assert markdown_node.availability.reason_code == "runtime_not_supported"
 
     docx_node = snapshot.node_by_id("document.write_docx")
     assert docx_node.capabilities == ["document.write", "document.write_docx"]
@@ -79,6 +83,8 @@ def test_builder_registers_document_read_write_and_render_tool_nodes() -> None:
         tool_id="document.read_write",
         operation="write_docx",
     )
+    assert docx_node.availability.status == "unavailable"
+    assert docx_node.availability.reason_code == "runtime_not_supported"
 
     render_node = snapshot.node_by_id("document.render.typst_pdf")
     assert render_node.capabilities == [

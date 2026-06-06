@@ -485,15 +485,20 @@ def test_review_plan_blocks_step_unsupported_capability() -> None:
 def test_review_plan_blocks_jointly_unsatisfied_step_capability_set() -> None:
     payload = _plan_payload()
     payload["steps"][0]["required_capabilities"] = [
-        "document.read",
+        "document.convert.markdown",
         "document.render.typst_pdf",
+    ]
+    payload["required_capabilities"] = [
+        "document.convert.markdown",
+        "document.render.typst_pdf",
+        "model.reasoning",
     ]
     draft = PlanDraft.model_validate(payload)
 
     review = review_plan(
         draft,
         available_capabilities={
-            "document.read",
+            "document.convert.markdown",
             "document.render.typst_pdf",
             "model.reasoning",
         },
@@ -501,13 +506,40 @@ def test_review_plan_blocks_jointly_unsatisfied_step_capability_set() -> None:
 
     assert review.status == "invalid"
     assert review.unsupported_capabilities == [
-        "document.read",
+        "document.convert.markdown",
         "document.render.typst_pdf",
     ]
     assert (
         "unsupported_capability_set:step-extract:"
-        "document.read,document.render.typst_pdf"
+        "document.convert.markdown,document.render.typst_pdf"
     ) in review.coverage_findings
+
+
+def test_review_plan_approves_catalog_available_output_capability() -> None:
+    payload = _plan_payload()
+    payload["steps"] = [
+        {
+            "step_id": "step-respond",
+            "title": "Return final answer",
+            "objective": "Return the final response to the user.",
+            "rationale": "The requested deliverable is a final response.",
+            "inputs": ["report"],
+            "required_capabilities": ["output.final_response"],
+            "expected_output": "Final response delivered to the user.",
+            "verification_criteria": ["The response satisfies the request."],
+            "depends_on": [],
+        }
+    ]
+    payload["required_capabilities"] = ["output.final_response"]
+    draft = PlanDraft.model_validate(payload)
+
+    review = review_plan(
+        draft,
+        available_capabilities=set(),
+    )
+
+    assert review.status == "approved"
+    assert review.unsupported_capabilities == []
 
 
 def test_revision_instructions_appear_in_planning_prompt_and_local_path_is_scrubbed() -> None:

@@ -211,6 +211,9 @@ def _nodes_from_tool_manifest(tool: ToolManifestSpec) -> list[NodeDefinition]:
                     )
                 ],
                 operation="read",
+                availability=_runtime_not_supported_availability(
+                    "Python script tool runtime is not supported by graph execution yet."
+                ),
             ),
             _tool_node(
                 tool=tool,
@@ -235,6 +238,9 @@ def _nodes_from_tool_manifest(tool: ToolManifestSpec) -> list[NodeDefinition]:
                     )
                 ],
                 operation="write_markdown",
+                availability=_runtime_not_supported_availability(
+                    "Python script tool runtime is not supported by graph execution yet."
+                ),
             ),
             _tool_node(
                 tool=tool,
@@ -259,6 +265,9 @@ def _nodes_from_tool_manifest(tool: ToolManifestSpec) -> list[NodeDefinition]:
                     )
                 ],
                 operation="write_docx",
+                availability=_runtime_not_supported_availability(
+                    "Python script tool runtime is not supported by graph execution yet."
+                ),
             ),
         ]
 
@@ -340,6 +349,7 @@ def _tool_node(
     input_ports: list[NodePortDefinition],
     output_ports: list[NodePortDefinition],
     operation: str,
+    availability: NodeAvailability | None = None,
 ) -> NodeDefinition:
     return NodeDefinition(
         node_id=node_id,
@@ -359,6 +369,15 @@ def _tool_node(
         examples=_examples_from_tool(tool),
         source="internal_tool",
         version=tool.version,
+        availability=availability or NodeAvailability(),
+    )
+
+
+def _runtime_not_supported_availability(message: str) -> NodeAvailability:
+    return NodeAvailability(
+        status="unavailable",
+        reason_code="runtime_not_supported",
+        message=message,
     )
 
 

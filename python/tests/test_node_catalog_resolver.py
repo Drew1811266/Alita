@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from agent_service.node_catalog import (
     NodeAvailability,
+    NodeCatalogBuilder,
     NodeCatalogSnapshot,
     NodeDefinition,
     NodeExecutionBinding,
@@ -13,6 +16,13 @@ from agent_service.node_catalog_resolver import (
     NodeCatalogResolutionError,
     NodeCatalogResolver,
 )
+from agent_service.tool_registry import ToolRegistry
+
+
+def _registry() -> ToolRegistry:
+    return ToolRegistry.from_packages_root(
+        Path(__file__).resolve().parents[2] / "tool-packages"
+    )
 
 
 def _node(
@@ -106,6 +116,21 @@ def test_resolve_excludes_unavailable_nodes() -> None:
     )
 
     assert resolution.node.node_id == "document.read.available"
+
+
+def test_resolve_excludes_unavailable_default_document_read_node() -> None:
+    resolver = NodeCatalogResolver(
+        NodeCatalogBuilder(tool_registry=_registry()).build()
+    )
+
+    with pytest.raises(NodeCatalogResolutionError) as error:
+        resolver.resolve(
+            required_capabilities=["document.read"],
+            preferred_node_ids=[],
+        )
+
+    assert error.value.code == "unsupported_capability"
+    assert error.value.capabilities == ["document.read"]
 
 
 def test_resolve_mixed_tool_and_model_capabilities_uses_specific_tool_node() -> None:
