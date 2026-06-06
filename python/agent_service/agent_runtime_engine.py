@@ -118,6 +118,7 @@ class AgentRuntimeEngine:
             thread_id=started.state.thread_id,
             model_client=model_client,
             runtime_store=self.runtime_store,
+            disabled_tool_ids=list(run_state.disabled_tool_ids),
             resume_command=planning_resume_command_from_pending_choice(
                 run_state.pending_choice,
                 answer_fallback=run_state.message.content,
@@ -191,6 +192,7 @@ class AgentRuntimeEngine:
             thread_id=started.state.thread_id,
             model_client=model_client,
             runtime_store=self.runtime_store,
+            disabled_tool_ids=list(run_state.disabled_tool_ids),
             resume_command=planning_resume_command_from_pending_choice(
                 run_state.pending_choice,
                 answer_fallback=run_state.message.content,

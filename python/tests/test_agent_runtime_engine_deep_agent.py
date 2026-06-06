@@ -194,6 +194,83 @@ def test_runtime_engine_stream_uses_deep_agent_stream_runner_without_legacy_fall
     ]
 
 
+def test_runtime_engine_forwards_disabled_tool_ids_to_deep_runtime() -> None:
+    deep_calls: list[dict[str, Any]] = []
+
+    def deep_runtime_runner(message: UserMessage, **kwargs):
+        deep_calls.append({"message": message, **kwargs})
+        return [
+            AgentEvent(
+                type="planning.failed",
+                payload={
+                    "taskId": message.task_id,
+                    "errorCode": "plan_review_invalid",
+                    "error": "disabled tool rejected",
+                },
+            )
+        ]
+
+    engine = AgentRuntimeEngine(deep_runtime_runner=deep_runtime_runner)
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-disabled-sync",
+            content="Convert this document to markdown.",
+        )
+    ).model_copy(
+        update={
+            "project_path": "D:/Project/demo.alita",
+            "run_id": "run-disabled-sync",
+            "disabled_tool_ids": ["document.markitdown_convert"],
+        }
+    )
+
+    result = engine.run_from_state(run_state)
+
+    assert len(deep_calls) == 1
+    assert deep_calls[0]["disabled_tool_ids"] == ["document.markitdown_convert"]
+    assert result.events[-1].type == "planning.failed"
+
+
+def test_runtime_engine_forwards_disabled_tool_ids_to_deep_stream_runtime() -> None:
+    deep_stream_calls: list[dict[str, Any]] = []
+
+    def deep_runtime_stream_runner(message: UserMessage, **kwargs):
+        deep_stream_calls.append({"message": message, **kwargs})
+        yield AgentEvent(
+            type="planning.failed",
+            payload={
+                "taskId": message.task_id,
+                "errorCode": "plan_review_invalid",
+                "error": "disabled tool rejected",
+            },
+        )
+
+    engine = AgentRuntimeEngine(
+        deep_runtime_stream_runner=deep_runtime_stream_runner,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-disabled-stream",
+            content="Convert this document to markdown.",
+        )
+    ).model_copy(
+        update={
+            "project_path": "D:/Project/demo.alita",
+            "run_id": "run-disabled-stream",
+            "thread_id": "thread-disabled-stream",
+            "disabled_tool_ids": ["internal:document.markitdown_convert"],
+        }
+    )
+
+    events = list(engine.stream_from_state(run_state))
+
+    assert len(deep_stream_calls) == 1
+    assert deep_stream_calls[0]["disabled_tool_ids"] == [
+        "internal:document.markitdown_convert"
+    ]
+    assert events[-1].type == "planning.failed"
+
+
 def test_runtime_engine_simple_request_passes_reasoning_gate_before_legacy_answer() -> None:
     legacy_calls: list[AgentRunState] = []
 
