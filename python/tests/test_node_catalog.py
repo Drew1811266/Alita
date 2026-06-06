@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from agent_service.node_catalog import (
+    NodeAvailability,
+    NodeCatalogBuilder,
+    NodeDefinition,
+    NodeExecutionBinding,
+    NodePermissionProfile,
+)
+from agent_service.tool_registry import ToolRegistry
+
+
+def _registry() -> ToolRegistry:
+    return ToolRegistry.from_packages_root(
+        Path(__file__).resolve().parents[2] / "tool-packages"
+    )
+
+
+def test_builder_converts_tool_manifest_to_node_definition() -> None:
+    snapshot = NodeCatalogBuilder(tool_registry=_registry()).build()
+
+    node = snapshot.node_by_id("document.convert.markdown")
+
+    assert node.node_id == "document.convert.markdown"
+    assert node.kind == "tool"
+    assert node.category == "document"
+    assert node.source == "internal_tool"
+    assert node.capabilities == ["document.convert.markdown"]
+    assert node.execution == NodeExecutionBinding(
+        type="tool",
+        tool_id="document.markitdown_convert",
+        operation="convert_local_file",
+    )
+    assert node.permissions.permissions == [
+        "read_project_files",
+        "write_project_outputs",
+        "run_python_plugin",
+    ]
+    assert node.permissions.risk_level == "high"
+    assert node.availability == NodeAvailability(status="available")
+    assert node.input_ports[0].data_type == "document"
+    assert node.output_ports[0].data_type == "markdown"
+
+
+def test_builder_registers_system_model_human_verifier_and_output_nodes() -> None:
+    snapshot = NodeCatalogBuilder(tool_registry=_registry()).build()
+
+    node_ids = {node.node_id for node in snapshot.nodes}
+
+    assert "document.summarize" in node_ids
+    assert "research.synthesize" in node_ids
+    assert "human.clarify" in node_ids
+    assert "verify.artifact_exists" in node_ids
+    assert "output.final_response" in node_ids
+    assert snapshot.node_by_id("document.summarize").execution.type == "model"
+    assert snapshot.node_by_id("research.synthesize").execution.type == "model"
+    assert snapshot.node_by_id("human.clarify").execution.type == "human"
+    assert snapshot.node_by_id("verify.artifact_exists").execution.type == "verifier"
+    assert snapshot.node_by_id("output.final_response").execution.type == "output"
+
+
+def test_snapshot_records_duplicate_node_diagnostics() -> None:
+    first = NodeDefinition(
+        node_id="duplicate.node",
+        kind="model",
+        display_name="Duplicate",
+        description="First duplicate node.",
+        category="reasoning",
+        capabilities=["duplicate.capability"],
+        input_ports=[],
+        output_ports=[],
+        execution=NodeExecutionBinding(type="model", model_policy="node_reasoning"),
+        permissions=NodePermissionProfile(),
+        examples=[],
+        source="system",
+        version="1.0.0",
+    )
+    second = first.model_copy(update={"description": "Second duplicate node."})
+
+    snapshot = NodeCatalogBuilder(tool_registry=ToolRegistry([])).build(
+        additional_system_nodes=[first, second]
+    )
+
+    assert any(
+        diagnostic.code == "duplicate_node_id"
+        and diagnostic.node_id == "duplicate.node"
+        for diagnostic in snapshot.diagnostics
+    )
+    assert snapshot.node_by_id("duplicate.node").description == "First duplicate node."
