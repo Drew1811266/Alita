@@ -52,6 +52,7 @@ from agent_service.deep_agent_runtime_models import PlanningResumeCommand
 from agent_service.execution import run_graph_events
 from agent_service.goal_spec import parse_goal_spec
 from agent_service.model_client import LlamaCppModelClient
+from agent_service.node_catalog import NodeCatalogBuilder, NodeCatalogSnapshot
 from agent_service.schemas import AgentEvent, RunGraph, RunGraphRequest, UserMessage
 from agent_service.tool_execution import default_tool_packages_root
 from agent_service.runtime_store import RuntimeStore
@@ -65,6 +66,7 @@ class DeepAgentRuntimeState(TypedDict, total=False):
     thread_id: str
     reasoning_decision: ReasoningDecision
     context_bundle: dict[str, Any]
+    node_catalog: dict[str, Any]
     available_capabilities: set[str]
     plan_draft: PlanDraft
     thinking_status: ThinkingStatus
@@ -518,19 +520,25 @@ def reasoning_gate(
 def build_context(state: DeepAgentRuntimeState) -> dict[str, Any]:
     message = state["message"]
     tool_registry = ToolRegistry.from_packages_root(default_tool_packages_root())
+    node_catalog = NodeCatalogBuilder(tool_registry=tool_registry).build()
     goal_spec = parse_goal_spec(message)
     context = build_context_bundle(
         message=message,
         goal_spec=goal_spec,
         project_path=state["project_path"],
         tool_registry=tool_registry,
+        node_catalog=node_catalog,
         memory_records=[],
         memory_store=None,
     )
     context_bundle = context.model_dump()
     return {
         "context_bundle": context_bundle,
-        "available_capabilities": _available_capabilities(context_bundle),
+        "node_catalog": node_catalog.model_dump(),
+        "available_capabilities": _available_capabilities(
+            context_bundle,
+            node_catalog=node_catalog,
+        ),
     }
 
 
@@ -589,7 +597,10 @@ def review_plan_node(
 ]:
     review = review_plan(
         state["plan_draft"],
-        available_capabilities=state.get("available_capabilities") or {"model.reasoning"},
+        available_capabilities=(
+            state.get("available_capabilities") or {"model.reasoning"}
+        ),
+        node_catalog=_node_catalog_from_state(state),
     )
     events = [
         AgentEvent(
@@ -2052,7 +2063,24 @@ def _deduplicate_instructions(instructions: list[str]) -> list[str]:
     return deduplicated
 
 
-def _available_capabilities(context_bundle: dict[str, Any]) -> set[str]:
+def _node_catalog_from_state(
+    state: DeepAgentRuntimeState,
+) -> NodeCatalogSnapshot | None:
+    payload = state.get("node_catalog")
+    if not payload:
+        return None
+    if isinstance(payload, NodeCatalogSnapshot):
+        return payload
+    if isinstance(payload, Mapping):
+        return NodeCatalogSnapshot.model_validate(payload)
+    return None
+
+
+def _available_capabilities(
+    context_bundle: dict[str, Any],
+    *,
+    node_catalog: NodeCatalogSnapshot | None = None,
+) -> set[str]:
     capabilities = {"model.reasoning"}
     for tool in context_bundle.get("available_tools", []):
         if not isinstance(tool, dict):
@@ -2071,6 +2099,20 @@ def _available_capabilities(context_bundle: dict[str, Any]) -> set[str]:
             capabilities.update({"document.convert", "document.convert.markdown"})
         elif tool_id == "document.typst_compile":
             capabilities.update({"document.render", "document.render.typst_pdf"})
+    if node_catalog is None:
+        return capabilities
+
+    catalog_declared_capabilities = _catalog_declared_capabilities(node_catalog)
+    return (
+        capabilities - catalog_declared_capabilities
+    ) | node_catalog.available_capabilities()
+
+
+def _catalog_declared_capabilities(node_catalog: NodeCatalogSnapshot) -> set[str]:
+    capabilities: set[str] = set()
+    for node in node_catalog.nodes:
+        capabilities.add(node.node_id)
+        capabilities.update(node.capabilities)
     return capabilities
 
 

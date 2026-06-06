@@ -384,6 +384,16 @@ def _planning_prompt(
             "Use a non-empty verification_plan list.",
             "Ensure recommended_strategy references a candidate strategyId.",
             "Ensure step depends_on values reference existing step_id values only.",
+            (
+                "For each step, set preferred_node_ids to node_id values from "
+                "context_bundle.available_nodes when an available node directly "
+                "matches a step; leave it empty when no available node directly "
+                "matches."
+            ),
+            (
+                "Do not name nodes outside context_bundle.available_nodes in "
+                "preferred_node_ids."
+            ),
         ],
     }
     return json.dumps(prompt, ensure_ascii=False, indent=2)

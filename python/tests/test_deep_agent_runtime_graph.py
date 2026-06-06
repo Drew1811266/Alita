@@ -18,6 +18,7 @@ from agent_service.deep_agent_runtime_models import (
 )
 from agent_service.deep_agent_runtime_graph import (
     _runtime_invoke_input,
+    build_context,
     build_deep_agent_runtime_graph,
     run_deep_agent_runtime,
 )
@@ -154,6 +155,31 @@ def test_build_deep_agent_runtime_graph_accepts_state_model_client() -> None:
 
     assert model.calls == 2
     assert [event.type for event in result.get("events", [])][-1] == "node_graph.created"
+
+
+def test_build_context_stores_node_catalog_and_catalog_available_capabilities() -> None:
+    update = build_context(
+        {
+            "message": UserMessage(
+                task_id="task-catalog",
+                content="Convert this document to markdown.",
+            ),
+            "project_path": "D:/Project/demo.alita",
+        }
+    )
+
+    node_catalog = update["node_catalog"]
+    assert isinstance(node_catalog, dict)
+    catalog_node_ids = {node["node_id"] for node in node_catalog["nodes"]}
+    assert "document.convert.markdown" in catalog_node_ids
+
+    context_node_ids = {
+        node["node_id"] for node in update["context_bundle"]["available_nodes"]
+    }
+    assert "document.convert.markdown" in context_node_ids
+
+    assert "document.convert.markdown" in update["available_capabilities"]
+    assert "document.read" not in update["available_capabilities"]
 
 
 def test_runtime_invoke_input_defaults_to_execute_after_compile() -> None:

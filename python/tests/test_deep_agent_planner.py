@@ -590,3 +590,37 @@ def test_planning_prompt_includes_all_revision_instructions() -> None:
         "Add a verification plan for the full plan.",
         "Revise the plan to use only available capabilities or request support.",
     ]
+
+
+def test_planning_prompt_instructs_model_to_use_available_catalog_nodes() -> None:
+    context_bundle = {
+        **_context_bundle(),
+        "available_nodes": [
+            {
+                "node_id": "document.convert.markdown",
+                "kind": "tool",
+                "display_name": "Convert Document to Markdown",
+                "category": "document",
+                "capabilities": ["document.convert.markdown"],
+                "description": "Convert local documents to Markdown.",
+                "input_summary": ["Document (document, required)"],
+                "output_summary": ["Markdown (markdown, required)"],
+                "risk_level": "high",
+                "availability": {"status": "available"},
+            }
+        ],
+    }
+
+    prompt = _planning_prompt(
+        _message(content="Convert this contract to markdown."),
+        context_bundle=context_bundle,
+    )
+
+    prompt_payload = json.loads(prompt)
+    instructions = "\n".join(prompt_payload["instructions"])
+    assert "preferred_node_ids" in instructions
+    assert "available node directly matches a step" in instructions
+    assert "Do not name nodes outside context_bundle.available_nodes" in instructions
+    assert prompt_payload["context_bundle"]["available_nodes"] == context_bundle[
+        "available_nodes"
+    ]
