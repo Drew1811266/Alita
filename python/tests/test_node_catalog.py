@@ -111,6 +111,22 @@ def test_builder_registers_system_model_human_verifier_and_output_nodes() -> Non
     assert snapshot.node_by_id("human.clarify").execution.type == "human"
     assert snapshot.node_by_id("verify.artifact_exists").execution.type == "verifier"
     assert snapshot.node_by_id("output.final_response").execution.type == "output"
+    assert snapshot.node_by_id("human.clarify").availability.status == "unavailable"
+    assert (
+        snapshot.node_by_id("human.clarify").availability.reason_code
+        == "runtime_not_supported"
+    )
+    assert (
+        snapshot.node_by_id("verify.artifact_exists").availability.status
+        == "unavailable"
+    )
+    assert (
+        snapshot.node_by_id("verify.artifact_exists").availability.reason_code
+        == "runtime_not_supported"
+    )
+    assert snapshot.node_by_id("output.final_response").availability.status == (
+        "available"
+    )
 
 
 def test_snapshot_records_duplicate_node_diagnostics() -> None:

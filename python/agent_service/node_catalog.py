@@ -441,6 +441,11 @@ def _system_nodes() -> list[NodeDefinition]:
             permissions=NodePermissionProfile(),
             examples=[],
             source="system",
+            availability=NodeAvailability(
+                status="unavailable",
+                reason_code="runtime_not_supported",
+                message="Human-interrupt catalog nodes are not executable yet.",
+            ),
         ),
         NodeDefinition(
             node_id="verify.artifact_exists",
@@ -470,6 +475,11 @@ def _system_nodes() -> list[NodeDefinition]:
             permissions=NodePermissionProfile(),
             examples=[],
             source="system",
+            availability=NodeAvailability(
+                status="unavailable",
+                reason_code="runtime_not_supported",
+                message="Verifier catalog nodes are not executable yet.",
+            ),
         ),
         NodeDefinition(
             node_id="output.final_response",

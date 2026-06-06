@@ -482,6 +482,34 @@ def test_review_plan_blocks_step_unsupported_capability() -> None:
     assert "unsupported_capability:legal.database" in review.coverage_findings
 
 
+def test_review_plan_blocks_jointly_unsatisfied_step_capability_set() -> None:
+    payload = _plan_payload()
+    payload["steps"][0]["required_capabilities"] = [
+        "document.read",
+        "document.render.typst_pdf",
+    ]
+    draft = PlanDraft.model_validate(payload)
+
+    review = review_plan(
+        draft,
+        available_capabilities={
+            "document.read",
+            "document.render.typst_pdf",
+            "model.reasoning",
+        },
+    )
+
+    assert review.status == "invalid"
+    assert review.unsupported_capabilities == [
+        "document.read",
+        "document.render.typst_pdf",
+    ]
+    assert (
+        "unsupported_capability_set:step-extract:"
+        "document.read,document.render.typst_pdf"
+    ) in review.coverage_findings
+
+
 def test_revision_instructions_appear_in_planning_prompt_and_local_path_is_scrubbed() -> None:
     model = FakeDeepModel()
     DeepPlanningEngine(model).plan(

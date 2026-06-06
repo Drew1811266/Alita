@@ -9,6 +9,7 @@ from agent_service.node_catalog import (
     NodeCatalogBuilder,
     NodeCatalogSnapshot,
     NodeDefinition,
+    NodePortDefinition,
 )
 from agent_service.node_catalog_resolver import NodeCatalogResolver
 from agent_service.schemas import RunGraph
@@ -142,12 +143,8 @@ def _compile_step_node(
         "nodeType": node_type,
         "displayName": step.title,
         "status": "waiting",
-        "inputPorts": [
-            port.model_dump(mode="json") for port in catalog_node.input_ports
-        ],
-        "outputPorts": [
-            port.model_dump(mode="json") for port in catalog_node.output_ports
-        ],
+        "inputPorts": [_compile_port(port) for port in catalog_node.input_ports],
+        "outputPorts": [_compile_port(port) for port in catalog_node.output_ports],
         "dependencies": list(step.depends_on),
         "summary": step.objective,
         "createdBy": "agent",
@@ -203,6 +200,17 @@ def _graph_node_type(node: NodeDefinition) -> str:
     if node.execution.type == "output":
         return "output"
     return "planning"
+
+
+def _compile_port(port: NodePortDefinition) -> dict[str, Any]:
+    return {
+        "id": port.id,
+        "label": port.label,
+        "dataType": port.data_type,
+        "required": port.required,
+        "multiple": port.multiple,
+        "description": port.description,
+    }
 
 
 def _review_required_metadata(

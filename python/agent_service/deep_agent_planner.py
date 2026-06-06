@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from agent_service.deep_agent_models import (
     PlanDraft,
+    PlanStep,
     PlanReview,
     ReasoningDecision,
     ThinkingStatus,
@@ -20,7 +21,14 @@ from agent_service.model_client import (
     ModelRuntimeRequestFailed,
 )
 from agent_service.model_policy import DEEP_REASONING_POLICY, ModelCallPolicy
+from agent_service.node_catalog import NodeCatalogBuilder, NodeCatalogSnapshot
+from agent_service.node_catalog_resolver import (
+    NodeCatalogResolutionError,
+    NodeCatalogResolver,
+)
 from agent_service.schemas import Attachment, UserMessage
+from agent_service.tool_execution import default_tool_packages_root
+from agent_service.tool_registry import ToolRegistry
 
 
 LOCAL_PATH_MARKER = "[local_path_removed]"
@@ -185,6 +193,7 @@ def review_plan(
     draft: PlanDraft,
     *,
     available_capabilities: set[str],
+    node_catalog: NodeCatalogSnapshot | None = None,
 ) -> PlanReview:
     if draft.missing_information:
         missing_inputs = list(draft.missing_information)
@@ -204,6 +213,7 @@ def review_plan(
     coverage_findings: list[str] = []
     revision_instructions: list[str] = []
     unsupported_capabilities: list[str] = []
+    catalog_resolver = NodeCatalogResolver(node_catalog or _default_node_catalog())
 
     if not draft.success_criteria:
         coverage_findings.append("missing_success_criteria")
@@ -257,6 +267,12 @@ def review_plan(
                     unsupported_capabilities,
                     coverage_findings,
                 )
+        _review_step_catalog_resolution(
+            step,
+            catalog_resolver,
+            unsupported_capabilities,
+            coverage_findings,
+        )
 
     if unsupported_capabilities:
         findings.append(
@@ -278,6 +294,38 @@ def review_plan(
         )
 
     return PlanReview(status="approved")
+
+
+def _default_node_catalog() -> NodeCatalogSnapshot:
+    return NodeCatalogBuilder(
+        tool_registry=ToolRegistry.from_packages_root(default_tool_packages_root()),
+    ).build()
+
+
+def _review_step_catalog_resolution(
+    step: PlanStep,
+    catalog_resolver: NodeCatalogResolver,
+    unsupported_capabilities: list[str],
+    coverage_findings: list[str],
+) -> None:
+    if not step.required_capabilities:
+        return
+
+    try:
+        catalog_resolver.resolve(
+            required_capabilities=step.required_capabilities,
+            preferred_node_ids=step.preferred_node_ids,
+        )
+    except NodeCatalogResolutionError as error:
+        for capability in error.capabilities:
+            if capability not in unsupported_capabilities:
+                unsupported_capabilities.append(capability)
+        code = (
+            f"unsupported_capability_set:{step.step_id}:"
+            + ",".join(error.capabilities)
+        )
+        if code not in coverage_findings:
+            coverage_findings.append(code)
 
 
 def _planning_prompt(

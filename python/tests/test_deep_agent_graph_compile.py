@@ -278,79 +278,32 @@ def test_compile_mixed_document_and_model_capabilities_uses_document_tool() -> N
     RunGraph.model_validate(graph)
 
 
-def test_compile_human_catalog_node_preserves_ports_and_execution_metadata() -> None:
+def test_compile_human_catalog_node_is_unsupported_until_runtime_exists() -> None:
     draft = _draft(["clarify"])
     human_step = draft.steps[0].model_copy(
         update={"required_capabilities": ["human.clarify"]}
     )
     draft = draft.model_copy(update={"steps": [human_step]})
 
-    graph = compile_agent_plan_graph(draft, task_id="task-1")
-    node = graph["nodes"][0]
+    with pytest.raises(NodeCatalogResolutionError) as error:
+        compile_agent_plan_graph(draft, task_id="task-1")
 
-    assert node["nodeType"] == "planning"
-    assert node["metadata"]["catalogNodeId"] == "human.clarify"
-    assert node["inputPorts"] == [
-        {
-            "id": "question-input",
-            "label": "Question",
-            "data_type": "text",
-            "required": True,
-            "multiple": False,
-            "description": "",
-        }
-    ]
-    assert node["outputPorts"] == [
-        {
-            "id": "answer-output",
-            "label": "Answer",
-            "data_type": "text",
-            "required": True,
-            "multiple": False,
-            "description": "",
-        }
-    ]
-    assert node["metadata"]["catalogExecution"] == {"type": "human"}
-    RunGraph.model_validate(graph)
+    assert error.value.code == "unsupported_capability"
+    assert error.value.capabilities == ["human.clarify"]
 
 
-def test_compile_verifier_catalog_node_preserves_ports_and_execution_metadata() -> None:
+def test_compile_verifier_catalog_node_is_unsupported_until_runtime_exists() -> None:
     draft = _draft(["verify"])
     verifier_step = draft.steps[0].model_copy(
         update={"required_capabilities": ["verify.artifact_exists"]}
     )
     draft = draft.model_copy(update={"steps": [verifier_step]})
 
-    graph = compile_agent_plan_graph(draft, task_id="task-1")
-    node = graph["nodes"][0]
+    with pytest.raises(NodeCatalogResolutionError) as error:
+        compile_agent_plan_graph(draft, task_id="task-1")
 
-    assert node["nodeType"] == "planning"
-    assert node["metadata"]["catalogNodeId"] == "verify.artifact_exists"
-    assert node["inputPorts"] == [
-        {
-            "id": "artifact-input",
-            "label": "Artifact",
-            "data_type": "artifact",
-            "required": True,
-            "multiple": False,
-            "description": "",
-        }
-    ]
-    assert node["outputPorts"] == [
-        {
-            "id": "decision-output",
-            "label": "Decision",
-            "data_type": "decision",
-            "required": True,
-            "multiple": False,
-            "description": "",
-        }
-    ]
-    assert node["metadata"]["catalogExecution"] == {
-        "type": "verifier",
-        "verifier_type": "artifact_exists",
-    }
-    RunGraph.model_validate(graph)
+    assert error.value.code == "unsupported_capability"
+    assert error.value.capabilities == ["verify.artifact_exists"]
 
 
 def test_compile_output_catalog_node_preserves_ports_and_execution_metadata() -> None:
@@ -369,7 +322,7 @@ def test_compile_output_catalog_node_preserves_ports_and_execution_metadata() ->
         {
             "id": "response-input",
             "label": "Response",
-            "data_type": "markdown",
+            "dataType": "markdown",
             "required": True,
             "multiple": False,
             "description": "",
