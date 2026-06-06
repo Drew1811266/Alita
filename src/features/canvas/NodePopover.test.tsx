@@ -229,6 +229,28 @@ describe("NodePopover", () => {
     expect(markup).toContain("Every risk has a source clause.");
   });
 
+  it("renders catalog provenance when node metadata includes it", () => {
+    const markup = renderPopover({
+      ...toolNode,
+      metadata: {
+        catalogNodeId: "document.convert.markdown",
+        catalogDisplayName: "Markdown converter",
+        catalogCapabilities: ["document.convert", "markdown.emit"],
+        catalogRiskLevel: "low",
+        executionKind: "tool",
+        nodeSelectionReason: "Selected because the user asked for Markdown output.",
+      },
+    });
+
+    expect(markup).toContain("节点库来源");
+    expect(markup).toContain("Markdown converter");
+    expect(markup).toContain("document.convert.markdown");
+    expect(markup).toContain("tool");
+    expect(markup).toContain("low");
+    expect(markup).toContain("Selected because the user asked for Markdown output.");
+    expect(markup).toContain("document.convert");
+  });
+
   it("ignores malformed plan-step provenance metadata", () => {
     const node: AgentNode = {
       ...toolNode,
@@ -242,6 +264,29 @@ describe("NodePopover", () => {
 
     expect(() => renderPopover(node)).not.toThrow();
     expect(renderPopover(node)).not.toContain("计划来源");
+  });
+
+  it("ignores malformed catalog provenance fields", () => {
+    const node: AgentNode = {
+      ...toolNode,
+      metadata: {
+        catalogNodeId: "document.convert.markdown",
+        catalogDisplayName: { label: "bad display name" },
+        catalogCapabilities: "document.convert",
+        catalogRiskLevel: { level: "high" },
+        executionKind: { type: "tool" },
+        nodeSelectionReason: { reason: "bad reason" },
+      } as unknown as AgentNode["metadata"],
+    };
+
+    const markup = renderPopover(node);
+
+    expect(() => renderPopover(node)).not.toThrow();
+    expect(markup).toContain("节点库来源");
+    expect(markup).toContain("document.convert.markdown");
+    expect(markup).not.toContain("[object Object]");
+    expect(markup).not.toContain("bad display name");
+    expect(markup).not.toContain("bad reason");
   });
 
   it("renders temporary script risk, approval, preview, contracts, and usage", () => {

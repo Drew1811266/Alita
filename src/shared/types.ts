@@ -135,6 +135,12 @@ export type PlanNodeProvenance = {
   expectedOutput?: string;
   verificationCriteria?: string[];
   requiredCapabilities?: string[];
+  catalogNodeId?: string;
+  catalogDisplayName?: string;
+  catalogCapabilities?: string[];
+  catalogRiskLevel?: "low" | "medium" | "high";
+  executionKind?: "tool" | "model" | "human" | "verifier" | "output";
+  nodeSelectionReason?: string;
 };
 
 export type AgentNode = {
