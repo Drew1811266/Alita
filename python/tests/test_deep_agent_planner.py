@@ -482,6 +482,23 @@ def test_review_plan_blocks_step_unsupported_capability() -> None:
     assert "unsupported_capability:legal.database" in review.coverage_findings
 
 
+def test_review_plan_blocks_top_level_catalog_unavailable_capability() -> None:
+    payload = _plan_payload()
+    payload["steps"] = [payload["steps"][1]]
+    payload["steps"][0]["depends_on"] = []
+    payload["required_capabilities"] = ["document.read", "model.reasoning"]
+    draft = PlanDraft.model_validate(payload)
+
+    review = review_plan(
+        draft,
+        available_capabilities={"document.read", "model.reasoning"},
+    )
+
+    assert review.status == "invalid"
+    assert review.unsupported_capabilities == ["document.read"]
+    assert "unsupported_capability:document.read" in review.coverage_findings
+
+
 def test_review_plan_blocks_jointly_unsatisfied_step_capability_set() -> None:
     payload = _plan_payload()
     payload["steps"][0]["required_capabilities"] = [

@@ -87,6 +87,7 @@ class NodeCatalogResolver:
             candidates,
             key=lambda candidate: (
                 -len(candidate[2]),
+                -_exact_match_score(candidate[1], candidate[2]),
                 _RISK_ORDER[candidate[1].permissions.risk_level],
                 candidate[0],
             ),
@@ -142,6 +143,14 @@ def _matched_capabilities(
         for capability in required_capabilities
         if _node_matches_capability(node, capability)
     ]
+
+
+def _exact_match_score(node: NodeDefinition, matched_capabilities: list[str]) -> int:
+    return sum(
+        1
+        for capability in matched_capabilities
+        if capability == node.node_id
+    )
 
 
 def _node_matches_capability(node: NodeDefinition, capability: str) -> bool:

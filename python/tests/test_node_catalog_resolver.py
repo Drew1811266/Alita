@@ -95,6 +95,29 @@ def test_resolve_ranks_equal_matches_by_lower_risk() -> None:
     assert resolution.selection_reason == "ranked_match:document.read"
 
 
+def test_resolve_exact_node_id_match_beats_lower_risk_generic_match() -> None:
+    resolver = _resolver(
+        _node(
+            "generic.document.converter",
+            capabilities=["document.convert.markdown"],
+            risk_level="low",
+        ),
+        _node(
+            "document.convert.markdown",
+            capabilities=["document.convert.markdown"],
+            risk_level="high",
+        ),
+    )
+
+    resolution = resolver.resolve(
+        required_capabilities=["document.convert.markdown"],
+        preferred_node_ids=[],
+    )
+
+    assert resolution.node.node_id == "document.convert.markdown"
+    assert resolution.selection_reason == "matched_node_id:document.convert.markdown"
+
+
 def test_resolve_excludes_unavailable_nodes() -> None:
     resolver = _resolver(
         _node(

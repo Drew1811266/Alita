@@ -214,8 +214,9 @@ def review_plan(
     revision_instructions: list[str] = []
     unsupported_capabilities: list[str] = []
     catalog = node_catalog or _default_node_catalog()
-    effective_available_capabilities = set(available_capabilities) | (
-        catalog.available_capabilities()
+    effective_available_capabilities = _effective_available_capabilities(
+        available_capabilities,
+        catalog,
     )
     catalog_resolver = NodeCatalogResolver(catalog)
 
@@ -304,6 +305,24 @@ def _default_node_catalog() -> NodeCatalogSnapshot:
     return NodeCatalogBuilder(
         tool_registry=ToolRegistry.from_packages_root(default_tool_packages_root()),
     ).build()
+
+
+def _effective_available_capabilities(
+    available_capabilities: set[str],
+    catalog: NodeCatalogSnapshot,
+) -> set[str]:
+    catalog_declared_capabilities = _catalog_declared_capabilities(catalog)
+    return (
+        set(available_capabilities) - catalog_declared_capabilities
+    ) | catalog.available_capabilities()
+
+
+def _catalog_declared_capabilities(catalog: NodeCatalogSnapshot) -> set[str]:
+    capabilities: set[str] = set()
+    for node in catalog.nodes:
+        capabilities.add(node.node_id)
+        capabilities.update(node.capabilities)
+    return capabilities
 
 
 def _review_step_catalog_resolution(
