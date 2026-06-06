@@ -144,6 +144,10 @@ def build_context_bundle(
         external_tools or [],
         disabled_tool_ids or [],
     )
+    available_tool_ids = {
+        _normalize_tool_id(tool.tool_id)
+        for tool in available_tools
+    }
     return ContextBundle(
         project_path=project_path,
         artifact_dir=str(project_file.parent / "artifacts"),
@@ -161,7 +165,13 @@ def build_context_bundle(
         ],
         available_tools=available_tools,
         available_nodes=(
-            _catalog_node_summaries(node_catalog) if node_catalog is not None else []
+            _catalog_node_summaries(
+                node_catalog,
+                available_tool_ids=available_tool_ids,
+                disabled_tool_ids=disabled_tool_ids or [],
+            )
+            if node_catalog is not None
+            else []
         ),
         constraints=list(goal_spec.constraints),
         memory_summaries=[
@@ -173,12 +183,39 @@ def build_context_bundle(
 
 def _catalog_node_summaries(
     node_catalog: NodeCatalogSnapshot,
+    *,
+    available_tool_ids: set[str],
+    disabled_tool_ids: list[str],
 ) -> list[CatalogNodeSummary]:
     return [
         _catalog_node_summary(node)
         for node in node_catalog.nodes
-        if node.availability.status == "available"
+        if _catalog_node_is_available_for_context(
+            node,
+            available_tool_ids=available_tool_ids,
+            disabled_tool_ids=disabled_tool_ids,
+        )
     ]
+
+
+def _catalog_node_is_available_for_context(
+    node: NodeDefinition,
+    *,
+    available_tool_ids: set[str],
+    disabled_tool_ids: list[str],
+) -> bool:
+    if node.availability.status != "available":
+        return False
+    if node.execution.type != "tool":
+        return True
+
+    tool_id = node.execution.tool_id
+    if not tool_id:
+        return False
+
+    normalized_tool_id = _normalize_tool_id(tool_id)
+    disabled = {_normalize_tool_id(tool_id) for tool_id in disabled_tool_ids}
+    return normalized_tool_id in available_tool_ids and normalized_tool_id not in disabled
 
 
 def _catalog_node_summary(node: NodeDefinition) -> CatalogNodeSummary:
@@ -244,17 +281,25 @@ def _merge_tool_capabilities(
     external_tools: list[ToolCapability],
     disabled_tool_ids: list[str],
 ) -> list[ToolCapability]:
-    disabled = set(disabled_tool_ids)
+    disabled = {_normalize_tool_id(tool_id) for tool_id in disabled_tool_ids}
     merged: list[ToolCapability] = []
     seen: set[str] = set()
     for tool in [*base_tools, *external_tools]:
-        if tool.tool_id in disabled:
+        normalized_tool_id = _normalize_tool_id(tool.tool_id)
+        if normalized_tool_id in disabled:
             continue
-        if tool.tool_id in seen:
+        if normalized_tool_id in seen:
             continue
-        seen.add(tool.tool_id)
+        seen.add(normalized_tool_id)
         merged.append(tool)
     return merged
+
+
+def _normalize_tool_id(tool_id: str) -> str:
+    normalized = str(tool_id).strip()
+    if normalized.startswith("internal:"):
+        return normalized.removeprefix("internal:")
+    return normalized
 
 
 def _operation_names_from_schema(schema: dict) -> list[str]:

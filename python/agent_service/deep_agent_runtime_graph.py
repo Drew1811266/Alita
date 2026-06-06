@@ -782,6 +782,7 @@ def compile_agent_plan_graph_node(state: DeepAgentRuntimeState) -> dict[str, Any
     graph = compile_agent_plan_graph(
         state["plan_draft"],
         task_id=state["message"].task_id,
+        node_catalog=_node_catalog_from_state(state),
     )
     return {
         "compiled_graph": graph,

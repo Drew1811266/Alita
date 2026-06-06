@@ -20,12 +20,21 @@ from agent_service.deep_agent_runtime_graph import (
     _runtime_invoke_input,
     build_context,
     build_deep_agent_runtime_graph,
+    compile_agent_plan_graph_node,
+    review_plan_node,
     run_deep_agent_runtime,
 )
+from agent_service.deep_agent_models import PlanDraft
 from agent_service.model_client import (
     ChatDiagnosticsResponse,
     ModelCallDiagnostics,
     ModelRuntimeDisabled,
+)
+from agent_service.node_catalog import (
+    NodeCatalogSnapshot,
+    NodeDefinition,
+    NodeExecutionBinding,
+    NodePermissionProfile,
 )
 from agent_service.schemas import UserMessage
 
@@ -180,6 +189,54 @@ def test_build_context_stores_node_catalog_and_catalog_available_capabilities() 
 
     assert "document.convert.markdown" in update["available_capabilities"]
     assert "document.read" not in update["available_capabilities"]
+
+
+def test_runtime_review_and_compile_use_same_state_node_catalog() -> None:
+    catalog = NodeCatalogSnapshot(
+        nodes=[
+            NodeDefinition(
+                node_id="custom.reason",
+                kind="model",
+                display_name="Custom Reason",
+                description="Custom state-only reasoning node.",
+                category="reasoning",
+                capabilities=["custom.reason"],
+                input_ports=[],
+                output_ports=[],
+                execution=NodeExecutionBinding(
+                    type="model",
+                    model_policy="node_reasoning",
+                ),
+                permissions=NodePermissionProfile(),
+                examples=[],
+                source="system",
+            )
+        ]
+    )
+    payload = _plan_payload(["custom-step"])
+    payload["steps"][0]["required_capabilities"] = ["custom.reason"]
+    payload["steps"][0]["preferred_node_ids"] = ["custom.reason"]
+    payload["required_capabilities"] = ["custom.reason"]
+    draft = PlanDraft.model_validate(payload)
+    state = {
+        "message": UserMessage(task_id="task-custom-catalog", content="Use custom."),
+        "plan_draft": draft,
+        "available_capabilities": catalog.available_capabilities(),
+        "node_catalog": catalog.model_dump(),
+        "revision_count": 0,
+        "revision_budget": 0,
+        "events": [],
+    }
+
+    review_command = review_plan_node(state)
+    assert review_command.goto == "compile_agent_plan_graph"
+    assert review_command.update["plan_review"].status == "approved"
+
+    update = compile_agent_plan_graph_node(state)
+
+    node = update["compiled_graph"]["nodes"][0]
+    assert node["metadata"]["catalogNodeId"] == "custom.reason"
+    assert node["metadata"]["nodeSelectionReason"] == "preferred_node_id:custom.reason"
 
 
 def test_runtime_invoke_input_defaults_to_execute_after_compile() -> None:
