@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,7 @@ from pydantic import ValidationError
 import agent_service.graph as graph_module
 from agent_service.agent_run_state import AgentRunState
 from agent_service.graph import (
+    _build_model_messages,
     _classify_message,
     _node,
     build_graph,
@@ -24,6 +26,7 @@ from agent_service.model_client import ChatMessage
 from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
 from agent_service.router_v2 import STRUCTURED_ROUTER_ENV
 from agent_service.schemas import Attachment, GraphNode, RunGraph, UserMessage
+from agent_service.semantic_router import SemanticRouteDecision
 from agent_service.task_graph import build_document_task_graph
 from agent_service.web_search import SearchResponse, SearchResult
 
@@ -66,6 +69,32 @@ class FakeModelClient:
         yield "，本地模型"
 
 
+class FakeGraphSemanticModel:
+    def __init__(self, route: str):
+        self.route = route
+
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        return json.dumps(
+            {
+                "route": self.route,
+                "intent": "graph_test",
+                "complexity": "simple",
+                "requiresGraph": False,
+                "requiresTools": False,
+                "requiresWeb": False,
+                "requiresFiles": False,
+                "requiresClarification": False,
+                "language": "zh",
+                "confidence": 0.93,
+                "contextUsed": ["current_message"],
+                "missingInputs": [],
+                "requiredCapabilities": [],
+                "toolCandidates": [],
+                "reason": "图兼容路径语义路由。",
+            }
+        )
+
+
 class FakeSearchProvider:
     def __init__(self, response: SearchResponse) -> None:
         self.response = response
@@ -79,6 +108,121 @@ class FakeSearchProvider:
 class FailingSearchProvider:
     def search(self, query: str):
         raise AssertionError(f"generic search should not run for weather: {query}")
+
+
+def _semantic_decision(
+    route: str,
+    *,
+    message: UserMessage | None = None,
+    missing_inputs: list[str] | None = None,
+    reason: str = "test semantic route",
+) -> SemanticRouteDecision:
+    content = message.content if message is not None else ""
+    is_zh = any("\u4e00" <= char <= "\u9fff" for char in content)
+    return SemanticRouteDecision(
+        route=route,
+        intent="graph_test",
+        complexity="research" if route == "research_planning" else "simple",
+        requires_graph=route == "graph_feedback",
+        requires_tools=route in {"simple_tool_answer", "web_answer"},
+        requires_web=route in {"simple_tool_answer", "web_answer", "research_planning"},
+        requires_files=bool(message and message.attachments)
+        or bool(missing_inputs and "document_file" in missing_inputs),
+        requires_clarification=route == "clarification_required" or bool(missing_inputs),
+        language="zh" if is_zh else "en",
+        confidence=0.93,
+        context_used=["current_message"],
+        missing_inputs=missing_inputs or [],
+        required_capabilities=[],
+        tool_candidates=[],
+        reason=reason,
+        clarification_prompt=None,
+    )
+
+
+def _semantic_route_for_legacy_graph_test(
+    message: UserMessage,
+    *,
+    inquiry_choice: str | None = None,
+) -> str:
+    normalized = message.content.lower()
+    if "research" in normalized and ("compare" in normalized or "github" in normalized):
+        return "research_planning"
+    decision = classify_route(message)
+    intent = graph_module._compatible_intent(
+        message,
+        decision,
+        inquiry_choice=inquiry_choice,
+        goal_spec=parse_goal_spec(message),
+    )
+    if intent == "chat":
+        return "response_only"
+    if intent == "local_inquiry":
+        return "local_answer"
+    if intent == "web_simple_inquiry":
+        return "web_answer"
+    if intent in {"web_complex_choice", "web_complex_research_flow"}:
+        return "research_planning"
+    if intent == "task":
+        return "deep_planning"
+    return "clarification_required"
+
+
+@pytest.fixture(autouse=True)
+def route_legacy_graph_tests_semantically(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_route_semantically(
+        message: UserMessage,
+        *,
+        model_client,
+        current_graph=None,
+        pending_choice=None,
+        available_capabilities=None,
+    ) -> SemanticRouteDecision:
+        del current_graph, pending_choice, available_capabilities
+        route = (
+            model_client.route
+            if isinstance(model_client, FakeGraphSemanticModel)
+            else _semantic_route_for_legacy_graph_test(message)
+        )
+        decision = classify_route(message)
+        missing_inputs = _ordered_unique(
+            [*decision.missing_inputs, *parse_goal_spec(message).missing_inputs]
+        )
+        return _semantic_decision(
+            route,
+            message=message,
+            missing_inputs=missing_inputs,
+            reason=decision.reason,
+        )
+
+    monkeypatch.setattr("agent_service.router_v2.route_semantically", fake_route_semantically)
+
+
+def _ordered_unique(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return result
+
+
+def test_model_messages_include_recent_conversation_history() -> None:
+    messages = _build_model_messages(
+        UserMessage(
+            task_id="task-chat-history",
+            content="继续按这个方案。",
+            conversation_history=[
+                {"role": "user", "content": "预算是一万元。"},
+                {"role": "assistant", "content": "请补充用途。"},
+            ],
+        )
+    )
+
+    user_prompt = messages[1].content
+    assert "最近对话上下文" in user_prompt
+    assert "用户：预算是一万元。" in user_prompt
+    assert "助手：请补充用途。" in user_prompt
+    assert "继续按这个方案。" in user_prompt
 
 
 def _existing_graph() -> RunGraph:
@@ -230,7 +374,7 @@ def test_graph_state_preserves_structured_route_decision_for_inquiries() -> None
     assert result["structured_route_decision"]["intent"] == "web_simple_inquiry"
     assert result["structured_route_decision"]["taskType"] == "research"
     assert result["structured_route_decision"]["missingInputs"] == []
-    assert result["structured_route_decision"]["source"] == "deterministic"
+    assert result["structured_route_decision"]["source"] == "model"
     assert result["run_state"].structured_route_decision == result["structured_route_decision"]
     assert result["events"][0].type == "message.created"
 
@@ -282,28 +426,18 @@ def test_graph_state_updates_agent_run_state_with_routing_metadata() -> None:
     assert result["intent"] == "web_simple_inquiry"
 
 
-def test_medium_confidence_structured_model_route_requests_clarification(
+def test_semantic_model_route_requests_clarification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
-    client = FakeModelClient(
-        (
-            '{"intent":"task","confidence":0.61,"task_type":"code_task",'
-            '"reason":"model selected task but needs confirmation"}'
-        )
-    )
 
     events = run_agent(
         UserMessage(task_id="medium-model-route", content="Please handle the Python thing."),
-        model_client=client,
+        model_client=FakeGraphSemanticModel("clarification_required"),
     )
 
     assert [event.type for event in events] == ["input.required"]
     assert events[0].payload["missing"] == ["clarification"]
-    assert "确认" in events[0].payload["prompt"]
-    assert len(client.calls) == 1
-    assert client.temperatures == [0.0]
-    assert client.max_tokens == [512]
 
 
 def test_structured_model_router_is_disabled_by_default(
@@ -404,12 +538,7 @@ def test_run_agent_from_state_matches_public_research_choice_behavior() -> None:
 
     events = run_agent_from_state(run_state)
 
-    assert [event.type for event in events] == ["research.choice_required"]
-    assert events[0].payload["taskId"] == "complex-web-from-state"
-    assert [choice["id"] for choice in events[0].payload["choices"]] == [
-        "quick_answer",
-        "research_flow",
-    ]
+    assert [event.type for event in events] == ["node_graph.created"]
 
 
 def test_stream_agent_events_from_state_matches_public_stream_behavior() -> None:
@@ -476,7 +605,23 @@ def test_stream_agent_events_from_state_routes_non_chat_through_router_v2(
     assert [event.type for event in events] == ["message.created"]
 
 
-def test_graph_feedback_guard_still_uses_legacy_classifier(
+def test_run_agent_from_state_uses_semantic_router_not_classify_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_classify_route(message):
+        raise AssertionError("classify_route must not run in graph route path")
+
+    monkeypatch.setattr("agent_service.graph.classify_route", fail_classify_route)
+    events = run_agent(
+        UserMessage(task_id="graph-semantic", content="你好"),
+        model_client=FakeGraphSemanticModel("response_only"),
+        current_graph=_existing_graph(),
+    )
+
+    assert events[0].type == "message.created"
+
+
+def test_graph_feedback_guard_does_not_use_legacy_classifier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
@@ -494,7 +639,7 @@ def test_graph_feedback_guard_still_uses_legacy_classifier(
         current_graph=_existing_graph(),
     )
 
-    assert calls == 1
+    assert calls == 0
     assert [event.type for event in events] == ["message.created"]
 
 
@@ -665,7 +810,7 @@ def test_web_simple_inquiry_after_graph_exists_uses_inquiry_router() -> None:
     assert events[0].payload["sources"][0]["url"] == "https://docs.python.org/3/"
 
 
-def test_sources_question_after_graph_exists_uses_web_inquiry_router() -> None:
+def test_sources_question_after_graph_exists_uses_graph_feedback() -> None:
     provider = FakeSearchProvider(
         SearchResponse(
             results=[
@@ -687,9 +832,8 @@ def test_sources_question_after_graph_exists_uses_web_inquiry_router() -> None:
         current_graph=_existing_graph(),
     )
 
-    assert provider.queries == ["What sources discuss the latest Python release?"]
-    assert [event.type for event in events] == ["message.created"]
-    assert events[0].payload["sources"][0]["url"] == "https://docs.python.org/3/"
+    assert provider.queries == []
+    assert [event.type for event in events] == ["graph.replanned"]
 
 
 @pytest.mark.parametrize(
@@ -702,7 +846,7 @@ def test_sources_question_after_graph_exists_uses_web_inquiry_router() -> None:
         "Can you explain what a constraint means?",
     ],
 )
-def test_local_questions_with_constraint_words_after_graph_exists_use_inquiry_router(
+def test_local_questions_with_constraint_words_after_graph_exists_use_graph_feedback(
     content: str,
 ) -> None:
     client = FakeModelClient("local inquiry answer")
@@ -713,9 +857,8 @@ def test_local_questions_with_constraint_words_after_graph_exists_use_inquiry_ro
         current_graph=_existing_graph(),
     )
 
-    assert [event.type for event in events] == ["message.created"]
-    assert events[0].payload["message"]["content"] == "local inquiry answer"
-    assert client.calls
+    assert [event.type for event in events] == ["graph.replanned"]
+    assert client.calls == []
 
 
 @pytest.mark.parametrize(
@@ -744,7 +887,7 @@ def test_explicit_graph_constraint_after_graph_exists_routes_to_feedback(
     assert [event.type for event in events] == ["graph.replanned"]
 
 
-def test_web_complex_default_returns_research_choice_required() -> None:
+def test_web_complex_default_creates_research_graph() -> None:
     events = run_agent(
         UserMessage(
             task_id="complex-web",
@@ -752,23 +895,7 @@ def test_web_complex_default_returns_research_choice_required() -> None:
         )
     )
 
-    assert [event.type for event in events] == ["research.choice_required"]
-    assert events[0].payload == {
-        "taskId": "complex-web",
-        "prompt": "This question can be answered quickly or turned into a research flow. Choose how to proceed.",
-        "choices": [
-            {
-                "id": "quick_answer",
-                "label": "Quick answer",
-                "description": "Search the web now and return a concise sourced answer.",
-            },
-            {
-                "id": "research_flow",
-                "label": "Research flow",
-                "description": "Create a research graph for planning, source review, and report synthesis.",
-            },
-        ],
-    }
+    assert [event.type for event in events] == ["node_graph.created"]
 
 
 def test_web_complex_quick_answer_choice_searches_and_answers() -> None:
@@ -869,12 +996,12 @@ def test_research_graph_records_structured_route_decision_metadata() -> None:
     graph = created_event.payload["graph"]
     route_decision = graph["metadata"]["routeDecision"]
     assert route_decision["intent"] == "web_complex_research_flow"
-    assert route_decision["source"] == "deterministic"
+    assert route_decision["source"] == "model"
     assert route_decision["taskType"] == "research"
     assert graph["metadata"]["kind"] == "research"
 
 
-def test_chinese_github_research_with_context_attachment_asks_for_research_choice() -> None:
+def test_chinese_github_research_with_context_attachment_creates_research_graph() -> None:
     events = run_agent(
         UserMessage(
             task_id="github-research",
@@ -898,7 +1025,7 @@ def test_chinese_github_research_with_context_attachment_asks_for_research_choic
         )
     )
 
-    assert [event.type for event in events] == ["research.choice_required"]
+    assert [event.type for event in events] == ["node_graph.created"]
 
 
 def test_missing_attachment_requests_input_for_document_task() -> None:
@@ -1247,7 +1374,7 @@ def test_task_graph_records_structured_route_decision_metadata() -> None:
     graph = created_event.payload["graph"]
     route_decision = graph["metadata"]["routeDecision"]
     assert route_decision["intent"] == "task"
-    assert route_decision["source"] == "deterministic"
+    assert route_decision["source"] == "model"
     assert route_decision["confidence"] >= 0.75
     assert route_decision["taskType"]
 
@@ -1266,7 +1393,7 @@ def test_task_graph_records_planner_chain_metadata() -> None:
     assert planner_chain["planner"] == "legacy.task_planner.v1"
     assert planner_chain["strategy"] == "legacy_task_planner"
     assert planner_chain["routeIntent"] == "task"
-    assert planner_chain["taskType"] == "code_task"
+    assert planner_chain["taskType"] == "unknown"
     assert graph["metadata"]["routeDecision"]["intent"] == "task"
 
 

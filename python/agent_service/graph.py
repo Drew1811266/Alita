@@ -65,8 +65,7 @@ AgentIntent = Literal[
 ]
 InquiryChoice = Literal["quick_answer", "research_flow"]
 RESEARCH_CHOICE_PROMPT = (
-    "This question can be answered quickly or turned into a research flow. "
-    "Choose how to proceed."
+    "这个问题可以快速回答，也可以转成研究流程。请选择接下来的处理方式。"
 )
 
 
@@ -179,6 +178,8 @@ def _route_run_state(
         message,
         inquiry_choice=effective_inquiry_choice,
         model_client=model_client,
+        current_graph=run_state.current_graph,
+        pending_choice=run_state.pending_choice,
     )
     goal_spec = parse_goal_spec(message)
     intent = router_decision.intent
@@ -381,13 +382,13 @@ def choose_research_mode(state: AgentState) -> AgentState:
                     "choices": [
                         {
                             "id": "quick_answer",
-                            "label": "Quick answer",
-                            "description": "Search the web now and return a concise sourced answer.",
+                            "label": "快速回答",
+                            "description": "立即检索网络，并返回简洁且带来源的回答。",
                         },
                         {
                             "id": "research_flow",
-                            "label": "Research flow",
-                            "description": "Create a research graph for planning, source review, and report synthesis.",
+                            "label": "研究流程",
+                            "description": "创建包含规划、来源审查和报告合成的研究图。",
                         },
                     ]
                 },
@@ -678,7 +679,8 @@ def stream_agent_events_from_state(
         )
         return
 
-    run_state = _route_run_state(run_state, model_client=model_client)
+    if run_state.intent is None:
+        run_state = _route_run_state(run_state, model_client=model_client)
     if run_state.intent == "task":
         run_state = _run_state_with_structured_route_for_planning(message, run_state)
         graph_payload = _graph_payload_for_task(
@@ -755,22 +757,16 @@ def _should_handle_graph_feedback(
     if pending_choice is not None:
         return True
 
-    route_decision = classify_route(message)
     feedback_decision = classify_graph_feedback(message.content, current_graph)
     if feedback_decision.kind == GraphFeedbackKind.NEW_TASK:
         return False
     if feedback_decision.kind in {
         GraphFeedbackKind.LOCAL_MODIFICATION,
         GraphFeedbackKind.FULL_REPLAN,
+        GraphFeedbackKind.CONSTRAINT_UPDATE,
     }:
         return True
-    if _is_explicit_graph_constraint_feedback(message.content):
-        return True
-    if route_decision.intent.kind == IntentKind.INQUIRY:
-        return False
-    if route_decision.intent.kind == IntentKind.CHAT:
-        return False
-    return True
+    return False
 
 
 def _is_explicit_graph_constraint_feedback(content: str) -> bool:
@@ -851,6 +847,14 @@ def _looks_like_external_web_request(content: str) -> bool:
 
 def _build_model_messages(message: UserMessage) -> list[ModelChatMessage]:
     user_content = message.content.strip() or "请根据当前对话继续。"
+    history = _conversation_history_text(message)
+    if history:
+        user_content = (
+            "最近对话上下文：\n"
+            f"{history}\n\n"
+            "当前用户消息：\n"
+            f"{user_content}"
+        )
     if message.attachments:
         attachment_names = "、".join(attachment.name for attachment in message.attachments)
         user_content = f"{user_content}\n\n当前项目附件：{attachment_names}"
@@ -867,6 +871,21 @@ def _build_model_messages(message: UserMessage) -> list[ModelChatMessage]:
         ),
         ModelChatMessage(role="user", content=user_content),
     ]
+
+
+def _conversation_history_text(message: UserMessage) -> str:
+    lines: list[str] = []
+    for turn in message.conversation_history[-12:]:
+        content = turn.content.strip()
+        if not content:
+            continue
+        role = {
+            "user": "用户",
+            "assistant": "助手",
+            "system": "系统",
+        }.get(turn.role, turn.role)
+        lines.append(f"{role}：{content}")
+    return "\n".join(lines)
 
 
 def _assistant_message(content: str) -> dict:
