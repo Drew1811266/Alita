@@ -880,6 +880,10 @@ def test_sources_question_after_graph_exists_uses_web_inquiry_router() -> None:
         "What style guide does Python use?",
         "What is a constraint?",
         "What constraints apply in Python packaging?",
+        "What constraints apply for this graph?",
+        "What sources are configured for this graph?",
+        "What style does this plan use?",
+        "What workflow is best for this task?",
         "Can you explain what a constraint means?",
     ],
 )

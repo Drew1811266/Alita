@@ -194,6 +194,43 @@ def test_current_graph_feedback_bypasses_deep_agent_runtime() -> None:
     assert result.state.stage == "plan"
 
 
+def test_current_graph_question_does_not_preflight_as_graph_feedback() -> None:
+    deep_calls: list[UserMessage] = []
+
+    def deep_runtime(message: UserMessage, **kwargs):
+        del kwargs
+        deep_calls.append(message)
+        return [
+            AgentEvent(
+                type="node_graph.created",
+                payload={"graph": {"graphId": "deep-graph", "nodes": [], "edges": []}},
+            )
+        ]
+
+    engine = AgentRuntimeEngine(deep_runtime_runner=deep_runtime)
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-engine-workflow-question",
+            content="What workflow is best for this task?",
+        ),
+        current_graph=_existing_graph(),
+    ).model_copy(
+        update={
+            "project_path": "D:/Project/demo.alita",
+            "run_id": "run-workflow-question",
+            "thread_id": "thread-workflow-question",
+        }
+    )
+
+    result = engine.run_from_state(run_state)
+
+    assert deep_calls == [run_state.message]
+    assert [event.type for event in result.events] == [
+        "runtime.run_started",
+        "node_graph.created",
+    ]
+
+
 def test_streaming_current_graph_feedback_bypasses_deep_agent_runtime(
     tmp_path,
 ) -> None:

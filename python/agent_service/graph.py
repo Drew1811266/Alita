@@ -772,6 +772,14 @@ def _should_handle_graph_feedback(
 
 def _is_explicit_graph_constraint_feedback(content: str) -> bool:
     normalized = content.strip().lower()
+    if re.match(r"^(what|why|how|when|where|which|who)\b", normalized):
+        return False
+    if re.match(
+        r"^(can you explain|could you explain|please explain|explain)\b",
+        normalized,
+    ):
+        return False
+
     graph_referential = any(
         phrase in normalized
         for phrase in (
@@ -788,20 +796,26 @@ def _is_explicit_graph_constraint_feedback(content: str) -> bool:
             "workflow",
         )
     )
-    if graph_referential:
-        return True
 
-    if re.match(r"^(what|why|how|when|where|which|who|can you explain)\b", normalized):
-        return False
-
-    return re.match(
+    if re.match(
         r"^(please\s+)?("
         r"(add|set|apply)\s+(the\s+|this\s+|a\s+)?constraint\b"
+        r"|can you\s+use\s+.+\b(sources|style|order)\b"
         r"|use\s+.+\b(sources|style|order)\b"
         r"|constraint\s*:"
         r")",
         normalized,
-    ) is not None
+    ):
+        return True
+
+    return bool(
+        graph_referential
+        and re.match(
+            r"^(please\s+)?apply\s+.+\b(to|for)\s+"
+            r"(this|the|current)\s+(graph|plan|workflow|flow)\b",
+            normalized,
+        )
+    )
 
 
 def _route_intent(state: AgentState) -> AgentIntent:
