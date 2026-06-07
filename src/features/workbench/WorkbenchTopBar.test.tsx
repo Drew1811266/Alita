@@ -8,6 +8,7 @@ describe("WorkbenchTopBar", () => {
     const markup = renderToStaticMarkup(
       <WorkbenchTopBar
         dirty
+        onOpenNodeCatalog={() => undefined}
         onOpenPreferences={() => undefined}
         onSave={() => undefined}
         onSaveAs={() => undefined}
@@ -20,6 +21,7 @@ describe("WorkbenchTopBar", () => {
     expect(markup).toContain("未保存");
     expect(markup).toContain("保存");
     expect(markup).toContain("另存为");
+    expect(markup).toContain("节点库");
     expect(markup).toContain("首选项");
   });
 });

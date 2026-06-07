@@ -32,8 +32,8 @@ impl ModelCapabilities {
             supports_embeddings: true,
             supports_images: false,
             supports_audio: false,
-            context_window: 16384,
-            max_output_tokens: 1024,
+            context_window: 131072,
+            max_output_tokens: 4096,
             runtime_backend: RuntimeBackend::LlamaCpp,
             local_only: true,
         }

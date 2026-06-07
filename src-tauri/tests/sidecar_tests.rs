@@ -25,6 +25,22 @@ fn health_url_targets_local_agent_port() {
 }
 
 #[test]
+fn sidecar_health_response_requires_alita_identity() {
+    assert!(sidecar::is_agent_health_response(
+        "HTTP/1.1 200 OK\r\n\r\n{\"name\":\"alita-agent-sidecar\",\"status\":\"ok\"}"
+    ));
+    assert!(!sidecar::is_agent_health_response(
+        "HTTP/1.1 200 OK\r\n\r\n{\"name\":\"diplomat-worker\",\"status\":\"ok\"}"
+    ));
+    assert!(!sidecar::is_agent_health_response(
+        "HTTP/1.1 200 OK\r\n\r\n{\"status\":\"ok\"}"
+    ));
+    assert!(!sidecar::is_agent_health_response(
+        "HTTP/1.1 404 Not Found\r\n\r\n{\"name\":\"alita-agent-sidecar\",\"status\":\"ok\"}"
+    ));
+}
+
+#[test]
 fn agent_base_url_targets_local_agent_port() {
     assert_eq!(sidecar::agent_base_url(), "http://127.0.0.1:8765");
 }

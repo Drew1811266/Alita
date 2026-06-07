@@ -465,6 +465,34 @@ def test_chain_returns_no_results_failure_when_all_providers_are_empty() -> None
     ]
 
 
+def test_chain_returns_python_org_curated_source_for_latest_python_query() -> None:
+    chain = ProviderChainSearchProvider(
+        [
+            FakeProvider("brave", SearchResponse(results=[]), configured=False),
+            FakeProvider("duckduckgo", SearchResponse(results=[])),
+        ]
+    )
+
+    response = chain.search("latest Python stable version")
+
+    assert response.failure is None
+    assert response.results == [
+        SearchResult(
+            title="Python Downloads",
+            url="https://www.python.org/downloads/",
+            snippet="Official Python downloads page for the latest stable release.",
+            sourceType="official",
+            accepted=True,
+        )
+    ]
+    assert response.metadata["provider"] == "curated_sources"
+    assert response.metadata["attempts"][-1] == {
+        "provider": "curated_sources",
+        "status": "ok",
+        "match": "python_latest_stable",
+    }
+
+
 def test_brave_provider_maps_json_results_and_sanitizes_query() -> None:
     seen: list[tuple[str, dict[str, str]]] = []
 

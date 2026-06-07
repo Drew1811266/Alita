@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 from agent_service.deep_agent_graph_compile import (
     compile_agent_plan_graph,
     review_compiled_graph,
 )
 from agent_service.deep_agent_models import PlanDraft, PlanStep
+from agent_service.node_catalog_resolver import NodeCatalogResolutionError
 from agent_service.execution_graph import (
     compile_execution_graph,
     validate_execution_graph_bindings,
@@ -66,6 +69,7 @@ def test_compile_agent_plan_graph_traces_every_node_to_plan_step() -> None:
         "sourcePlanDraftId": draft.plan_draft_id,
         "planningTraceId": "task-1",
         "modelPolicy": "deep_reasoning",
+        "nodeCatalogSchemaVersion": 1,
         "successCriteria": draft.success_criteria,
         "verificationPlan": draft.verification_plan,
     }
@@ -85,6 +89,7 @@ def test_compile_agent_plan_graph_traces_every_node_to_plan_step() -> None:
     assert first_node["createdBy"] == "agent"
     assert first_node["artifactRefs"] == []
     assert first_node["retryCount"] == 0
+    assert first_node["permissionsRequired"] == []
     assert first_node["position"] == {"x": 0.0, "y": 0.0}
     assert first_node["metadata"] == {
         "sourcePlanDraftId": draft.plan_draft_id,
@@ -93,6 +98,16 @@ def test_compile_agent_plan_graph_traces_every_node_to_plan_step() -> None:
         "expectedOutput": first_step.expected_output,
         "verificationCriteria": first_step.verification_criteria,
         "requiredCapabilities": first_step.required_capabilities,
+        "catalogNodeId": "model.reasoning",
+        "catalogDisplayName": "Model Reasoning",
+        "nodeSelectionReason": "matched_node_id:model.reasoning",
+        "executionKind": "model",
+        "catalogExecution": {
+            "type": "model",
+            "model_policy": "node_reasoning",
+        },
+        "catalogCapabilities": ["model.reasoning"],
+        "catalogRiskLevel": "low",
     }
 
     RunGraph.model_validate(graph)
@@ -205,29 +220,152 @@ def test_review_compiled_graph_approves_clean_compiled_graph() -> None:
     assert review.extra_node_ids == []
 
 
-def test_compile_document_capability_uses_fixed_tool_binding() -> None:
-    draft = _draft(["read"])
+def test_compile_available_document_capability_uses_fixed_tool_binding() -> None:
+    draft = _draft(["convert"])
     document_step = draft.steps[0].model_copy(
-        update={"required_capabilities": ["document.read"]}
+        update={"required_capabilities": ["document.convert.markdown"]}
     )
     draft = draft.model_copy(update={"steps": [document_step]})
 
     graph = compile_agent_plan_graph(draft, task_id="task-1")
 
     assert graph["nodes"][0]["nodeType"] == "fixed_tool"
-    assert graph["nodes"][0]["toolRef"] == "document.read_write"
+    assert graph["nodes"][0]["toolRef"] == "document.markitdown_convert"
     assert graph["nodes"][0]["toolBinding"] == {
-        "toolId": "document.read_write",
-        "operation": "read",
+        "toolId": "document.markitdown_convert",
+        "operation": "convert_local_file",
     }
+    assert graph["nodes"][0]["permissionsRequired"] == [
+        "read_project_files",
+        "write_project_outputs",
+        "run_python_plugin",
+    ]
+    assert graph["nodes"][0]["metadata"]["catalogNodeId"] == (
+        "document.convert.markdown"
+    )
+    assert graph["nodes"][0]["metadata"]["catalogDisplayName"] == (
+        "MarkItDown 文档转 Markdown"
+    )
+    assert graph["nodes"][0]["metadata"]["nodeSelectionReason"] == (
+        "matched_node_id:document.convert.markdown"
+    )
+    assert graph["nodes"][0]["metadata"]["executionKind"] == "tool"
+    assert graph["nodes"][0]["metadata"]["catalogCapabilities"] == [
+        "document.convert",
+        "document.convert.markdown",
+        "document.markitdown_convert",
+    ]
+    assert graph["nodes"][0]["metadata"]["catalogRiskLevel"] == "high"
     assert "modelRef" not in graph["nodes"][0]
     RunGraph.model_validate(graph)
 
 
-def test_compiled_document_read_graph_has_supported_execution_binding() -> None:
+def test_compile_mixed_document_and_model_capabilities_uses_available_document_tool() -> None:
+    draft = _draft(["convert"])
+    document_step = draft.steps[0].model_copy(
+        update={
+            "required_capabilities": [
+                "document.convert.markdown",
+                "model.reasoning",
+            ]
+        }
+    )
+    draft = draft.model_copy(update={"steps": [document_step]})
+
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+
+    assert graph["nodes"][0]["nodeType"] == "fixed_tool"
+    assert graph["nodes"][0]["toolRef"] == "document.markitdown_convert"
+    assert graph["nodes"][0]["toolBinding"] == {
+        "toolId": "document.markitdown_convert",
+        "operation": "convert_local_file",
+    }
+    assert graph["nodes"][0]["metadata"]["catalogNodeId"] == (
+        "document.convert.markdown"
+    )
+    assert graph["nodes"][0]["metadata"]["nodeSelectionReason"] == (
+        "matched_node_id:document.convert.markdown"
+    )
+    assert "modelRef" not in graph["nodes"][0]
+    RunGraph.model_validate(graph)
+
+
+def test_compile_unavailable_document_read_capability_raises_resolution_error() -> None:
     draft = _draft(["read"])
     document_step = draft.steps[0].model_copy(
         update={"required_capabilities": ["document.read"]}
+    )
+    draft = draft.model_copy(update={"steps": [document_step]})
+
+    with pytest.raises(NodeCatalogResolutionError) as error:
+        compile_agent_plan_graph(draft, task_id="task-1")
+
+    assert error.value.code == "unsupported_capability"
+    assert error.value.capabilities == ["document.read"]
+
+
+def test_compile_human_catalog_node_is_unsupported_until_runtime_exists() -> None:
+    draft = _draft(["clarify"])
+    human_step = draft.steps[0].model_copy(
+        update={"required_capabilities": ["human.clarify"]}
+    )
+    draft = draft.model_copy(update={"steps": [human_step]})
+
+    with pytest.raises(NodeCatalogResolutionError) as error:
+        compile_agent_plan_graph(draft, task_id="task-1")
+
+    assert error.value.code == "unsupported_capability"
+    assert error.value.capabilities == ["human.clarify"]
+
+
+def test_compile_verifier_catalog_node_is_unsupported_until_runtime_exists() -> None:
+    draft = _draft(["verify"])
+    verifier_step = draft.steps[0].model_copy(
+        update={"required_capabilities": ["verify.artifact_exists"]}
+    )
+    draft = draft.model_copy(update={"steps": [verifier_step]})
+
+    with pytest.raises(NodeCatalogResolutionError) as error:
+        compile_agent_plan_graph(draft, task_id="task-1")
+
+    assert error.value.code == "unsupported_capability"
+    assert error.value.capabilities == ["verify.artifact_exists"]
+
+
+def test_compile_output_catalog_node_preserves_ports_and_execution_metadata() -> None:
+    draft = _draft(["respond"])
+    output_step = draft.steps[0].model_copy(
+        update={"required_capabilities": ["output.final_response"]}
+    )
+    draft = draft.model_copy(update={"steps": [output_step]})
+
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    node = graph["nodes"][0]
+
+    assert node["nodeType"] == "output"
+    assert node["metadata"]["catalogNodeId"] == "output.final_response"
+    assert node["inputPorts"] == [
+        {
+            "id": "response-input",
+            "label": "Response",
+            "dataType": "markdown",
+            "required": True,
+            "multiple": False,
+            "description": "",
+        }
+    ]
+    assert node["outputPorts"] == []
+    assert node["metadata"]["catalogExecution"] == {
+        "type": "output",
+        "output_type": "final_response",
+    }
+    RunGraph.model_validate(graph)
+
+
+def test_compiled_document_convert_graph_has_supported_execution_binding() -> None:
+    draft = _draft(["convert"])
+    document_step = draft.steps[0].model_copy(
+        update={"required_capabilities": ["document.convert.markdown"]}
     )
     draft = draft.model_copy(update={"steps": [document_step]})
     graph = compile_agent_plan_graph(draft, task_id="task-1")
@@ -239,29 +377,42 @@ def test_compiled_document_read_graph_has_supported_execution_binding() -> None:
 
     execution_graph = compile_execution_graph(request)
     validate_execution_graph_bindings(execution_graph)
-    binding = execution_graph.node_by_id("read").tool_binding
+    binding = execution_graph.node_by_id("convert").tool_binding
 
     assert binding is not None
-    assert binding.tool_id == "document.read_write"
-    assert binding.operation == "read"
+    assert binding.tool_id == "document.markitdown_convert"
+    assert binding.operation == "convert_local_file"
 
 
-def test_compile_document_write_capability_uses_explicit_write_operation() -> None:
+def test_compile_unavailable_document_write_capability_raises_resolution_error() -> None:
     draft = _draft(["write"])
     document_step = draft.steps[0].model_copy(
         update={"required_capabilities": ["document.write"]}
     )
     draft = draft.model_copy(update={"steps": [document_step]})
 
-    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    with pytest.raises(NodeCatalogResolutionError) as error:
+        compile_agent_plan_graph(draft, task_id="task-1")
 
-    assert graph["nodes"][0]["nodeType"] == "fixed_tool"
-    assert graph["nodes"][0]["toolRef"] == "document.read_write"
-    assert graph["nodes"][0]["toolBinding"] == {
-        "toolId": "document.read_write",
-        "operation": "write_markdown",
-    }
-    RunGraph.model_validate(graph)
+    assert error.value.code == "unsupported_capability"
+    assert error.value.capabilities == ["document.write"]
+
+
+def test_compile_unavailable_preferred_document_node_id_raises_resolution_error() -> None:
+    draft = _draft(["write"])
+    document_step = draft.steps[0].model_copy(
+        update={
+            "required_capabilities": ["document.write"],
+            "preferred_node_ids": ["document.write_docx"],
+        }
+    )
+    draft = draft.model_copy(update={"steps": [document_step]})
+
+    with pytest.raises(NodeCatalogResolutionError) as error:
+        compile_agent_plan_graph(draft, task_id="task-1")
+
+    assert error.value.code == "unsupported_capability"
+    assert error.value.capabilities == ["document.write"]
 
 
 def test_compile_manifest_document_capabilities_use_fixed_tool_bindings() -> None:
@@ -281,28 +432,38 @@ def test_compile_manifest_document_capabilities_use_fixed_tool_bindings() -> Non
         "toolId": "document.markitdown_convert",
         "operation": "convert_local_file",
     }
+    assert graph["nodes"][0]["metadata"]["catalogNodeId"] == (
+        "document.convert.markdown"
+    )
+    assert graph["nodes"][0]["metadata"]["nodeSelectionReason"] == (
+        "matched_node_id:document.convert.markdown"
+    )
     assert graph["nodes"][1]["toolRef"] == "document.typst_compile"
     assert graph["nodes"][1]["toolBinding"] == {
         "toolId": "document.typst_compile",
         "operation": "compile_report_pdf",
     }
+    assert graph["nodes"][1]["metadata"]["catalogNodeId"] == (
+        "document.render.typst_pdf"
+    )
+    assert graph["nodes"][1]["metadata"]["nodeSelectionReason"] == (
+        "matched_node_id:document.render.typst_pdf"
+    )
     RunGraph.model_validate(graph)
 
 
-def test_compile_unknown_document_capability_falls_back_to_model_node() -> None:
+def test_compile_unknown_document_capability_raises_resolution_error() -> None:
     draft = _draft(["inspect"])
     document_step = draft.steps[0].model_copy(
         update={"required_capabilities": ["document.unknown_operation"]}
     )
     draft = draft.model_copy(update={"steps": [document_step]})
 
-    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    with pytest.raises(NodeCatalogResolutionError) as error:
+        compile_agent_plan_graph(draft, task_id="task-1")
 
-    assert graph["nodes"][0]["nodeType"] == "model"
-    assert graph["nodes"][0]["modelRef"] == "local-task-reasoner"
-    assert "toolRef" not in graph["nodes"][0]
-    assert "toolBinding" not in graph["nodes"][0]
-    RunGraph.model_validate(graph)
+    assert error.value.code == "unsupported_capability"
+    assert error.value.capabilities == ["document.unknown_operation"]
 
 
 def test_review_compiled_graph_rejects_missing_provenance_detail() -> None:
@@ -327,6 +488,18 @@ def test_review_compiled_graph_rejects_missing_required_capabilities() -> None:
 
     assert review.status == "invalid"
     assert review.findings == ["missing_node_metadata:read:requiredCapabilities"]
+
+
+def test_review_compiled_graph_rejects_missing_catalog_metadata() -> None:
+    draft = _draft(["read"])
+    graph = compile_agent_plan_graph(draft, task_id="task-1")
+    graph = deepcopy(graph)
+    del graph["nodes"][0]["metadata"]["catalogNodeId"]
+
+    review = review_compiled_graph(draft, graph)
+
+    assert review.status == "invalid"
+    assert review.findings == ["missing_node_metadata:read:catalogNodeId"]
 
 
 def test_review_compiled_graph_treats_missing_source_step_id_as_extra() -> None:
@@ -367,7 +540,7 @@ def test_review_compiled_graph_rejects_node_id_mismatch() -> None:
 def test_review_compiled_graph_rejects_fixed_tool_without_operation() -> None:
     draft = _draft(["read"])
     document_step = draft.steps[0].model_copy(
-        update={"required_capabilities": ["document.read"]}
+        update={"required_capabilities": ["document.convert.markdown"]}
     )
     draft = draft.model_copy(update={"steps": [document_step]})
     graph = compile_agent_plan_graph(draft, task_id="task-1")

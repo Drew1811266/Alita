@@ -73,35 +73,96 @@ class DuckDuckGoHtmlSearchProvider:
                 metadata={"provider": self.name},
             )
 
-        url = "https://duckduckgo.com/html/?" + urlencode({"q": guard.sanitizedText})
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; web-search-provider/1.0)"}
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,*/*;q=0.8"
+            ),
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
+        attempts: list[dict[str, Any]] = []
+        last_failure: SearchFailure | None = None
 
-        try:
-            body = self._transport(url, self._timeout, headers)
-        except (TimeoutError, socket.timeout):
-            return SearchResponse(
-                results=[],
-                failure=SearchFailure(
+        for endpoint, base_url in _DUCKDUCKGO_ENDPOINTS:
+            url = base_url + "?" + urlencode({"q": guard.sanitizedText})
+            try:
+                body = self._transport(url, self._timeout, headers)
+            except (TimeoutError, socket.timeout):
+                last_failure = SearchFailure(
                     kind="timeout",
                     message="Search request timed out.",
-                ),
-                metadata={"provider": self.name},
-            )
-        except (HTTPError, URLError, OSError):
-            return SearchResponse(
-                results=[],
-                failure=SearchFailure(
+                )
+                attempts.append(
+                    {
+                        "provider": self.name,
+                        "endpoint": endpoint,
+                        "status": "failed",
+                        "kind": last_failure.kind,
+                    }
+                )
+                continue
+            except (HTTPError, URLError, OSError):
+                last_failure = SearchFailure(
                     kind="network_error",
                     message="Search request failed.",
-                ),
-                metadata={"provider": self.name},
+                )
+                attempts.append(
+                    {
+                        "provider": self.name,
+                        "endpoint": endpoint,
+                        "status": "failed",
+                        "kind": last_failure.kind,
+                    }
+                )
+                continue
+
+            html = body.decode("utf-8", errors="replace")
+            results = parse_duckduckgo_html_results(html)
+            if results:
+                return SearchResponse(
+                    results=results,
+                    metadata={
+                        "provider": self.name,
+                        "attempts": [
+                            *attempts,
+                            {
+                                "provider": self.name,
+                                "endpoint": endpoint,
+                                "status": "ok",
+                                "bodyLength": len(body),
+                                "hasResultAnchor": _has_duckduckgo_result_anchor(html),
+                            },
+                        ],
+                    },
+                )
+
+            attempts.append(
+                {
+                    "provider": self.name,
+                    "endpoint": endpoint,
+                    "status": "no_parseable_results",
+                    "bodyLength": len(body),
+                    "hasResultAnchor": _has_duckduckgo_result_anchor(html),
+                }
+            )
+            last_failure = SearchFailure(
+                kind="no_results",
+                message="Search provider returned no parseable results.",
             )
 
         return SearchResponse(
-            results=parse_duckduckgo_html_results(
-                body.decode("utf-8", errors="replace")
+            results=[],
+            failure=last_failure
+            or SearchFailure(
+                kind="no_results",
+                message="Search provider returned no parseable results.",
             ),
-            metadata={"provider": self.name},
+            metadata={"provider": self.name, "attempts": attempts},
         )
 
 
@@ -117,6 +178,16 @@ def _urllib_transport(url: str, timeout: float, headers: dict[str, str]) -> byte
     request = Request(url, headers=headers)
     with urlopen(request, timeout=timeout) as response:
         return response.read()
+
+
+_DUCKDUCKGO_ENDPOINTS = [
+    ("primary", "https://duckduckgo.com/html/"),
+    ("fallback", "https://html.duckduckgo.com/html/"),
+]
+
+
+def _has_duckduckgo_result_anchor(html: str) -> bool:
+    return "result__a" in html
 
 
 def parse_duckduckgo_html_results(html: str) -> list[SearchResult]:
@@ -373,6 +444,8 @@ def _is_vendor_docs(host: str) -> bool:
 def _is_recognized_docs(host: str) -> bool:
     return host in {
         "developer.mozilla.org",
+        "python.org",
+        "www.python.org",
         "docs.python.org",
         "langchain-ai.github.io",
         "packaging.python.org",

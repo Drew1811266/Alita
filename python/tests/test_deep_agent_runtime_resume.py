@@ -202,6 +202,75 @@ def test_clarification_resume_continues_same_thread(tmp_path: Path) -> None:
     assert "The report is for executives." in model.messages[2][1].content
 
 
+def test_clarification_resume_accumulates_prior_answers_in_planning_prompt(
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "demo.alita"
+    first_clarification = _clarification_plan_payload()
+    first_clarification["missing_information"] = ["target audience"]
+    second_clarification = _clarification_plan_payload()
+    second_clarification["missing_information"] = ["tone"]
+    model = FakeModel(
+        [
+            _reasoning_payload(),
+            first_clarification,
+            second_clarification,
+            _plan_payload(["understand", "write"]),
+        ]
+    )
+    checkpointer = InMemorySaver()
+
+    first_events = run_deep_agent_runtime(
+        UserMessage(task_id="task-clarify-many", content="Make this into a report."),
+        project_path=str(project_path),
+        model_client=model,
+        run_id="run-clarify-many",
+        thread_id="thread-clarify-many",
+        checkpointer=checkpointer,
+        require_confirmation=False,
+    )
+    assert first_events[-1].type == "planning.interrupted"
+
+    second_events = run_deep_agent_runtime(
+        UserMessage(task_id="task-clarify-many", content="Make this into a report."),
+        project_path=str(project_path),
+        model_client=model,
+        run_id="run-clarify-many",
+        thread_id="thread-clarify-many",
+        checkpointer=checkpointer,
+        resume_command=PlanningResumeCommand(
+            kind="clarification_answer",
+            threadId="thread-clarify-many",
+            runId="run-clarify-many",
+            answer="The report is for executives.",
+        ),
+        require_confirmation=False,
+    )
+    assert second_events[-1].type == "planning.interrupted"
+
+    final_events = run_deep_agent_runtime(
+        UserMessage(task_id="task-clarify-many", content="Make this into a report."),
+        project_path=str(project_path),
+        model_client=model,
+        run_id="run-clarify-many",
+        thread_id="thread-clarify-many",
+        checkpointer=checkpointer,
+        resume_command=PlanningResumeCommand(
+            kind="clarification_answer",
+            threadId="thread-clarify-many",
+            runId="run-clarify-many",
+            answer="Use a concise executive tone.",
+        ),
+        require_confirmation=False,
+    )
+
+    assert final_events[-1].type == "node_graph.created"
+    final_planning_prompt = model.messages[3][1].content
+    assert "The report is for executives." in final_planning_prompt
+    assert "Use a concise executive tone." in final_planning_prompt
+    assert "do not ask for the same or similar information again" in final_planning_prompt
+
+
 def test_confirmation_interrupts_after_graph_creation(tmp_path: Path) -> None:
     project_path = tmp_path / "demo.alita"
     model = FakeModel([_reasoning_payload(), _plan_payload(["understand", "write"])])

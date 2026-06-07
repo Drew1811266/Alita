@@ -33,4 +33,19 @@ describe("app workbench layout CSS", () => {
     expect(codePreviewRule).toContain("overflow: auto;");
     expect(codePreviewRule).toContain("font-family:");
   });
+
+  it("keeps the node catalog list as the remaining-height scroll region", () => {
+    const panelRule = appCss.match(/\.nodeCatalogPanel\s*\{[\s\S]*?\}/)?.[0];
+    const listRule = appCss.match(/\.nodeCatalogList\s*\{[\s\S]*?\}/)?.[0];
+
+    expect(panelRule).toBeDefined();
+    expect(panelRule).toContain("display: flex;");
+    expect(panelRule).toContain("flex-direction: column;");
+    expect(panelRule).not.toContain("grid-template-rows:");
+
+    expect(listRule).toBeDefined();
+    expect(listRule).toContain("flex: 1 1 auto;");
+    expect(listRule).toContain("min-height: 0;");
+    expect(listRule).toContain("overflow: auto;");
+  });
 });

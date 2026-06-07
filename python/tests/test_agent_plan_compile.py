@@ -108,7 +108,7 @@ def _compile(graph: RunGraph):
 def test_valid_deep_planning_graph_compiles_and_preserves_provenance_verification() -> None:
     payload = _graph_payload(
         ["write", "reason"],
-        capabilities_by_step={"write": ["document.write"]},
+        capabilities_by_step={"write": ["document.convert.markdown"]},
     )
     payload["nodes"][0]["permissionsRequired"] = ["read_project_files"]
     payload["nodes"][0]["toolBinding"]["permissionScope"] = {
@@ -148,14 +148,14 @@ def test_valid_deep_planning_graph_compiles_and_preserves_provenance_verificatio
     assert tool_node.source_plan_step_id == "write"
     assert tool_node.expected_output == "Expected output for write."
     assert tool_node.verification_criteria == ["Verification criteria for write."]
-    assert tool_node.required_capabilities == ["document.write"]
+    assert tool_node.required_capabilities == ["document.convert.markdown"]
     assert tool_node.permissions_required == [
         "read_project_files",
         "write_project_files",
     ]
     assert tool_node.tool_contract is not None
-    assert tool_node.tool_contract.tool_id == "document.read_write"
-    assert tool_node.tool_contract.operation == "write_markdown"
+    assert tool_node.tool_contract.tool_id == "document.markitdown_convert"
+    assert tool_node.tool_contract.operation == "convert_local_file"
     assert tool_node.expected_artifacts[0].path_template == "artifacts/report.md"
 
     model_node = compiled.node_by_id("reason")
@@ -177,7 +177,7 @@ def test_legacy_graph_without_deep_planning_metadata_raises() -> None:
 def test_fixed_tool_node_without_tool_binding_operation_raises() -> None:
     payload = _graph_payload(
         ["write"],
-        capabilities_by_step={"write": ["document.write"]},
+        capabilities_by_step={"write": ["document.convert.markdown"]},
     )
     del payload["nodes"][0]["toolBinding"]["operation"]
     graph = RunGraph.model_validate(payload)
@@ -225,7 +225,7 @@ def test_review_reports_missing_bindings_for_missing_contract() -> None:
     compiled = _compile(
         _deep_graph(
             ["write"],
-            capabilities_by_step={"write": ["document.write"]},
+            capabilities_by_step={"write": ["document.convert.markdown"]},
         )
     )
     broken_node = compiled.node_by_id("write").model_copy(
@@ -254,9 +254,9 @@ def test_model_nodes_preserve_contract_and_fixed_tool_failures_are_not_converted
 
     bad_payload = _graph_payload(
         ["write"],
-        capabilities_by_step={"write": ["document.write"]},
+        capabilities_by_step={"write": ["document.convert.markdown"]},
     )
-    bad_payload["nodes"][0]["toolBinding"] = {"toolId": "document.read_write"}
+    bad_payload["nodes"][0]["toolBinding"] = {"toolId": "document.markitdown_convert"}
 
     with pytest.raises(AgentPlanCompileError) as error_info:
         _compile(RunGraph.model_validate(bad_payload))

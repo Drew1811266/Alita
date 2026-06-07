@@ -89,6 +89,27 @@ function renderStringList(values: unknown) {
   );
 }
 
+function renderCatalogCapabilityList(values: unknown) {
+  const capabilities = Array.isArray(values)
+    ? values.filter(
+        (value): value is string =>
+          typeof value === "string" && value.trim().length > 0,
+      )
+    : [];
+
+  if (capabilities.length === 0) {
+    return <span className="nodePopoverEmpty">无</span>;
+  }
+
+  return (
+    <ul className="nodePopoverPortList">
+      {capabilities.map((capability) => (
+        <li key={capability}>{capability}</li>
+      ))}
+    </ul>
+  );
+}
+
 function readableString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
@@ -201,6 +222,54 @@ function renderContract(contract: Record<string, unknown> | undefined) {
   );
 }
 
+function renderCatalogProvenance(metadata: AgentNode["metadata"]) {
+  const catalogNodeId = readableString(metadata?.catalogNodeId);
+
+  if (!catalogNodeId) {
+    return null;
+  }
+
+  const catalogDisplayName =
+    readableString(metadata?.catalogDisplayName) ?? catalogNodeId;
+  const executionKind = readableString(metadata?.executionKind);
+  const catalogRiskLevel = readableString(metadata?.catalogRiskLevel);
+  const nodeSelectionReason = readableString(metadata?.nodeSelectionReason);
+
+  return (
+    <>
+      <div>
+        <dt>节点库来源</dt>
+        <dd>
+          <div>{catalogDisplayName}</div>
+          <div>{catalogNodeId}</div>
+        </dd>
+      </div>
+      {executionKind ? (
+        <div>
+          <dt>执行类型</dt>
+          <dd>{executionKind}</dd>
+        </div>
+      ) : null}
+      {catalogRiskLevel ? (
+        <div>
+          <dt>风险等级</dt>
+          <dd>{catalogRiskLevel}</dd>
+        </div>
+      ) : null}
+      {nodeSelectionReason ? (
+        <div>
+          <dt>选择原因</dt>
+          <dd>{nodeSelectionReason}</dd>
+        </div>
+      ) : null}
+      <div>
+        <dt>节点库能力</dt>
+        <dd>{renderCatalogCapabilityList(metadata?.catalogCapabilities)}</dd>
+      </div>
+    </>
+  );
+}
+
 function formatDuration(durationMs?: number | null): string | null {
   if (durationMs === undefined || durationMs === null) {
     return null;
@@ -301,6 +370,7 @@ export function NodePopover({
           <dt>将调用的功能</dt>
           <dd>{getCapability(node)}</dd>
         </div>
+        {renderCatalogProvenance(node.metadata)}
         {node.estimate ? (
           <div>
             <dt>预估</dt>

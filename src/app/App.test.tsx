@@ -7,6 +7,7 @@ import {
   buildPlanningChoiceSubmitPayload,
   buildResearchChoiceSubmitPayload,
   buildTemporaryScriptPermissionSubmitPayload,
+  conversationHistoryForSubmit,
   didApplyBackendEvents,
   restorePendingPlanningChoiceAfterFailure,
   shouldRefreshAsrForPreferencesUpdate,
@@ -69,6 +70,40 @@ function preferencesViewWithSpeechModel(
 }
 
 describe("App", () => {
+  it("builds compact conversation history for agent submits", () => {
+    expect(
+      conversationHistoryForSubmit(
+        [
+          {
+            messageId: "m-1",
+            role: "system",
+            content: "开发版对话已启动。",
+            attachments: [],
+            createdAt: "2026-06-07T00:00:00.000Z",
+          },
+          {
+            messageId: "m-2",
+            role: "user",
+            content: " 预算是一万元。 ",
+            attachments: [],
+            createdAt: "2026-06-07T00:00:01.000Z",
+          },
+          {
+            messageId: "m-3",
+            role: "assistant",
+            content: "请补充用途。",
+            attachments: [],
+            createdAt: "2026-06-07T00:00:02.000Z",
+          },
+        ],
+        2,
+      ),
+    ).toEqual([
+      { role: "user", content: "预算是一万元。" },
+      { role: "assistant", content: "请补充用途。" },
+    ]);
+  });
+
   it("starts on the project home before a project is active", () => {
     const markup = renderToStaticMarkup(<App />);
 

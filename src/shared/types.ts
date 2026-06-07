@@ -135,6 +135,12 @@ export type PlanNodeProvenance = {
   expectedOutput?: string;
   verificationCriteria?: string[];
   requiredCapabilities?: string[];
+  catalogNodeId?: string;
+  catalogDisplayName?: string;
+  catalogCapabilities?: string[];
+  catalogRiskLevel?: "low" | "medium" | "high";
+  executionKind?: "tool" | "model" | "human" | "verifier" | "output";
+  nodeSelectionReason?: string;
 };
 
 export type AgentNode = {
@@ -274,6 +280,96 @@ export type ScriptReviewState = {
   inputContract?: Record<string, unknown>;
   outputContract?: Record<string, unknown>;
   approvalFingerprint?: string | null;
+};
+
+export type NodeCatalogAvailability = {
+  status: "available" | "degraded" | "unavailable";
+  reasonCode?: string | null;
+  message?: string | null;
+};
+
+export type CatalogNodePort = {
+  id: string;
+  label: string;
+  dataType:
+    | "text"
+    | "markdown"
+    | "document"
+    | "table"
+    | "json"
+    | "artifact"
+    | "url"
+    | "query"
+    | "decision";
+  required: boolean;
+  multiple: boolean;
+  description: string;
+};
+
+export type CatalogNodeExecution = {
+  type: "tool" | "model" | "human" | "verifier" | "output";
+  toolId?: string | null;
+  operation?: string | null;
+  bindingRef?: string | null;
+  modelPolicy?: string | null;
+  verifierType?: string | null;
+  outputType?: string | null;
+};
+
+export type CatalogNodePermissionProfile = {
+  permissions: string[];
+  riskLevel: "low" | "medium" | "high";
+  requiresApproval: boolean;
+  filesystem: "none" | "project_read" | "project_write";
+  network: "none" | "external";
+  sandbox: "none" | "sidecar" | "external";
+};
+
+export type CatalogNodeExample = {
+  title: string;
+  input: Record<string, unknown>;
+};
+
+export type NodeCatalogEntry = {
+  nodeId: string;
+  kind: "tool" | "model" | "human" | "verifier" | "output";
+  displayName: string;
+  description: string;
+  category:
+    | "document"
+    | "web"
+    | "data"
+    | "reasoning"
+    | "human"
+    | "verification"
+    | "output";
+  capabilities: string[];
+  inputPorts: CatalogNodePort[];
+  outputPorts: CatalogNodePort[];
+  execution: CatalogNodeExecution;
+  permissions: CatalogNodePermissionProfile;
+  examples: CatalogNodeExample[];
+  source: "internal_tool" | "system" | "mcp" | "plugin";
+  version: string;
+  availability: NodeCatalogAvailability;
+};
+
+export type NodeCatalogSnapshot = {
+  schemaVersion: number;
+  generatedAt: string;
+  nodes: NodeCatalogEntry[];
+  diagnostics: Array<{
+    code: string;
+    nodeId?: string | null;
+    message: string;
+  }>;
+  sourceSummary: {
+    internalToolCount: number;
+    systemNodeCount: number;
+    mcpNodeCount: number;
+    pluginNodeCount: number;
+    availableNodeCount?: number;
+  };
 };
 
 export type AlitaProject = {

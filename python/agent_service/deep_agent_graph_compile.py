@@ -5,34 +5,32 @@ from typing import Any
 from pydantic import ValidationError
 
 from agent_service.deep_agent_models import GraphReview, PlanDraft, PlanStep
+from agent_service.node_catalog import (
+    NodeCatalogBuilder,
+    NodeCatalogSnapshot,
+    NodeDefinition,
+    NodePortDefinition,
+)
+from agent_service.node_catalog_resolver import NodeCatalogResolver
 from agent_service.schemas import RunGraph
+from agent_service.tool_execution import default_tool_packages_root
+from agent_service.tool_registry import ToolRegistry
 
 
-_DOCUMENT_TOOL_BINDINGS = {
-    "document.read": ("document.read_write", "read"),
-    "document.read_write": ("document.read_write", "read"),
-    "document.write": ("document.read_write", "write_markdown"),
-    "document.convert": ("document.markitdown_convert", "convert_local_file"),
-    "document.convert.markdown": (
-        "document.markitdown_convert",
-        "convert_local_file",
-    ),
-    "document.markitdown_convert": (
-        "document.markitdown_convert",
-        "convert_local_file",
-    ),
-    "document.render": ("document.typst_compile", "compile_report_pdf"),
-    "document.render.typst_pdf": ("document.typst_compile", "compile_report_pdf"),
-    "document.typst_compile": ("document.typst_compile", "compile_report_pdf"),
-}
-
-
-def compile_agent_plan_graph(draft: PlanDraft, *, task_id: str) -> dict:
+def compile_agent_plan_graph(
+    draft: PlanDraft,
+    *,
+    task_id: str,
+    node_catalog: NodeCatalogSnapshot | None = None,
+) -> dict:
+    catalog = node_catalog or _default_node_catalog()
+    resolver = NodeCatalogResolver(catalog)
     nodes = [
         _compile_step_node(
             step,
             index=index,
             source_plan_draft_id=draft.plan_draft_id,
+            resolver=resolver,
         )
         for index, step in enumerate(draft.steps)
     ]
@@ -54,6 +52,7 @@ def compile_agent_plan_graph(draft: PlanDraft, *, task_id: str) -> dict:
             "sourcePlanDraftId": draft.plan_draft_id,
             "planningTraceId": task_id,
             "modelPolicy": "deep_reasoning",
+            "nodeCatalogSchemaVersion": catalog.schema_version,
             "successCriteria": list(draft.success_criteria),
             "verificationPlan": list(draft.verification_plan),
         },
@@ -131,20 +130,27 @@ def _compile_step_node(
     *,
     index: int,
     source_plan_draft_id: str,
+    resolver: NodeCatalogResolver,
 ) -> dict[str, Any]:
-    tool_binding = _document_tool_binding(step)
+    resolution = resolver.resolve(
+        required_capabilities=step.required_capabilities,
+        preferred_node_ids=step.preferred_node_ids,
+    )
+    catalog_node = resolution.node
+    node_type = _graph_node_type(catalog_node)
     node: dict[str, Any] = {
         "nodeId": step.step_id,
-        "nodeType": "fixed_tool" if tool_binding else "model",
+        "nodeType": node_type,
         "displayName": step.title,
         "status": "waiting",
-        "inputPorts": [],
-        "outputPorts": [],
+        "inputPorts": [_compile_port(port) for port in catalog_node.input_ports],
+        "outputPorts": [_compile_port(port) for port in catalog_node.output_ports],
         "dependencies": list(step.depends_on),
         "summary": step.objective,
         "createdBy": "agent",
         "artifactRefs": [],
         "retryCount": 0,
+        "permissionsRequired": list(catalog_node.permissions.permissions),
         "position": {"x": float(index * 240), "y": 0.0},
         "metadata": {
             "sourcePlanDraftId": source_plan_draft_id,
@@ -153,27 +159,58 @@ def _compile_step_node(
             "expectedOutput": step.expected_output,
             "verificationCriteria": list(step.verification_criteria),
             "requiredCapabilities": list(step.required_capabilities),
+            "catalogNodeId": catalog_node.node_id,
+            "catalogDisplayName": catalog_node.display_name,
+            "nodeSelectionReason": resolution.selection_reason,
+            "executionKind": catalog_node.execution.type,
+            "catalogExecution": catalog_node.execution.model_dump(
+                mode="json",
+                exclude_none=True,
+            ),
+            "catalogCapabilities": list(catalog_node.capabilities),
+            "catalogRiskLevel": catalog_node.permissions.risk_level,
         },
     }
 
-    if tool_binding is not None:
-        tool_ref, operation = tool_binding
+    if node_type == "fixed_tool":
+        tool_ref = catalog_node.execution.tool_id
+        operation = catalog_node.execution.operation
         node["toolRef"] = tool_ref
         node["toolBinding"] = {
             "toolId": tool_ref,
             "operation": operation,
         }
-    else:
+    elif node_type == "model":
         node["modelRef"] = "local-task-reasoner"
 
     return node
 
 
-def _document_tool_binding(step: PlanStep) -> tuple[str, str] | None:
-    for capability in step.required_capabilities:
-        if capability in _DOCUMENT_TOOL_BINDINGS:
-            return _DOCUMENT_TOOL_BINDINGS[capability]
-    return None
+def _default_node_catalog() -> NodeCatalogSnapshot:
+    return NodeCatalogBuilder(
+        tool_registry=ToolRegistry.from_packages_root(default_tool_packages_root()),
+    ).build()
+
+
+def _graph_node_type(node: NodeDefinition) -> str:
+    if node.execution.type == "tool":
+        return "fixed_tool"
+    if node.execution.type == "model":
+        return "model"
+    if node.execution.type == "output":
+        return "output"
+    return "planning"
+
+
+def _compile_port(port: NodePortDefinition) -> dict[str, Any]:
+    return {
+        "id": port.id,
+        "label": port.label,
+        "dataType": port.data_type,
+        "required": port.required,
+        "multiple": port.multiple,
+        "description": port.description,
+    }
 
 
 def _review_required_metadata(
@@ -182,7 +219,18 @@ def _review_required_metadata(
     step: PlanStep,
     findings: list[str],
 ) -> None:
-    required_fields = ("rationale", "expectedOutput", "verificationCriteria")
+    required_fields = (
+        "rationale",
+        "expectedOutput",
+        "verificationCriteria",
+        "catalogNodeId",
+        "catalogDisplayName",
+        "nodeSelectionReason",
+        "executionKind",
+        "catalogExecution",
+        "catalogCapabilities",
+        "catalogRiskLevel",
+    )
     for field_name in required_fields:
         value = metadata.get(field_name)
         if value is None or value == "" or value == []:

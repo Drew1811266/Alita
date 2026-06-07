@@ -28,6 +28,8 @@ import {
 } from "../features/chat/useChatSessionController";
 import { usePermissionController } from "../features/permissions/usePermissionController";
 import { useVoiceInputController } from "../features/voice/useVoiceInputController";
+import { NodeCatalogPanel } from "../features/nodeCatalog/NodeCatalogPanel";
+import { useNodeCatalog } from "../features/nodeCatalog/useNodeCatalog";
 import {
   addModelFile,
   addSpeechToTextModelDirectory,
@@ -76,6 +78,7 @@ import {
   createTemporaryScriptPermissionPayload,
   runNodeGraphStream,
   submitResearchChoice,
+  type ConversationTurn,
   type RunNodeGraphMode,
   type SubmitMessagePayload,
   submitUserMessage,
@@ -287,6 +290,7 @@ export function App() {
   } = voiceInputController;
   const graphRef = useRef<NodeGraph | null>(null);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [nodeCatalogOpen, setNodeCatalogOpen] = useState(false);
   const runHistoryRef = useRef<RunHistoryEntry[]>([]);
   const artifactsRef = useRef<ArtifactRef[]>([]);
   const artifactPreviewController = useArtifactPreviewController();
@@ -303,6 +307,7 @@ export function App() {
     error: artifactPreviewError,
   } = artifactPreviewController.state;
   const preferencesController = usePreferencesController();
+  const nodeCatalog = useNodeCatalog();
   const {
     preferences: preferencesView,
     loading: preferencesLoading,
@@ -850,6 +855,7 @@ export function App() {
 
     const capturedGraphOverwriteChoice = pendingGraphOverwriteChoiceRef.current;
     const capturedPlanningChoice = pendingPlanningChoiceRef.current;
+    const conversationHistory = conversationHistoryForSubmit(messagesRef.current);
     const sentAttachments = [...pendingAttachments];
     const agentAttachments = selectAgentAttachments({
       content,
@@ -907,6 +913,7 @@ export function App() {
         projectPath: activeProject.path,
         content: userMessage.content,
         attachments: agentAttachments,
+        conversationHistory,
         ...graphContext,
         ...(pendingChoice ? { pendingChoice } : {}),
       };
@@ -1342,6 +1349,7 @@ export function App() {
     <main className="appShell">
       <WorkbenchTopBar
         dirty={dirty}
+        onOpenNodeCatalog={() => setNodeCatalogOpen(true)}
         onOpenPreferences={handleOpenPreferences}
         onSave={handleSaveProject}
         onSaveAs={handleSaveProjectAs}
@@ -1412,6 +1420,15 @@ export function App() {
         />
       </section>
       {preferencesDialog}
+      {nodeCatalogOpen ? (
+        <NodeCatalogPanel
+          catalog={nodeCatalog.catalog}
+          error={nodeCatalog.error}
+          loading={nodeCatalog.loading}
+          onClose={() => setNodeCatalogOpen(false)}
+          onReload={() => void nodeCatalog.refresh()}
+        />
+      ) : null}
     </main>
   );
 }
@@ -1437,6 +1454,19 @@ export function shouldRefreshAsrForPreferencesUpdate(
   return (
     speechToTextAssignmentId(previousView) !== speechToTextAssignmentId(nextView)
   );
+}
+
+export function conversationHistoryForSubmit(
+  messages: ChatMessage[],
+  limit = 12,
+): ConversationTurn[] {
+  return messages
+    .filter((message) => message.content.trim())
+    .slice(-limit)
+    .map((message) => ({
+      role: message.role,
+      content: message.content.trim(),
+    }));
 }
 
 export function buildResearchChoiceSubmitPayload({

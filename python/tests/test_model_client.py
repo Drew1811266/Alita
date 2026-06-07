@@ -140,7 +140,7 @@ def test_llama_client_posts_openai_compatible_chat_request() -> None:
                     {"role": "user", "content": "总结文档"},
                 ],
                 "temperature": 0.2,
-                "max_tokens": 1024,
+                "max_tokens": 4096,
                 "stream": False,
             },
             3.0,
@@ -186,7 +186,7 @@ def test_llama_client_applies_policy_defaults_to_chat_payload() -> None:
 
     payload = calls[0][1]
     assert payload["temperature"] == 0.2
-    assert payload["max_tokens"] == 8192
+    assert payload["max_tokens"] == 32768
     assert payload["stream"] is False
     assert payload["chat_template_kwargs"]["enable_thinking"] is True
     assert payload["chat_template_kwargs"]["preserve_thinking"] is True
@@ -279,6 +279,27 @@ def test_llama_chat_with_diagnostics_reports_deep_thinking_payload() -> None:
     payload = calls[0][1]
     assert payload["chat_template_kwargs"]["enable_thinking"] is True
     assert payload["chat_template_kwargs"]["preserve_thinking"] is True
+
+
+def test_llama_chat_with_diagnostics_allows_timeout_override() -> None:
+    calls: list[tuple[str, dict, float]] = []
+
+    def transport(url: str, payload: dict, timeout: float) -> dict:
+        calls.append((url, deepcopy(payload), timeout))
+        return {"choices": [{"message": {"content": "deep answer"}}]}
+
+    client = LlamaCppModelClient(
+        ModelClientConfig(enabled=True, timeout_seconds=3.0),
+        transport=transport,
+    )
+
+    client.chat_with_diagnostics(
+        [ChatMessage(role="user", content="hello")],
+        policy=DEEP_REASONING_POLICY,
+        timeout_seconds=180.0,
+    )
+
+    assert calls[0][2] == 180.0
 
 
 def test_llama_chat_with_diagnostics_reports_fast_thinking_disabled_payload() -> None:
@@ -538,7 +559,7 @@ def test_llama_client_applies_policy_defaults_to_stream_payload() -> None:
     assert chunks == ["hel", "lo"]
     payload = calls[0][1]
     assert payload["temperature"] == 0.3
-    assert payload["max_tokens"] == 768
+    assert payload["max_tokens"] == 3072
     assert payload["stream"] is True
     assert payload["chat_template_kwargs"]["enable_thinking"] is False
 
@@ -573,7 +594,7 @@ def test_llama_client_retries_stream_without_policy_extra_body_when_rejected() -
     assert "chat_template_kwargs" in calls[0][1]
     assert "chat_template_kwargs" not in calls[1][1]
     assert calls[1][1]["temperature"] == 0.3
-    assert calls[1][1]["max_tokens"] == 768
+    assert calls[1][1]["max_tokens"] == 3072
     assert calls[1][1]["stream"] is True
 
 
@@ -631,7 +652,7 @@ def test_llama_client_streams_openai_compatible_chat_chunks() -> None:
                 "model": "local-llama-cpp",
                 "messages": [{"role": "user", "content": "你好"}],
                 "temperature": 0.2,
-                "max_tokens": 1024,
+                "max_tokens": 4096,
                 "stream": True,
             },
             3.0,
@@ -668,7 +689,7 @@ def test_openai_compatible_client_posts_chat_request_with_authorization() -> Non
                 "model": "gpt-4.1",
                 "messages": [{"role": "user", "content": "hello"}],
                 "temperature": 0.2,
-                "max_tokens": 1024,
+                "max_tokens": 4096,
                 "stream": False,
             },
             60.0,
@@ -715,6 +736,35 @@ def test_openai_compatible_client_chat_with_diagnostics_reports_unavailable_thin
         ),
     )
     assert "chat_template_kwargs" not in calls[0][1]
+
+
+def test_openai_compatible_client_chat_with_diagnostics_allows_timeout_override() -> None:
+    calls: list[tuple[str, dict, float, dict[str, str]]] = []
+
+    def transport(url: str, payload: dict, timeout: float, headers: dict[str, str]) -> dict:
+        calls.append((url, payload, timeout, headers))
+        return {"choices": [{"message": {"content": "api reply"}}]}
+
+    client = OpenAICompatibleModelClient(
+        AgentModelClientConfig(
+            mode="api",
+            enabled=True,
+            base_url="https://api.openai.com/v1",
+            model="gpt-4.1",
+            api_key="sk-test",
+            provider_display_name="OpenAI",
+            timeout_seconds=3.0,
+        ),
+        transport=transport,
+    )
+
+    client.chat_with_diagnostics(
+        [ChatMessage(role="user", content="hello")],
+        policy=DEEP_REASONING_POLICY,
+        timeout_seconds=180.0,
+    )
+
+    assert calls[0][2] == 180.0
 
 
 def test_openai_compatible_client_chat_with_diagnostics_rejects_empty_response() -> None:

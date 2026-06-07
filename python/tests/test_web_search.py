@@ -29,12 +29,14 @@ def test_provider_sanitizes_query_before_request_construction() -> None:
 
     response = provider.search(raw_query)
 
-    assert response.failure is None
+    assert response.failure is not None
+    assert response.failure.kind == "no_results"
     query = parse_qs(urlparse(seen[0]).query)["q"][0]
     assert query == "Search [LOCAL_PATH] LangGraph docs [SECRET] [EMAIL]"
-    assert "Software Project" not in seen[0]
-    assert "abcdefghijklmnopqrstuvwxyz1234567890" not in seen[0]
-    assert "drew@example.com" not in seen[0]
+    for url in seen:
+        assert "Software Project" not in url
+        assert "abcdefghijklmnopqrstuvwxyz1234567890" not in url
+        assert "drew@example.com" not in url
 
 
 def test_provider_does_not_request_when_privacy_guard_blocks_query() -> None:
@@ -87,6 +89,70 @@ def test_network_error_returns_structured_failure() -> None:
         kind="network_error",
         message="Search request failed.",
     )
+
+
+def test_provider_falls_back_to_html_duckduckgo_when_primary_has_no_results() -> None:
+    seen: list[tuple[str, dict[str, str]]] = []
+
+    def transport(url: str, timeout: float, headers: dict[str, str]) -> bytes:
+        del timeout
+        seen.append((url, headers))
+        if "html.duckduckgo.com" in url:
+            return b"""
+            <html><body>
+              <a class="result__a" href="https://www.python.org/downloads/">
+                Python Downloads
+              </a>
+              <div class="result__snippet">Official Python downloads.</div>
+            </body></html>
+            """
+        return b"<html><body>No parseable results</body></html>"
+
+    provider = DuckDuckGoHtmlSearchProvider(transport=transport)
+
+    response = provider.search("latest Python stable version")
+
+    assert [urlparse(url).netloc for url, _headers in seen] == [
+        "duckduckgo.com",
+        "html.duckduckgo.com",
+    ]
+    assert response.results[0].url == "https://www.python.org/downloads/"
+    assert response.failure is None
+    assert response.metadata["attempts"][0]["status"] == "no_parseable_results"
+    assert response.metadata["attempts"][1]["status"] == "ok"
+    assert "Mozilla/5.0" in seen[0][1]["User-Agent"]
+
+
+def test_provider_records_no_parseable_result_diagnostics() -> None:
+    def transport(url: str, timeout: float, headers: dict[str, str]) -> bytes:
+        del url, timeout, headers
+        return b"<html><body>No result anchor here</body></html>"
+
+    provider = DuckDuckGoHtmlSearchProvider(transport=transport)
+
+    response = provider.search("latest Python stable version")
+
+    assert response.results == []
+    assert response.failure == SearchFailure(
+        kind="no_results",
+        message="Search provider returned no parseable results.",
+    )
+    assert response.metadata["attempts"] == [
+        {
+            "provider": "duckduckgo",
+            "endpoint": "primary",
+            "status": "no_parseable_results",
+            "bodyLength": 47,
+            "hasResultAnchor": False,
+        },
+        {
+            "provider": "duckduckgo",
+            "endpoint": "fallback",
+            "status": "no_parseable_results",
+            "bodyLength": 47,
+            "hasResultAnchor": False,
+        },
+    ]
 
 
 def test_html_parser_returns_title_url_and_snippet() -> None:
@@ -280,4 +346,8 @@ def test_duckduckgo_provider_records_provider_metadata() -> None:
 
     assert provider.name == "duckduckgo"
     assert provider.is_configured() is True
-    assert response.metadata == {"provider": "duckduckgo"}
+    assert response.metadata["provider"] == "duckduckgo"
+    assert [attempt["endpoint"] for attempt in response.metadata["attempts"]] == [
+        "primary",
+        "fallback",
+    ]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +25,7 @@ from agent_service.model_client import ChatMessage
 from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
 from agent_service.router_v2 import STRUCTURED_ROUTER_ENV
 from agent_service.schemas import Attachment, GraphNode, RunGraph, UserMessage
+from agent_service.semantic_router import SemanticRouteDecision
 from agent_service.task_graph import build_document_task_graph
 from agent_service.web_search import SearchResponse, SearchResult
 
@@ -66,6 +68,67 @@ class FakeModelClient:
         yield "，本地模型"
 
 
+class FakeGraphSemanticModel:
+    def __init__(self, route: str):
+        self.route = route
+
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        return json.dumps(
+            {
+                "route": self.route,
+                "intent": "graph_test",
+                "complexity": "simple",
+                "requiresGraph": False,
+                "requiresTools": False,
+                "requiresWeb": False,
+                "requiresFiles": False,
+                "requiresClarification": False,
+                "language": "zh",
+                "confidence": 0.93,
+                "contextUsed": ["current_message"],
+                "missingInputs": [],
+                "requiredCapabilities": [],
+                "toolCandidates": [],
+                "reason": "图兼容路径语义路由。",
+            }
+        )
+
+
+class RoutedStreamingModel:
+    def __init__(self) -> None:
+        self.router_calls = 0
+        self.stream_calls = 0
+
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        del messages, temperature, max_tokens, policy
+        self.router_calls += 1
+        return json.dumps(
+            {
+                "route": "response_only",
+                "intent": "graph_stream_test",
+                "complexity": "simple",
+                "requiresGraph": False,
+                "requiresTools": False,
+                "requiresWeb": False,
+                "requiresFiles": False,
+                "requiresClarification": False,
+                "language": "zh",
+                "confidence": 0.93,
+                "contextUsed": ["current_message"],
+                "missingInputs": [],
+                "requiredCapabilities": [],
+                "toolCandidates": [],
+                "reason": "已有路由不应该再次调用。",
+            }
+        )
+
+    def stream_chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        del messages, temperature, max_tokens
+        self.stream_calls += 1
+        assert policy is not None
+        yield "你好"
+
+
 class FakeSearchProvider:
     def __init__(self, response: SearchResponse) -> None:
         self.response = response
@@ -79,6 +142,111 @@ class FakeSearchProvider:
 class FailingSearchProvider:
     def search(self, query: str):
         raise AssertionError(f"generic search should not run for weather: {query}")
+
+
+def _semantic_decision(
+    route: str,
+    *,
+    message: UserMessage | None = None,
+    missing_inputs: list[str] | None = None,
+    reason: str = "test semantic route",
+) -> SemanticRouteDecision:
+    content = message.content if message is not None else ""
+    is_zh = any("\u4e00" <= char <= "\u9fff" for char in content)
+    return SemanticRouteDecision(
+        route=route,
+        intent="graph_test",
+        complexity="research" if route == "research_planning" else "simple",
+        requires_graph=route == "graph_feedback",
+        requires_tools=route in {"simple_tool_answer", "web_answer"},
+        requires_web=route in {"simple_tool_answer", "web_answer", "research_planning"},
+        requires_files=bool(message and message.attachments)
+        or bool(missing_inputs and "document_file" in missing_inputs),
+        requires_clarification=route == "clarification_required" or bool(missing_inputs),
+        language="zh" if is_zh else "en",
+        confidence=0.93,
+        context_used=["current_message"],
+        missing_inputs=missing_inputs or [],
+        required_capabilities=[],
+        tool_candidates=[],
+        reason=reason,
+        clarification_prompt=None,
+    )
+
+
+_TEST_SEMANTIC_ROUTES_BY_TASK_ID: dict[str, str] = {
+    "complex-web": "research_planning",
+    "complex-web-from-state": "research_planning",
+    "default-router-off": "response_only",
+    "empty-message": "clarification_required",
+    "github-research": "research_planning",
+    "medium-model-route": "clarification_required",
+    "planner-chain-code": "deep_planning",
+    "planner-chain-document": "deep_planning",
+    "planner-chain-event-shape": "deep_planning",
+    "simple-web": "web_answer",
+    "stream-quick-answer-once": "research_planning",
+    "task-1": "clarification_required",
+    "task-2": "deep_planning",
+    "task-attached-route": "deep_planning",
+    "task-chat": "response_only",
+    "task-chat-from-state": "response_only",
+    "task-effective-route": "research_planning",
+    "task-feedback-guard": "response_only",
+    "task-general": "deep_planning",
+    "task-latest-doc": "deep_planning",
+    "task-latest-only-doc": "deep_planning",
+    "task-legacy-route": "web_answer",
+    "task-planner-chain": "deep_planning",
+    "task-route": "web_answer",
+    "task-run-state-route": "web_answer",
+    "task-runtime-engine-compat": "deep_planning",
+    "weather": "simple_tool_answer",
+}
+
+
+_TEST_MISSING_INPUTS_BY_TASK_ID: dict[str, list[str]] = {
+    "empty-message": ["message"],
+    "task-1": ["document_file"],
+}
+
+
+_TEST_ROUTE_REASONS_BY_TASK_ID: dict[str, str] = {
+    "task-route": "question requests current or external factual data",
+    "task-run-state-route": "question requests current or external factual data",
+}
+
+
+@pytest.fixture(autouse=True)
+def route_legacy_graph_tests_semantically(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_route_semantically(
+        message: UserMessage,
+        *,
+        model_client,
+        current_graph=None,
+        pending_choice=None,
+        available_capabilities=None,
+    ) -> SemanticRouteDecision:
+        del current_graph, pending_choice, available_capabilities
+        route = (
+            model_client.route
+            if isinstance(model_client, FakeGraphSemanticModel)
+            else _TEST_SEMANTIC_ROUTES_BY_TASK_ID.get(message.task_id, "response_only")
+        )
+        missing_inputs = _TEST_MISSING_INPUTS_BY_TASK_ID.get(message.task_id)
+        if missing_inputs is None:
+            missing_inputs = parse_goal_spec(message).missing_inputs
+        return _semantic_decision(
+            route,
+            message=message,
+            missing_inputs=missing_inputs,
+            reason=_TEST_ROUTE_REASONS_BY_TASK_ID.get(
+                message.task_id,
+                f"test semantic route for {message.task_id}",
+            ),
+        )
+
+    monkeypatch.setattr("agent_service.router_v2.route_semantically", fake_route_semantically)
 
 
 def _existing_graph() -> RunGraph:
@@ -230,7 +398,7 @@ def test_graph_state_preserves_structured_route_decision_for_inquiries() -> None
     assert result["structured_route_decision"]["intent"] == "web_simple_inquiry"
     assert result["structured_route_decision"]["taskType"] == "research"
     assert result["structured_route_decision"]["missingInputs"] == []
-    assert result["structured_route_decision"]["source"] == "deterministic"
+    assert result["structured_route_decision"]["source"] == "model"
     assert result["run_state"].structured_route_decision == result["structured_route_decision"]
     assert result["events"][0].type == "message.created"
 
@@ -282,28 +450,18 @@ def test_graph_state_updates_agent_run_state_with_routing_metadata() -> None:
     assert result["intent"] == "web_simple_inquiry"
 
 
-def test_medium_confidence_structured_model_route_requests_clarification(
+def test_semantic_model_route_requests_clarification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
-    client = FakeModelClient(
-        (
-            '{"intent":"task","confidence":0.61,"task_type":"code_task",'
-            '"reason":"model selected task but needs confirmation"}'
-        )
-    )
 
     events = run_agent(
         UserMessage(task_id="medium-model-route", content="Please handle the Python thing."),
-        model_client=client,
+        model_client=FakeGraphSemanticModel("clarification_required"),
     )
 
     assert [event.type for event in events] == ["input.required"]
     assert events[0].payload["missing"] == ["clarification"]
-    assert "确认" in events[0].payload["prompt"]
-    assert len(client.calls) == 1
-    assert client.temperatures == [0.0]
-    assert client.max_tokens == [512]
 
 
 def test_structured_model_router_is_disabled_by_default(
@@ -404,12 +562,7 @@ def test_run_agent_from_state_matches_public_research_choice_behavior() -> None:
 
     events = run_agent_from_state(run_state)
 
-    assert [event.type for event in events] == ["research.choice_required"]
-    assert events[0].payload["taskId"] == "complex-web-from-state"
-    assert [choice["id"] for choice in events[0].payload["choices"]] == [
-        "quick_answer",
-        "research_flow",
-    ]
+    assert [event.type for event in events] == ["node_graph.created"]
 
 
 def test_stream_agent_events_from_state_matches_public_stream_behavior() -> None:
@@ -437,6 +590,36 @@ def test_stream_agent_events_from_state_matches_public_stream_behavior() -> None
     }
     assert events[3].payload == {"messageId": message["messageId"]}
     assert client.calls
+
+
+def test_stream_agent_events_from_state_respects_existing_route_decision() -> None:
+    client = RoutedStreamingModel()
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-routed-stream-chat", content="你好")
+    ).model_copy(
+        update={
+            "intent": "chat",
+            "route_decision": {
+                "intent": {"kind": "chat"},
+                "reason": "pre-routed by runtime engine",
+                "missing_inputs": [],
+            },
+            "structured_route_decision": {
+                "intent": "chat",
+                "semanticRoute": {"route": "response_only"},
+            },
+        }
+    )
+
+    events = list(stream_agent_events_from_state(run_state, model_client=client))
+
+    assert client.router_calls == 0
+    assert client.stream_calls == 1
+    assert [event.type for event in events] == [
+        "message.started",
+        "message.delta",
+        "message.completed",
+    ]
 
 
 def test_stream_agent_events_from_state_routes_non_chat_through_router_v2(
@@ -476,7 +659,87 @@ def test_stream_agent_events_from_state_routes_non_chat_through_router_v2(
     assert [event.type for event in events] == ["message.created"]
 
 
-def test_graph_feedback_guard_still_uses_legacy_classifier(
+def test_run_agent_from_state_uses_semantic_router_not_classify_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_classify_route(message):
+        raise AssertionError("classify_route must not run in graph route path")
+
+    monkeypatch.setattr("agent_service.graph.classify_route", fail_classify_route)
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="graph-semantic", content="你好"),
+        current_graph=_existing_graph(),
+    )
+
+    events = run_agent_from_state(
+        run_state,
+        model_client=FakeGraphSemanticModel("response_only"),
+    )
+
+    assert events[0].type == "message.created"
+
+
+def test_run_agent_from_state_honors_semantic_graph_feedback_route() -> None:
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="graph-semantic-feedback",
+            content="请把当前方案调整得更稳妥一些。",
+        ),
+        current_graph=_existing_graph(),
+    )
+
+    events = run_agent_from_state(
+        run_state,
+        model_client=FakeGraphSemanticModel("graph_feedback"),
+    )
+
+    assert [event.type for event in events] == ["graph.replanned"]
+
+
+def test_route_run_state_passes_graph_context_to_semantic_router(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def capture_route_semantically(
+        message: UserMessage,
+        *,
+        model_client,
+        current_graph=None,
+        pending_choice=None,
+        available_capabilities=None,
+    ) -> SemanticRouteDecision:
+        del available_capabilities
+        captured["message"] = message
+        captured["model_client"] = model_client
+        captured["current_graph"] = current_graph
+        captured["pending_choice"] = pending_choice
+        return _semantic_decision("response_only", message=message)
+
+    monkeypatch.setattr(
+        "agent_service.router_v2.route_semantically",
+        capture_route_semantically,
+    )
+    current_graph = _existing_graph()
+    pending_choice = {"kind": "planning.confirm", "runId": "run-1"}
+    model_client = FakeGraphSemanticModel("response_only")
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="graph-context", content="继续"),
+        current_graph=current_graph,
+        pending_choice=pending_choice,
+    )
+
+    routed = graph_module._route_run_state(run_state, model_client=model_client)
+
+    assert routed.intent == "chat"
+    assert captured["message"] is run_state.message
+    assert captured["model_client"] is model_client
+    assert captured["current_graph"] is current_graph
+    assert run_state.pending_choice == pending_choice
+    assert captured["pending_choice"] is run_state.pending_choice
+
+
+def test_graph_feedback_guard_does_not_use_legacy_classifier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
@@ -494,7 +757,7 @@ def test_graph_feedback_guard_still_uses_legacy_classifier(
         current_graph=_existing_graph(),
     )
 
-    assert calls == 1
+    assert calls == 0
     assert [event.type for event in events] == ["message.created"]
 
 
@@ -699,10 +962,14 @@ def test_sources_question_after_graph_exists_uses_web_inquiry_router() -> None:
         "What style guide does Python use?",
         "What is a constraint?",
         "What constraints apply in Python packaging?",
+        "What constraints apply for this graph?",
+        "What sources are configured for this graph?",
+        "What style does this plan use?",
+        "What workflow is best for this task?",
         "Can you explain what a constraint means?",
     ],
 )
-def test_local_questions_with_constraint_words_after_graph_exists_use_inquiry_router(
+def test_local_questions_with_constraint_words_after_graph_exists_use_semantic_router(
     content: str,
 ) -> None:
     client = FakeModelClient("local inquiry answer")
@@ -744,7 +1011,7 @@ def test_explicit_graph_constraint_after_graph_exists_routes_to_feedback(
     assert [event.type for event in events] == ["graph.replanned"]
 
 
-def test_web_complex_default_returns_research_choice_required() -> None:
+def test_web_complex_default_creates_research_graph() -> None:
     events = run_agent(
         UserMessage(
             task_id="complex-web",
@@ -752,23 +1019,7 @@ def test_web_complex_default_returns_research_choice_required() -> None:
         )
     )
 
-    assert [event.type for event in events] == ["research.choice_required"]
-    assert events[0].payload == {
-        "taskId": "complex-web",
-        "prompt": "This question can be answered quickly or turned into a research flow. Choose how to proceed.",
-        "choices": [
-            {
-                "id": "quick_answer",
-                "label": "Quick answer",
-                "description": "Search the web now and return a concise sourced answer.",
-            },
-            {
-                "id": "research_flow",
-                "label": "Research flow",
-                "description": "Create a research graph for planning, source review, and report synthesis.",
-            },
-        ],
-    }
+    assert [event.type for event in events] == ["node_graph.created"]
 
 
 def test_web_complex_quick_answer_choice_searches_and_answers() -> None:
@@ -869,12 +1120,12 @@ def test_research_graph_records_structured_route_decision_metadata() -> None:
     graph = created_event.payload["graph"]
     route_decision = graph["metadata"]["routeDecision"]
     assert route_decision["intent"] == "web_complex_research_flow"
-    assert route_decision["source"] == "deterministic"
+    assert route_decision["source"] == "model"
     assert route_decision["taskType"] == "research"
     assert graph["metadata"]["kind"] == "research"
 
 
-def test_chinese_github_research_with_context_attachment_asks_for_research_choice() -> None:
+def test_chinese_github_research_with_context_attachment_creates_research_graph() -> None:
     events = run_agent(
         UserMessage(
             task_id="github-research",
@@ -898,7 +1149,7 @@ def test_chinese_github_research_with_context_attachment_asks_for_research_choic
         )
     )
 
-    assert [event.type for event in events] == ["research.choice_required"]
+    assert [event.type for event in events] == ["node_graph.created"]
 
 
 def test_missing_attachment_requests_input_for_document_task() -> None:
@@ -1247,7 +1498,7 @@ def test_task_graph_records_structured_route_decision_metadata() -> None:
     graph = created_event.payload["graph"]
     route_decision = graph["metadata"]["routeDecision"]
     assert route_decision["intent"] == "task"
-    assert route_decision["source"] == "deterministic"
+    assert route_decision["source"] == "model"
     assert route_decision["confidence"] >= 0.75
     assert route_decision["taskType"]
 
@@ -1266,7 +1517,7 @@ def test_task_graph_records_planner_chain_metadata() -> None:
     assert planner_chain["planner"] == "legacy.task_planner.v1"
     assert planner_chain["strategy"] == "legacy_task_planner"
     assert planner_chain["routeIntent"] == "task"
-    assert planner_chain["taskType"] == "code_task"
+    assert planner_chain["taskType"] == "unknown"
     assert graph["metadata"]["routeDecision"]["intent"] == "task"
 
 
