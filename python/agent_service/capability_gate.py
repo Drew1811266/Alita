@@ -20,18 +20,35 @@ def evaluate_route_capabilities(
     *,
     available_capabilities: list[str],
 ) -> CapabilityGateResult:
+    missing_inputs = []
     if decision.requires_files and not message.attachments:
-        return CapabilityGateResult(
-            allowed=False,
-            reason="missing required file attachment",
-            missing_inputs=["attachment"],
-            user_message="请先添加需要处理的文档。",
-        )
+        missing_inputs.append("attachment")
 
     missing = _missing_tool_candidates(
         decision.tool_candidates,
         available_capabilities,
     )
+    if missing_inputs and missing:
+        return CapabilityGateResult(
+            allowed=False,
+            reason="missing required file attachment and route capabilities",
+            missing_inputs=missing_inputs,
+            missing_capabilities=missing,
+            user_message=(
+                "请先添加需要处理的文档；当前任务还需要尚未接入的能力："
+                + "、".join(missing)
+                + "。请补充文档并调整任务目标，或等待该能力接入后再执行。"
+            ),
+        )
+
+    if missing_inputs:
+        return CapabilityGateResult(
+            allowed=False,
+            reason="missing required file attachment",
+            missing_inputs=missing_inputs,
+            user_message="请先添加需要处理的文档。",
+        )
+
     if missing:
         return CapabilityGateResult(
             allowed=False,
@@ -51,11 +68,16 @@ def _missing_tool_candidates(
     tool_candidates: list[str],
     available_capabilities: list[str],
 ) -> list[str]:
-    available = set(available_capabilities)
+    available = {
+        capability.strip()
+        for capability in available_capabilities
+        if capability.strip()
+    }
     missing: list[str] = []
     seen: set[str] = set()
     for tool in tool_candidates:
-        if tool and tool not in available and tool not in seen:
-            missing.append(tool)
-            seen.add(tool)
+        normalized = tool.strip()
+        if normalized and normalized not in available and normalized not in seen:
+            missing.append(normalized)
+            seen.add(normalized)
     return missing

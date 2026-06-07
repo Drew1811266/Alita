@@ -68,3 +68,61 @@ def test_capability_gate_blocks_required_file_without_attachment() -> None:
     assert result.allowed is False
     assert result.missing_inputs == ["attachment"]
     assert result.user_message == "请先添加需要处理的文档。"
+
+
+def test_capability_gate_reports_missing_attachment_and_capability() -> None:
+    result = evaluate_route_capabilities(
+        _decision(
+            route="deep_planning",
+            requiresGraph=True,
+            requiresTools=True,
+            requiresWeb=False,
+            requiresFiles=True,
+            requiredCapabilities=["document.read"],
+            toolCandidates=["document.read_write"],
+            reason="需要处理附件。",
+        ),
+        UserMessage(task_id="cap-file-tool", content="整理这个文档"),
+        available_capabilities=[],
+    )
+
+    assert result.allowed is False
+    assert result.missing_inputs == ["attachment"]
+    assert result.missing_capabilities == ["document.read_write"]
+    assert "文档" in result.user_message
+    assert "document.read_write" in result.user_message
+
+
+def test_capability_gate_normalizes_whitespace_and_skips_empty_candidates() -> None:
+    result = evaluate_route_capabilities(
+        _decision(toolCandidates=[" web.search.parallel ", "", "   "]),
+        UserMessage(task_id="cap-normalized", content="查一下最新版本"),
+        available_capabilities=["web.search.parallel"],
+    )
+
+    assert result.allowed is True
+    assert result.missing_capabilities == []
+
+
+def test_capability_gate_deduplicates_missing_candidates_in_order() -> None:
+    result = evaluate_route_capabilities(
+        _decision(
+            toolCandidates=[
+                "web.search.parallel",
+                " document.read_write ",
+                "web.search.parallel",
+                "",
+                "document.read_write",
+                "calendar.lookup",
+            ],
+        ),
+        UserMessage(task_id="cap-dedupe", content="查一下最新版本"),
+        available_capabilities=[],
+    )
+
+    assert result.allowed is False
+    assert result.missing_capabilities == [
+        "web.search.parallel",
+        "document.read_write",
+        "calendar.lookup",
+    ]
