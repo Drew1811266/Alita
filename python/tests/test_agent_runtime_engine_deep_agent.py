@@ -515,6 +515,56 @@ def test_semantic_deep_planning_enters_deep_agent() -> None:
     ]
 
 
+def test_semantic_research_planning_quick_answer_enters_deep_agent() -> None:
+    deep_calls: list[UserMessage] = []
+    legacy_calls: list[AgentRunState] = []
+
+    def legacy_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_calls.append(run_state)
+        raise AssertionError("semantic research_planning must not use legacy response")
+
+    def deep_runtime(message: UserMessage, **kwargs):
+        del kwargs
+        deep_calls.append(message)
+        return [
+            AgentEvent(
+                type="node_graph.created",
+                payload={
+                    "graph": {
+                        "graphId": "semantic-research-plan",
+                        "nodes": [],
+                        "edges": [],
+                        "metadata": {"generatedBy": "deep_agent_runtime"},
+                    }
+                },
+            )
+        ]
+
+    engine = AgentRuntimeEngine(
+        route_runner=legacy_runner,
+        deep_runtime_runner=deep_runtime,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="semantic-research", content="帮我快速调研这个主题"),
+        inquiry_choice="quick_answer",
+    ).model_copy(
+        update={"project_path": "D:/Project/demo.alita", "run_id": "run-research"}
+    )
+
+    result = engine.run_from_state(
+        run_state,
+        model_client=FakeSemanticModel("research_planning"),
+    )
+
+    assert len(deep_calls) == 1
+    assert legacy_calls == []
+    assert [event.type for event in result.events] == [
+        "runtime.run_started",
+        "node_graph.created",
+    ]
+
+
 def test_semantic_response_only_missing_capability_routes_to_missing_input() -> None:
     deep_calls: list[UserMessage] = []
     legacy_calls: list[AgentRunState] = []

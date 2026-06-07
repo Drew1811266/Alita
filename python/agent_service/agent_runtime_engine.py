@@ -842,6 +842,8 @@ def _run_state_for_pre_deep_response(
         "missing_input",
     }:
         return None
+    if not _semantic_route_allows_pre_deep_response(decision):
+        return None
     if _semantic_capability_blocked(run_state, decision):
         return run_state.model_copy(
             update={
@@ -858,6 +860,17 @@ def _run_state_for_pre_deep_response(
             "structured_route_decision": decision.to_payload(),
         }
     )
+
+
+def _semantic_route_allows_pre_deep_response(decision: RouterV2Decision) -> bool:
+    route = str(decision.structured_route.get("route") or "")
+    return route in {
+        "response_only",
+        "local_answer",
+        "simple_tool_answer",
+        "web_answer",
+        "clarification_required",
+    }
 
 
 def _semantic_capability_blocked(
