@@ -13,13 +13,17 @@ from agent_service.agent_runtime_engine import (
 )
 from agent_service.runtime_store import RuntimeStore
 from agent_service.model_client import ChatDiagnosticsResponse, ModelCallDiagnostics
-from agent_service.schemas import AgentEvent, UserMessage
+from agent_service.schemas import AgentEvent, RunGraph, UserMessage
 
 
 class FakeDeepModel:
     def __init__(self, payloads: list[dict[str, Any]]) -> None:
         self.payloads = payloads
         self.calls = 0
+
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        del messages, temperature, max_tokens, policy
+        return FakeSemanticModel("deep_planning").chat([])
 
     def chat_with_diagnostics(self, messages, *, policy=None, **kwargs):
         del messages, policy, kwargs
@@ -36,6 +40,45 @@ class FakeDeepModel:
                 fallback_used="none",
                 effective_mode="deep",
             ),
+        )
+
+
+class FakeSemanticModel:
+    def __init__(
+        self,
+        route: str,
+        *,
+        tool_candidates: list[str] | None = None,
+    ):
+        self.route = route
+        self.tool_candidates = list(tool_candidates or [])
+        self.calls = 0
+
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        del messages, temperature, max_tokens, policy
+        self.calls += 1
+        return json.dumps(
+            {
+                "route": self.route,
+                "intent": "runtime_test",
+                "complexity": (
+                    "simple" if self.route == "response_only" else "multi_step"
+                ),
+                "requiresGraph": self.route
+                in {"deep_planning", "research_planning"},
+                "requiresTools": self.route
+                in {"web_answer", "deep_planning", "research_planning"},
+                "requiresWeb": self.route in {"web_answer", "research_planning"},
+                "requiresFiles": False,
+                "requiresClarification": False,
+                "language": "zh",
+                "confidence": 0.94,
+                "contextUsed": ["current_message"],
+                "missingInputs": [],
+                "requiredCapabilities": [],
+                "toolCandidates": list(self.tool_candidates),
+                "reason": "语义路由测试。",
+            }
         )
 
 
@@ -86,6 +129,433 @@ def _plan_payload() -> dict[str, Any]:
         "risks": [],
         "verification_plan": ["Check report sections."],
     }
+
+
+def _existing_graph() -> RunGraph:
+    return RunGraph(
+        graphId="existing-graph",
+        nodes=[
+            {
+                "nodeId": "task-analysis",
+                "nodeType": "planning",
+                "displayName": "Task Analysis",
+                "status": "completed",
+                "summary": "Existing plan.",
+                "createdBy": "agent",
+                "position": {"x": 0, "y": 0},
+            }
+        ],
+        edges=[],
+    )
+
+
+def test_current_graph_feedback_bypasses_deep_agent_runtime() -> None:
+    deep_calls: list[UserMessage] = []
+    legacy_calls: list[AgentRunState] = []
+
+    def deep_runtime(message: UserMessage, **kwargs):
+        del kwargs
+        deep_calls.append(message)
+        raise AssertionError("graph feedback must be handled before Deep Agent")
+
+    def legacy_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_calls.append(run_state)
+        raise AssertionError("graph feedback must not use legacy response fallback")
+
+    engine = AgentRuntimeEngine(
+        route_runner=legacy_runner,
+        deep_runtime_runner=deep_runtime,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-engine-feedback",
+            content="Add constraint: use only CSV sources.",
+        ),
+        current_graph=_existing_graph(),
+    ).model_copy(
+        update={
+            "project_path": "D:/Project/demo.alita",
+            "run_id": "run-feedback",
+            "thread_id": "thread-feedback",
+        }
+    )
+
+    result = engine.run_from_state(run_state)
+
+    assert deep_calls == []
+    assert legacy_calls == []
+    assert [event.type for event in result.events] == [
+        "runtime.run_started",
+        "runtime.state_delta",
+        "graph.replanned",
+    ]
+    assert result.events[1].payload["delta"]["decision"]["kind"] == "graph_feedback"
+    assert result.state.stage == "plan"
+
+
+def test_streaming_current_graph_feedback_bypasses_deep_agent_runtime(
+    tmp_path,
+) -> None:
+    runtime_store = RuntimeStore(
+        project_path=str(tmp_path / "demo.alita"),
+        run_id="run-stream-feedback-preflight",
+    )
+    deep_calls: list[UserMessage] = []
+    legacy_calls: list[AgentRunState] = []
+
+    def deep_stream(message: UserMessage, **kwargs):
+        del kwargs
+        deep_calls.append(message)
+        raise AssertionError("graph feedback must be handled before Deep Agent")
+
+    def legacy_stream(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_calls.append(run_state)
+        raise AssertionError("graph feedback must not use legacy stream fallback")
+
+    engine = AgentRuntimeEngine(
+        deep_runtime_stream_runner=deep_stream,
+        stream_runner=legacy_stream,
+        runtime_store=runtime_store,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-stream-feedback-preflight",
+            content="Add constraint: use only CSV sources.",
+        ),
+        current_graph=_existing_graph(),
+    ).model_copy(
+        update={
+            "project_path": str(tmp_path / "demo.alita"),
+            "run_id": "run-stream-feedback-preflight",
+            "thread_id": "thread-stream-feedback-preflight",
+        }
+    )
+
+    events = list(engine.stream_from_state(run_state))
+
+    assert deep_calls == []
+    assert legacy_calls == []
+    assert [event.type for event in events] == [
+        "runtime.run_started",
+        "runtime.state_delta",
+        "graph.replanned",
+    ]
+    restored = runtime_store.read_state()
+    assert restored is not None
+    assert restored.stage == "plan"
+    deltas = runtime_store.read_deltas()
+    assert deltas[-1].decision["kind"] == "graph_feedback"
+
+
+def test_empty_input_returns_deterministic_chinese_input_required() -> None:
+    deep_calls: list[UserMessage] = []
+
+    def deep_runtime(message: UserMessage, **kwargs):
+        del kwargs
+        deep_calls.append(message)
+        raise AssertionError("empty input must not call Deep Agent")
+
+    engine = AgentRuntimeEngine(deep_runtime_runner=deep_runtime)
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-empty", content="   ")
+    ).model_copy(update={"project_path": "D:/Project/demo.alita", "run_id": "run-empty"})
+
+    result = engine.run_from_state(run_state)
+
+    assert deep_calls == []
+    assert [event.type for event in result.events] == [
+        "runtime.run_started",
+        "runtime.state_delta",
+        "input.required",
+    ]
+    assert result.events[-1].payload == {
+        "prompt": "请先输入你想让我处理的问题或任务。",
+        "missing": ["message"],
+    }
+    assert result.state.stage == "interrupted"
+
+
+def test_missing_document_attachment_returns_deterministic_chinese_input_required() -> None:
+    deep_calls: list[UserMessage] = []
+
+    def deep_runtime(message: UserMessage, **kwargs):
+        del kwargs
+        deep_calls.append(message)
+        raise AssertionError("missing document input must not call Deep Agent")
+
+    engine = AgentRuntimeEngine(deep_runtime_runner=deep_runtime)
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-missing-doc", content="帮我把这个文档整理成中文报告")
+    ).model_copy(
+        update={"project_path": "D:/Project/demo.alita", "run_id": "run-missing-doc"}
+    )
+
+    result = engine.run_from_state(run_state)
+
+    assert deep_calls == []
+    assert [event.type for event in result.events] == [
+        "runtime.run_started",
+        "runtime.state_delta",
+        "input.required",
+    ]
+    assert result.events[-1].payload == {
+        "prompt": "请先添加需要处理的文档。",
+        "missing": ["attachment"],
+    }
+    assert result.state.stage == "interrupted"
+
+
+def test_plain_greeting_bypasses_deep_agent_and_uses_chat_route() -> None:
+    deep_calls: list[UserMessage] = []
+    legacy_calls: list[AgentRunState] = []
+
+    def deep_runtime(message: UserMessage, **kwargs):
+        del kwargs
+        deep_calls.append(message)
+        raise AssertionError("plain chat must not enter Deep Agent planning")
+
+    def legacy_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_calls.append(run_state)
+        return [
+            AgentEvent(
+                type="message.created",
+                payload={
+                    "message": {
+                        "messageId": "assistant-hi",
+                        "role": "assistant",
+                        "content": "你好，有什么我可以帮你？",
+                        "attachments": [],
+                    }
+                },
+            )
+        ]
+
+    engine = AgentRuntimeEngine(
+        route_runner=legacy_runner,
+        deep_runtime_runner=deep_runtime,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-greeting", content="你好")
+    ).model_copy(
+        update={"project_path": "D:/Project/demo.alita", "run_id": "run-greeting"}
+    )
+
+    result = engine.run_from_state(
+        run_state,
+        model_client=FakeSemanticModel("response_only"),
+    )
+
+    assert deep_calls == []
+    assert len(legacy_calls) == 1
+    assert legacy_calls[0].intent == "chat"
+    assert [event.type for event in result.events] == [
+        "runtime.run_started",
+        "runtime.state_delta",
+        "message.created",
+    ]
+    assert result.events[-1].payload["message"]["content"].startswith("你好")
+    assert result.state.stage == "plan"
+
+
+def test_streaming_plain_greeting_bypasses_deep_agent_and_uses_chat_route(
+    tmp_path,
+) -> None:
+    runtime_store = RuntimeStore(
+        project_path=str(tmp_path / "demo.alita"),
+        run_id="run-stream-greeting",
+    )
+    deep_calls: list[UserMessage] = []
+    legacy_calls: list[AgentRunState] = []
+
+    def deep_stream(message: UserMessage, **kwargs):
+        del kwargs
+        deep_calls.append(message)
+        raise AssertionError("plain chat must not enter Deep Agent planning")
+
+    def legacy_stream(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_calls.append(run_state)
+        yield AgentEvent(
+            type="message.created",
+            payload={
+                "message": {
+                    "messageId": "assistant-hi",
+                    "role": "assistant",
+                    "content": "你好，有什么我可以帮你？",
+                    "attachments": [],
+                }
+            },
+        )
+
+    engine = AgentRuntimeEngine(
+        deep_runtime_stream_runner=deep_stream,
+        stream_runner=legacy_stream,
+        runtime_store=runtime_store,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-stream-greeting", content="你好")
+    ).model_copy(
+        update={
+            "project_path": str(tmp_path / "demo.alita"),
+            "run_id": "run-stream-greeting",
+            "thread_id": "thread-stream-greeting",
+        }
+    )
+
+    events = list(
+        engine.stream_from_state(
+            run_state,
+            model_client=FakeSemanticModel("response_only"),
+        )
+    )
+
+    assert deep_calls == []
+    assert len(legacy_calls) == 1
+    assert legacy_calls[0].intent == "chat"
+    assert [event.type for event in events] == [
+        "runtime.run_started",
+        "message.created",
+        "runtime.state_delta",
+    ]
+    restored = runtime_store.read_state()
+    assert restored is not None
+    assert restored.stage == "plan"
+
+
+def test_plain_greeting_route_is_decided_by_semantic_model_not_keyword(
+    monkeypatch,
+) -> None:
+    def fail_deterministic_route(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("deterministic_route must not decide natural-language route")
+
+    monkeypatch.setattr(
+        "agent_service.agent_runtime_engine.deterministic_route",
+        fail_deterministic_route,
+        raising=False,
+    )
+    deep_calls: list[UserMessage] = []
+    legacy_calls: list[AgentRunState] = []
+
+    def deep_runtime(message: UserMessage, **kwargs):
+        del kwargs
+        deep_calls.append(message)
+        raise AssertionError("semantic response_only must not enter Deep Agent")
+
+    def legacy_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_calls.append(run_state)
+        return [
+            AgentEvent(
+                type="message.created",
+                payload={"message": {"content": "你好，我在。"}},
+            )
+        ]
+
+    engine = AgentRuntimeEngine(
+        route_runner=legacy_runner,
+        deep_runtime_runner=deep_runtime,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="semantic-runtime-hi", content="你好")
+    ).model_copy(
+        update={"project_path": "D:/Project/demo.alita", "run_id": "run-hi"}
+    )
+
+    result = engine.run_from_state(
+        run_state,
+        model_client=FakeSemanticModel("response_only"),
+    )
+
+    assert deep_calls == []
+    assert len(legacy_calls) == 1
+    assert legacy_calls[0].intent == "chat"
+    assert result.state.stage == "plan"
+
+
+def test_semantic_deep_planning_enters_deep_agent() -> None:
+    deep_calls: list[UserMessage] = []
+
+    def deep_runtime(message: UserMessage, **kwargs):
+        del kwargs
+        deep_calls.append(message)
+        return [
+            AgentEvent(
+                type="node_graph.created",
+                payload={
+                    "graph": {
+                        "graphId": "semantic-deep-plan",
+                        "nodes": [],
+                        "edges": [],
+                        "metadata": {"generatedBy": "deep_agent_runtime"},
+                    }
+                },
+            )
+        ]
+
+    engine = AgentRuntimeEngine(deep_runtime_runner=deep_runtime)
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="semantic-task", content="帮我生成一份调研报告")
+    ).model_copy(
+        update={"project_path": "D:/Project/demo.alita", "run_id": "run-task"}
+    )
+
+    result = engine.run_from_state(
+        run_state,
+        model_client=FakeSemanticModel("deep_planning"),
+    )
+
+    assert len(deep_calls) == 1
+    assert [event.type for event in result.events] == [
+        "runtime.run_started",
+        "node_graph.created",
+    ]
+
+
+def test_semantic_response_only_missing_capability_routes_to_missing_input() -> None:
+    deep_calls: list[UserMessage] = []
+    legacy_calls: list[AgentRunState] = []
+
+    def deep_runtime(message: UserMessage, **kwargs):
+        del kwargs
+        deep_calls.append(message)
+        raise AssertionError("blocked semantic route must not enter Deep Agent")
+
+    def legacy_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_calls.append(run_state)
+        return [
+            AgentEvent(
+                type="input.required",
+                payload={"missing": ["capability"]},
+            )
+        ]
+
+    engine = AgentRuntimeEngine(
+        route_runner=legacy_runner,
+        deep_runtime_runner=deep_runtime,
+    )
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="semantic-capability-block", content="你好")
+    ).model_copy(
+        update={"project_path": "D:/Project/demo.alita", "run_id": "run-capability"}
+    )
+
+    result = engine.run_from_state(
+        run_state,
+        model_client=FakeSemanticModel(
+            "response_only",
+            tool_candidates=["unavailable.semantic.capability"],
+        ),
+    )
+
+    assert deep_calls == []
+    assert len(legacy_calls) == 1
+    assert legacy_calls[0].intent == "missing_input"
+    assert result.state.stage == "plan"
 
 
 def test_runtime_engine_task_request_uses_deep_agent_runtime_not_legacy_runner() -> None:
@@ -178,7 +648,12 @@ def test_runtime_engine_stream_uses_deep_agent_stream_runner_without_legacy_fall
         }
     )
 
-    events = list(engine.stream_from_state(run_state, model_client=object()))
+    events = list(
+        engine.stream_from_state(
+            run_state,
+            model_client=FakeSemanticModel("deep_planning"),
+        )
+    )
 
     assert legacy_route_calls == []
     assert legacy_stream_calls == []
@@ -224,7 +699,10 @@ def test_runtime_engine_forwards_disabled_tool_ids_to_deep_runtime() -> None:
         }
     )
 
-    result = engine.run_from_state(run_state)
+    result = engine.run_from_state(
+        run_state,
+        model_client=FakeSemanticModel("deep_planning"),
+    )
 
     assert len(deep_calls) == 1
     assert deep_calls[0]["disabled_tool_ids"] == ["document.markitdown_convert"]
@@ -262,7 +740,12 @@ def test_runtime_engine_forwards_disabled_tool_ids_to_deep_stream_runtime() -> N
         }
     )
 
-    events = list(engine.stream_from_state(run_state))
+    events = list(
+        engine.stream_from_state(
+            run_state,
+            model_client=FakeSemanticModel("deep_planning"),
+        )
+    )
 
     assert len(deep_stream_calls) == 1
     assert deep_stream_calls[0]["disabled_tool_ids"] == [
@@ -287,13 +770,17 @@ def test_runtime_engine_simple_request_passes_reasoning_gate_before_legacy_answe
     model = FakeDeepModel([_reasoning_payload("simple_answer")])
     engine = AgentRuntimeEngine(route_runner=legacy_runner)
     run_state = AgentRunState.from_user_message(
-        UserMessage(task_id="task-simple-gate", content="Say hello.")
+        UserMessage(
+            task_id="task-simple-gate",
+            content="Create a one sentence greeting for the user.",
+        )
     ).model_copy(update={"project_path": "D:/Project/demo.alita", "run_id": "run-simple"})
 
     result = engine.run_from_state(run_state, model_client=model)
 
     assert model.calls == 1
     assert len(legacy_calls) == 1
+    assert legacy_calls[0].intent == "chat"
     assert [event.type for event in result.events] == [
         "runtime.run_started",
         "reasoning.decision_created",
@@ -350,7 +837,10 @@ def test_deep_agent_incomplete_graph_task_stream_does_not_fall_back_to_legacy_gr
         update={"project_path": "D:/Project/demo.alita", "run_id": "run-incomplete"}
     )
 
-    result = engine.run_from_state(run_state)
+    result = engine.run_from_state(
+        run_state,
+        model_client=FakeSemanticModel("deep_planning"),
+    )
 
     assert legacy_calls == []
     assert [event.type for event in result.events] == [
@@ -387,7 +877,10 @@ def test_simple_answer_legacy_response_path_blocks_legacy_graph_events() -> None
     model = FakeDeepModel([_reasoning_payload("simple_answer")])
     engine = AgentRuntimeEngine(route_runner=legacy_runner)
     run_state = AgentRunState.from_user_message(
-        UserMessage(task_id="task-simple-block-graph", content="Say hello.")
+        UserMessage(
+            task_id="task-simple-block-graph",
+            content="Create a one sentence greeting for the user.",
+        )
     ).model_copy(
         update={"project_path": "D:/Project/demo.alita", "run_id": "run-simple-block"}
     )
@@ -399,6 +892,51 @@ def test_simple_answer_legacy_response_path_blocks_legacy_graph_events() -> None
     assert result.events[-2].type == "runtime.legacy_graph_blocked"
     assert result.events[-1].type == "task.failed"
     assert result.events[-1].payload["errorCode"] == "legacy_graph_blocked"
+
+
+def test_bounded_tool_action_does_not_fall_back_to_legacy_graph() -> None:
+    legacy_calls: list[AgentRunState] = []
+
+    def legacy_runner(run_state: AgentRunState, **kwargs):
+        del kwargs
+        legacy_calls.append(run_state)
+        return [
+            AgentEvent(
+                type="node_graph.created",
+                payload={"graph": {"graphId": "legacy-tool-graph"}},
+            )
+        ]
+
+    model = FakeDeepModel(
+        [
+            {
+                **_reasoning_payload("tool_action"),
+                "complexity": "bounded_tool",
+            }
+        ]
+    )
+    engine = AgentRuntimeEngine(route_runner=legacy_runner)
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-tool-action", content="Read this file and create a PDF.")
+    ).model_copy(
+        update={"project_path": "D:/Project/demo.alita", "run_id": "run-tool-action"}
+    )
+
+    result = engine.run_from_state(run_state, model_client=model)
+
+    assert legacy_calls == []
+    assert [event.type for event in result.events] == [
+        "runtime.run_started",
+        "reasoning.decision_created",
+        "reasoning.completed",
+        "runtime.state_delta",
+        "runtime.deep_agent_product_path_blocked",
+        "task.failed",
+    ]
+    assert result.events[-2].payload["reason"] == (
+        "deep_agent_runtime_incomplete_for:tool_action"
+    )
+    assert result.events[-1].payload["errorCode"] == "deep_agent_product_path_incomplete"
 
 
 def test_simple_answer_legacy_response_path_blocks_graph_feedback_events() -> None:
@@ -418,7 +956,10 @@ def test_simple_answer_legacy_response_path_blocks_graph_feedback_events() -> No
     model = FakeDeepModel([_reasoning_payload("simple_answer")])
     engine = AgentRuntimeEngine(route_runner=legacy_runner)
     run_state = AgentRunState.from_user_message(
-        UserMessage(task_id="task-simple-block-feedback", content="Say hello.")
+        UserMessage(
+            task_id="task-simple-block-feedback",
+            content="Create a one sentence greeting for the user.",
+        )
     ).model_copy(
         update={"project_path": "D:/Project/demo.alita", "run_id": "run-feedback-block"}
     )
@@ -479,7 +1020,10 @@ def test_deep_agent_planning_failure_does_not_call_legacy_route_runner() -> None
         }
     )
 
-    result = engine.run_from_state(run_state)
+    result = engine.run_from_state(
+        run_state,
+        model_client=FakeSemanticModel("deep_planning"),
+    )
 
     assert legacy_calls == []
     assert result.events[-1].type == "planning.failed"
@@ -529,7 +1073,12 @@ def test_streaming_deep_agent_planning_failure_persists_failed_state(tmp_path) -
         }
     )
 
-    events = list(engine.stream_from_state(run_state))
+    events = list(
+        engine.stream_from_state(
+            run_state,
+            model_client=FakeSemanticModel("deep_planning"),
+        )
+    )
 
     assert legacy_stream_calls == []
     assert events[-1].type == "planning.failed"
@@ -582,7 +1131,12 @@ def test_streaming_deep_agent_incomplete_graph_task_blocks_and_persists_delta(
         }
     )
 
-    events = list(engine.stream_from_state(run_state))
+    events = list(
+        engine.stream_from_state(
+            run_state,
+            model_client=FakeSemanticModel("deep_planning"),
+        )
+    )
 
     assert legacy_stream_calls == []
     assert [event.type for event in events] == [
@@ -629,7 +1183,10 @@ def test_streaming_simple_answer_suppresses_legacy_graph_event_and_fails(
         runtime_store=runtime_store,
     )
     run_state = AgentRunState.from_user_message(
-        UserMessage(task_id="task-stream-simple-block", content="Say hello.")
+        UserMessage(
+            task_id="task-stream-simple-block",
+            content="Create a one sentence greeting for the user.",
+        )
     ).model_copy(
         update={
             "project_path": str(tmp_path / "demo.alita"),
@@ -638,7 +1195,12 @@ def test_streaming_simple_answer_suppresses_legacy_graph_event_and_fails(
         }
     )
 
-    events = list(engine.stream_from_state(run_state))
+    events = list(
+        engine.stream_from_state(
+            run_state,
+            model_client=FakeSemanticModel("deep_planning"),
+        )
+    )
 
     assert all(event.type != "node_graph.created" for event in events)
     assert [event.type for event in events] == [
@@ -689,7 +1251,10 @@ def test_streaming_simple_answer_suppresses_legacy_graph_feedback_and_fails(
         runtime_store=runtime_store,
     )
     run_state = AgentRunState.from_user_message(
-        UserMessage(task_id="task-stream-feedback-block", content="Say hello.")
+        UserMessage(
+            task_id="task-stream-feedback-block",
+            content="Create a one sentence greeting for the user.",
+        )
     ).model_copy(
         update={
             "project_path": str(tmp_path / "demo.alita"),
@@ -698,7 +1263,12 @@ def test_streaming_simple_answer_suppresses_legacy_graph_feedback_and_fails(
         }
     )
 
-    events = list(engine.stream_from_state(run_state))
+    events = list(
+        engine.stream_from_state(
+            run_state,
+            model_client=FakeSemanticModel("deep_planning"),
+        )
+    )
 
     assert all(
         event.type
