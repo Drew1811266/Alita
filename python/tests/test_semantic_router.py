@@ -5,8 +5,10 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from agent_service.schemas import GraphNode, RunGraph, UserMessage
+from agent_service.schemas import Attachment, GraphNode, RunGraph, UserMessage
 from agent_service.semantic_router import (
+    SEMANTIC_ROUTER_MAX_TOKENS,
+    SEMANTIC_ROUTER_TIMEOUT_SECONDS,
     SemanticRouteDecision,
     build_semantic_router_messages,
     parse_semantic_route_response,
@@ -38,6 +40,26 @@ class FakeSemanticRouterModel:
         return self.responses.pop(0)
 
 
+class TimeoutAwareSemanticRouterModel(FakeSemanticRouterModel):
+    def chat(
+        self,
+        messages,
+        *,
+        temperature=None,
+        max_tokens=None,
+        policy=None,
+        timeout_seconds=None,
+    ) -> str:
+        result = super().chat(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            policy=policy,
+        )
+        self.calls[-1]["timeout_seconds"] = timeout_seconds
+        return result
+
+
 def _semantic_response(route: str, confidence: float = 0.95) -> str:
     return json.dumps(
         {
@@ -58,6 +80,19 @@ def _semantic_response(route: str, confidence: float = 0.95) -> str:
             "reason": "用户是在问候。",
         }
     )
+
+
+def test_route_semantically_accepts_compact_route_code() -> None:
+    model = FakeSemanticRouterModel(["A"])
+
+    decision = route_semantically(
+        UserMessage(task_id="semantic-route-code", content="你好"),
+        model_client=model,
+    )
+
+    assert decision.route == "response_only"
+    assert decision.intent == "route_code"
+    assert decision.language == "zh"
 
 
 def test_semantic_route_decision_payload_is_frontend_safe() -> None:
@@ -295,6 +330,17 @@ def test_router_system_prompt_lists_allowed_enum_values() -> None:
         assert complexity in system_prompt
 
 
+def test_router_system_prompt_separates_answers_from_deliverable_tasks() -> None:
+    system_prompt = build_semantic_router_messages(
+        UserMessage(task_id="semantic-deliverable-boundary", content="你好")
+    )[0].content
+
+    assert "If the user wants an answer, choose A/B/C/D/H as appropriate." in system_prompt
+    assert "If the user wants Alita to produce or change an artifact, choose G/H." in system_prompt
+    assert "Python 如何统计 CSV 行数？ -> B" in system_prompt
+    assert "帮我创建一个 Python 脚本，统计 CSV 文件的行数。 -> G" in system_prompt
+
+
 def test_router_graph_summary_scrubs_user_controlled_string_fields() -> None:
     local_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
     graph = RunGraph(
@@ -340,7 +386,35 @@ def test_route_semantically_uses_model_decision() -> None:
     assert decision.language == "zh"
     assert len(model.calls) == 1
     assert model.calls[0]["temperature"] == 0.0
-    assert model.calls[0]["max_tokens"] == 2048
+    assert model.calls[0]["max_tokens"] == SEMANTIC_ROUTER_MAX_TOKENS
+    assert model.calls[0]["policy"] is not None
+    assert model.calls[0]["policy"].thinking == "off"
+
+
+def test_route_semantically_uses_short_timeout_when_client_supports_it() -> None:
+    model = TimeoutAwareSemanticRouterModel([_semantic_response("response_only")])
+
+    route_semantically(
+        UserMessage(task_id="semantic-timeout-budget", content="你好"),
+        model_client=model,
+    )
+
+    assert model.calls[0]["timeout_seconds"] == SEMANTIC_ROUTER_TIMEOUT_SECONDS
+
+
+def test_route_semantically_model_failure_keeps_nonempty_message_in_response_path() -> None:
+    model = FakeSemanticRouterModel(error=TimeoutError("router timed out"))
+
+    decision = route_semantically(
+        UserMessage(task_id="semantic-timeout-greeting", content="你好"),
+        model_client=model,
+    )
+
+    assert decision.route == "response_only"
+    assert decision.requires_clarification is False
+    assert decision.missing_inputs == []
+    assert decision.confidence == 0.0
+    assert len(model.calls) == 1
 
 
 def test_route_semantically_repairs_malformed_json_once() -> None:
@@ -364,11 +438,23 @@ def test_route_semantically_repairs_malformed_json_once() -> None:
     )
 
 
-def test_route_semantically_model_failure_returns_clarification_without_keyword_guess() -> None:
+def test_route_semantically_model_failure_with_attachment_returns_clarification() -> None:
     model = FakeSemanticRouterModel(error=TimeoutError("router timed out"))
 
     decision = route_semantically(
-        UserMessage(task_id="semantic-timeout", content="帮我看看这个事情"),
+        UserMessage(
+            task_id="semantic-timeout",
+            content="帮我看看这个事情",
+            attachments=[
+                Attachment(
+                    attachment_id="attachment-1",
+                    name="report.pdf",
+                    path="C:/Temp/report.pdf",
+                    size_bytes=1234,
+                    mime_type="application/pdf",
+                )
+            ],
+        ),
         model_client=model,
     )
 
@@ -379,12 +465,12 @@ def test_route_semantically_model_failure_returns_clarification_without_keyword_
     assert "我需要确认你的目标" in (decision.clarification_prompt or "")
 
 
-def test_route_semantically_without_model_returns_clarification_without_keyword_guess() -> None:
+def test_route_semantically_without_model_keeps_nonempty_message_in_response_path() -> None:
     decision = route_semantically(
         UserMessage(task_id="semantic-no-model", content="研究一下这个问题"),
         model_client=None,
     )
 
-    assert decision.route == "clarification_required"
-    assert decision.requires_clarification is True
-    assert decision.required_capabilities == ["model.semantic_router"]
+    assert decision.route == "response_only"
+    assert decision.requires_clarification is False
+    assert decision.required_capabilities == []

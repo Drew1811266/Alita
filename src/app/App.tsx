@@ -78,6 +78,7 @@ import {
   createTemporaryScriptPermissionPayload,
   runNodeGraphStream,
   submitResearchChoice,
+  type ConversationTurn,
   type RunNodeGraphMode,
   type SubmitMessagePayload,
   submitUserMessage,
@@ -854,6 +855,7 @@ export function App() {
 
     const capturedGraphOverwriteChoice = pendingGraphOverwriteChoiceRef.current;
     const capturedPlanningChoice = pendingPlanningChoiceRef.current;
+    const conversationHistory = conversationHistoryForSubmit(messagesRef.current);
     const sentAttachments = [...pendingAttachments];
     const agentAttachments = selectAgentAttachments({
       content,
@@ -911,6 +913,7 @@ export function App() {
         projectPath: activeProject.path,
         content: userMessage.content,
         attachments: agentAttachments,
+        conversationHistory,
         ...graphContext,
         ...(pendingChoice ? { pendingChoice } : {}),
       };
@@ -1451,6 +1454,19 @@ export function shouldRefreshAsrForPreferencesUpdate(
   return (
     speechToTextAssignmentId(previousView) !== speechToTextAssignmentId(nextView)
   );
+}
+
+export function conversationHistoryForSubmit(
+  messages: ChatMessage[],
+  limit = 12,
+): ConversationTurn[] {
+  return messages
+    .filter((message) => message.content.trim())
+    .slice(-limit)
+    .map((message) => ({
+      role: message.role,
+      content: message.content.trim(),
+    }));
 }
 
 export function buildResearchChoiceSubmitPayload({

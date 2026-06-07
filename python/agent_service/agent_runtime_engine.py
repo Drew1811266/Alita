@@ -12,6 +12,7 @@ from agent_service.deep_agent_runtime_graph import (
     stream_deep_agent_runtime_events,
 )
 from agent_service.deep_agent_runtime_models import PlanningResumeCommand
+from agent_service.deep_agent_models import ReasoningDecision
 from agent_service.capability_gate import (
     CapabilityGateResult,
     evaluate_route_capabilities,
@@ -55,6 +56,12 @@ _DEFAULT_DEEP_RUNTIME_STREAM_RUNNER = object()
 class DeepAgentProductPathDecision:
     kind: Literal["handled", "allow_legacy_response", "blocked"]
     reason: str
+
+
+@dataclass(frozen=True)
+class RuntimeRouteResult:
+    pre_deep_response_run_state: AgentRunState | None
+    semantic_decision: RouterV2Decision | None
 
 
 class AgentRuntimeEngine:
@@ -150,10 +157,11 @@ class AgentRuntimeEngine:
                 events=[*started.events, *feedback_events],
             )
 
-        pre_deep_response_run_state = _run_state_for_pre_deep_response(
+        route_result = _runtime_route_result(
             run_state,
             model_client=model_client,
         )
+        pre_deep_response_run_state = route_result.pre_deep_response_run_state
         if pre_deep_response_run_state is not None:
             route_events, next_state = self._legacy_response_only(
                 started.state,
@@ -175,6 +183,10 @@ class AgentRuntimeEngine:
             model_client=model_client,
             runtime_store=self.runtime_store,
             disabled_tool_ids=list(run_state.disabled_tool_ids),
+            initial_reasoning_decision=_initial_reasoning_decision_from_route_result(
+                run_state,
+                route_result,
+            ),
             resume_command=planning_resume_command_from_pending_choice(
                 run_state.pending_choice,
                 answer_fallback=run_state.message.content,
@@ -265,10 +277,11 @@ class AgentRuntimeEngine:
                 yield event
             return
 
-        pre_deep_response_run_state = _run_state_for_pre_deep_response(
+        route_result = _runtime_route_result(
             run_state,
             model_client=model_client,
         )
+        pre_deep_response_run_state = route_result.pre_deep_response_run_state
         if pre_deep_response_run_state is not None:
             emitted_events: list[AgentEvent] = []
             for event in self.stream_runner(
@@ -326,6 +339,10 @@ class AgentRuntimeEngine:
             model_client=model_client,
             runtime_store=self.runtime_store,
             disabled_tool_ids=list(run_state.disabled_tool_ids),
+            initial_reasoning_decision=_initial_reasoning_decision_from_route_result(
+                run_state,
+                route_result,
+            ),
             resume_command=planning_resume_command_from_pending_choice(
                 run_state.pending_choice,
                 answer_fallback=run_state.message.content,
@@ -846,17 +863,17 @@ def _run_state_for_allowed_deep_response(
     return run_state
 
 
-def _run_state_for_pre_deep_response(
+def _runtime_route_result(
     run_state: AgentRunState,
     *,
     model_client: Any | None,
-) -> AgentRunState | None:
+) -> RuntimeRouteResult:
     if run_state.current_graph is not None and model_client is None:
-        return None
+        return RuntimeRouteResult(None, None)
     if run_state.pending_choice is not None:
-        return None
+        return RuntimeRouteResult(None, None)
     if run_state.inquiry_choice == "research_flow":
-        return None
+        return RuntimeRouteResult(None, None)
 
     decision = route_message(
         run_state.message,
@@ -872,32 +889,95 @@ def _run_state_for_pre_deep_response(
         "web_simple_inquiry",
         "missing_input",
     }:
-        return None
+        return RuntimeRouteResult(None, decision)
     if not _semantic_route_allows_pre_deep_response(decision):
-        return None
+        return RuntimeRouteResult(None, decision)
     gate_result = _semantic_capability_gate_result(run_state, decision)
     if gate_result is not None and not gate_result.allowed:
-        return run_state.model_copy(
-            update={
-                "intent": "missing_input",
-                "route_decision": _route_decision_for_capability_gate(
-                    decision,
-                    gate_result,
-                ),
-                "structured_route_decision": _structured_route_for_capability_gate(
-                    decision,
-                    gate_result,
-                ),
-            }
+        return RuntimeRouteResult(
+            run_state.model_copy(
+                update={
+                    "intent": "missing_input",
+                    "route_decision": _route_decision_for_capability_gate(
+                        decision,
+                        gate_result,
+                    ),
+                    "structured_route_decision": _structured_route_for_capability_gate(
+                        decision,
+                        gate_result,
+                    ),
+                }
+            ),
+            decision,
         )
 
-    return run_state.model_copy(
-        update={
-            "intent": decision.intent,
-            "route_decision": decision.legacy_route,
-            "structured_route_decision": decision.to_payload(),
-        }
+    return RuntimeRouteResult(
+        run_state.model_copy(
+            update={
+                "intent": decision.intent,
+                "route_decision": decision.legacy_route,
+                "structured_route_decision": decision.to_payload(),
+            }
+        ),
+        decision,
     )
+
+
+def _initial_reasoning_decision_from_route_result(
+    run_state: AgentRunState,
+    route_result: RuntimeRouteResult,
+) -> ReasoningDecision | None:
+    decision = route_result.semantic_decision
+    if decision is None or decision.should_clarify:
+        return None
+    if not _semantic_decision_came_from_route_code(decision):
+        return None
+    route = str(decision.structured_route.get("route") or "")
+    if route not in {"deep_planning", "research_planning", "graph_feedback"}:
+        return None
+
+    return ReasoningDecision(
+        task_id=run_state.message.task_id,
+        task_understanding=_non_empty_text(
+            run_state.message.content,
+            fallback="User requested Agent planning.",
+        ),
+        intent=_non_empty_text(decision.intent, fallback="task"),
+        complexity="graph_task",
+        why_this_path=_non_empty_text(
+            decision.reason,
+            fallback="Semantic router selected the planning path.",
+        ),
+        confidence=decision.confidence,
+        needs_clarification=False,
+        required_capabilities=_required_capabilities_from_route_decision(decision),
+        next_action="deep_planning",
+    )
+
+
+def _required_capabilities_from_route_decision(
+    decision: RouterV2Decision,
+) -> list[str]:
+    values: list[str] = []
+    structured = decision.structured_route
+    required = structured.get("requiredCapabilities")
+    if isinstance(required, list):
+        values.extend(str(item) for item in required if str(item).strip())
+    values.extend(str(item) for item in decision.tool_candidates if str(item).strip())
+    return list(dict.fromkeys(values))
+
+
+def _semantic_decision_came_from_route_code(decision: RouterV2Decision) -> bool:
+    structured = decision.structured_route
+    if structured.get("intent") == "route_code":
+        return True
+    context_used = structured.get("contextUsed")
+    return isinstance(context_used, list) and "route_code" in context_used
+
+
+def _non_empty_text(value: Any, *, fallback: str) -> str:
+    text = str(value or "").strip()
+    return text or fallback
 
 
 def _semantic_route_allows_pre_deep_response(decision: RouterV2Decision) -> bool:

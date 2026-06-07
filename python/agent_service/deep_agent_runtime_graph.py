@@ -94,6 +94,7 @@ class DeepAgentRuntimeState(TypedDict, total=False):
     revision_budget: int
     revision_instructions: Annotated[list[str], operator.add]
     clarification_answer: str
+    clarification_history: list[dict[str, Any]]
     confirmation_revision_instructions: list[str]
     require_confirmation: bool
     confirmation: dict[str, Any]
@@ -123,6 +124,7 @@ def run_deep_agent_runtime(
     execute_after_compile: bool = True,
     execution_event_runner: AgentExecutionEventRunner | None = None,
     disabled_tool_ids: list[str] | None = None,
+    initial_reasoning_decision: ReasoningDecision | None = None,
 ) -> list[AgentEvent]:
     resolved_run_id = run_id or message.task_id
     resolved_thread_id = thread_id or f"thread-{message.task_id}"
@@ -157,6 +159,7 @@ def run_deep_agent_runtime(
         require_confirmation=require_confirmation,
         execute_after_compile=execute_after_compile,
         disabled_tool_ids=disabled_tool_ids,
+        initial_reasoning_decision=initial_reasoning_decision,
     )
     try:
         previous_state = app.get_state(config=config)
@@ -192,6 +195,7 @@ def stream_deep_agent_runtime_events(
     execute_after_compile: bool = True,
     execution_event_runner: AgentExecutionEventRunner | None = None,
     disabled_tool_ids: list[str] | None = None,
+    initial_reasoning_decision: ReasoningDecision | None = None,
 ):
     resolved_run_id = run_id or message.task_id
     resolved_thread_id = thread_id or f"thread-{message.task_id}"
@@ -225,6 +229,7 @@ def stream_deep_agent_runtime_events(
         require_confirmation=require_confirmation,
         execute_after_compile=execute_after_compile,
         disabled_tool_ids=disabled_tool_ids,
+        initial_reasoning_decision=initial_reasoning_decision,
     )
 
     try:
@@ -254,6 +259,7 @@ def _runtime_invoke_input(
     require_confirmation: bool,
     execute_after_compile: bool = True,
     disabled_tool_ids: list[str] | None = None,
+    initial_reasoning_decision: ReasoningDecision | None = None,
 ) -> dict[str, Any] | Command:
     if resume_command is not None:
         return Command(
@@ -266,7 +272,7 @@ def _runtime_invoke_input(
         "project_path": project_path,
         "run_id": run_id,
         "thread_id": thread_id,
-        "reasoning_decision": None,
+        "reasoning_decision": initial_reasoning_decision,
         "context_bundle": {},
         "disabled_tool_ids": list(disabled_tool_ids or []),
         "available_capabilities": set(),
@@ -289,6 +295,7 @@ def _runtime_invoke_input(
         "revision_budget": revision_budget,
         "revision_instructions": [],
         "clarification_answer": "",
+        "clarification_history": [],
         "confirmation_revision_instructions": [],
         "require_confirmation": require_confirmation,
         "confirmation": {},
@@ -479,7 +486,11 @@ def reasoning_gate(
         "simple_reasoning_final",
         "deep_agent_failed",
     ]
-]:
+    ]:
+    preset_decision = _preset_reasoning_decision(state)
+    if preset_decision is not None:
+        return _command_for_reasoning_decision(state, preset_decision)
+
     try:
         decision = ReasoningGateEngine(model_client=model_client).decide(
             state["message"],
@@ -495,6 +506,34 @@ def reasoning_gate(
             goto="deep_agent_failed",
         )
 
+    return _command_for_reasoning_decision(state, decision)
+
+
+def _preset_reasoning_decision(
+    state: DeepAgentRuntimeState,
+) -> ReasoningDecision | None:
+    decision = state.get("reasoning_decision")
+    if isinstance(decision, ReasoningDecision):
+        return decision
+    if isinstance(decision, Mapping):
+        try:
+            return ReasoningDecision.model_validate(decision)
+        except ValidationError:
+            return None
+    return None
+
+
+def _command_for_reasoning_decision(
+    state: DeepAgentRuntimeState,
+    decision: ReasoningDecision,
+) -> Command[
+    Literal[
+        "build_context",
+        "clarify_required",
+        "simple_reasoning_final",
+        "deep_agent_failed",
+    ]
+]:
     events = [
         AgentEvent(
             type="reasoning.decision_created",
@@ -620,6 +659,7 @@ def review_plan_node(
             state.get("available_capabilities") or {"model.reasoning"}
         ),
         node_catalog=_node_catalog_from_state(state),
+        message=state["message"],
     )
     events = [
         AgentEvent(
@@ -1404,9 +1444,24 @@ def clarify_required(state: DeepAgentRuntimeState) -> dict[str, Any]:
         if isinstance(resume_payload, dict)
         else resume_payload
     ).strip()
+    clarification_record = {
+        "question": prompt,
+        "answer": answer,
+        "missing_inputs": list(missing_inputs),
+    }
+    clarification_history = [
+        record
+        for record in list(state.get("clarification_history") or [])
+        if not _same_clarification_slot(
+            record,
+            question=prompt,
+            missing_inputs=missing_inputs,
+        )
+    ]
 
     return {
         "clarification_answer": answer,
+        "clarification_history": [*clarification_history, clarification_record],
         "events": [
             AgentEvent(
                 type="planning.resumed",
@@ -1990,13 +2045,53 @@ def _runtime_model_client(
 def _planning_instructions_for_state(state: DeepAgentRuntimeState) -> list[str]:
     instructions = list(state.get("revision_instructions") or [])
     instructions.extend(list(state.get("confirmation_revision_instructions") or []))
+    clarification_history = list(state.get("clarification_history") or [])
+    recorded_answers: set[str] = set()
+    for item in clarification_history:
+        if not isinstance(item, dict):
+            continue
+        answer = str(item.get("answer") or "").strip()
+        if not answer:
+            continue
+        recorded_answers.add(answer)
+        question = str(item.get("question") or "").strip()
+        missing_inputs = item.get("missing_inputs")
+        missing_text = (
+            ", ".join(str(value) for value in missing_inputs)
+            if isinstance(missing_inputs, list)
+            else ""
+        )
+        instructions.append(
+            "User has already answered this clarification; use it as fixed "
+            "task context and do not ask for the same or similar information again. "
+            f"Question: {question}. Missing inputs: {missing_text}. Answer: {answer}"
+        )
     clarification_answer = str(state.get("clarification_answer") or "").strip()
-    if clarification_answer:
+    if clarification_answer and clarification_answer not in recorded_answers:
         instructions.append(
             "Use this user clarification while revising the plan: "
             f"{clarification_answer}"
         )
     return _deduplicate_instructions(instructions)
+
+
+def _same_clarification_slot(
+    record: Any,
+    *,
+    question: str,
+    missing_inputs: list[str],
+) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if str(record.get("question") or "").strip() == question:
+        return True
+    current_missing = {str(value).strip() for value in missing_inputs if str(value).strip()}
+    previous_missing = {
+        str(value).strip()
+        for value in record.get("missing_inputs", [])
+        if str(value).strip()
+    } if isinstance(record.get("missing_inputs"), list) else set()
+    return bool(current_missing and previous_missing and current_missing & previous_missing)
 
 
 def _clarification_allowed(state: DeepAgentRuntimeState) -> bool:

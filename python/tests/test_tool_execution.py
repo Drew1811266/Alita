@@ -145,6 +145,92 @@ def test_tool_executor_routes_virtual_receive_attachment(tmp_path):
     assert result.metadata == {}
 
 
+def test_tool_executor_routes_virtual_web_system_tools_with_adapters(tmp_path):
+    calls = []
+
+    def fake_search(invocation):
+        calls.append((invocation.tool_id, invocation.operation, invocation.arguments))
+        return ToolResult(
+            values={
+                "query": invocation.arguments["query"],
+                "results": [
+                    {
+                        "title": "Example",
+                        "url": "https://example.com/",
+                        "snippet": "Example Domain",
+                    }
+                ],
+            }
+        )
+
+    def fake_fetch(invocation):
+        calls.append((invocation.tool_id, invocation.operation, invocation.arguments))
+        return ToolResult(
+            values={
+                "sources": invocation.arguments["sources"],
+                "sourceContents": [
+                    {
+                        "url": "https://example.com/",
+                        "title": "Example",
+                        "text": "Example Domain content",
+                    }
+                ],
+            }
+        )
+
+    executor = ToolExecutor(
+        registry=ToolRegistry.from_packages_root(TOOL_PACKAGES_ROOT),
+        adapters={
+            ("web.search.parallel", "search"): fake_search,
+            ("web.fetch.sources", "fetch_sources"): fake_fetch,
+        },
+    )
+
+    search_result = executor.run(
+        ToolInvocation(
+            tool_id="web.search.parallel",
+            operation="search",
+            arguments={"query": "Example Domain"},
+            project_path=str(tmp_path / "project.alita"),
+            allowed_roots=[str(tmp_path)],
+        )
+    )
+    fetch_result = executor.run(
+        ToolInvocation(
+            tool_id="web.fetch.sources",
+            operation="fetch_sources",
+            arguments={"sources": search_result.values["results"]},
+            project_path=str(tmp_path / "project.alita"),
+            allowed_roots=[str(tmp_path)],
+        )
+    )
+
+    assert calls == [
+        (
+            "web.search.parallel",
+            "search",
+            {"query": "Example Domain"},
+        ),
+        (
+            "web.fetch.sources",
+            "fetch_sources",
+            {
+                "sources": [
+                    {
+                        "title": "Example",
+                        "url": "https://example.com/",
+                        "snippet": "Example Domain",
+                    }
+                ]
+            },
+        ),
+    ]
+    assert search_result.values["query"] == "Example Domain"
+    assert fetch_result.values["sourceContents"][0]["text"] == (
+        "Example Domain content"
+    )
+
+
 def test_tool_executor_uses_registered_adapter_for_manifest_operation(tmp_path):
     calls = []
 

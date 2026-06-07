@@ -190,6 +190,61 @@ def test_compile_execution_graph_derives_manifest_tool_binding_contract() -> Non
     assert binding.permission_scope.timeout_ms == 120_000
 
 
+def test_compile_execution_graph_derives_web_system_tool_bindings() -> None:
+    graph = compile_execution_graph(
+        _request(
+            [
+                _node(
+                    "web-search",
+                    "fixed_tool",
+                    tool_ref="web.search.parallel",
+                    permissions=["network"],
+                ),
+                _node(
+                    "web-fetch",
+                    "fixed_tool",
+                    dependencies=["web-search"],
+                    tool_ref="web.fetch.sources",
+                    permissions=["network"],
+                ),
+            ]
+        )
+    )
+
+    search_binding = graph.node_by_id("web-search").tool_binding
+    fetch_binding = graph.node_by_id("web-fetch").tool_binding
+
+    assert search_binding is not None
+    assert search_binding.provider_id == "internal"
+    assert search_binding.operation == "search"
+    assert search_binding.arguments_template.values == {
+        "operation": "search",
+        "query": "{graph.metadata.objective}",
+    }
+    assert search_binding.arguments_template.required == ["operation", "query"]
+    assert search_binding.permission_scope.permissions == ["network"]
+    assert search_binding.permission_scope.network is True
+
+    assert fetch_binding is not None
+    assert fetch_binding.provider_id == "internal"
+    assert fetch_binding.operation == "fetch_sources"
+    assert fetch_binding.arguments_template.values == {"operation": "fetch_sources"}
+    assert [
+        mapping.model_dump()
+        for mapping in fetch_binding.input_mappings
+    ] == [
+        {
+            "source": "web-search",
+            "source_key": "results",
+            "target_argument": "sources",
+            "required": True,
+        }
+    ]
+    assert fetch_binding.arguments_template.required == ["operation", "sources"]
+    assert fetch_binding.permission_scope.permissions == ["network"]
+    assert fetch_binding.permission_scope.network is True
+
+
 def test_compile_execution_graph_prefers_explicit_runtime_tool_binding() -> None:
     node = _node(
         "custom-parse",

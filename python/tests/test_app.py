@@ -658,6 +658,18 @@ def test_agent_message_stream_research_flow_choice_blocks_legacy_graph_sse(
     assert "research.choice_required" not in response.text
 
 
+def test_health_identifies_alita_sidecar() -> None:
+    client = TestClient(app)
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "name": "alita-agent-sidecar",
+        "status": "ok",
+    }
+
+
 def test_agent_endpoints_require_sidecar_token_when_configured(monkeypatch) -> None:
     monkeypatch.setenv("ALITA_SIDECAR_TOKEN", "secret-token")
     _install_fake_model(monkeypatch, [_reasoning_payload("simple_answer")])

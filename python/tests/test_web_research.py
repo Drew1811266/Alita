@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from agent_service.intent import classify_route
 from agent_service.schemas import AgentEvent, RunGraph, UserMessage
-from agent_service.web_search import SearchResponse, SearchResult
+from agent_service.web_search import SearchFailure, SearchResponse, SearchResult
 
 
 class FakeSearchProvider:
@@ -202,6 +202,36 @@ def test_simple_web_inquiry_does_not_cite_rejected_sources() -> None:
     assert payload["sourceMetadata"]["rejected"][0]["rejectionReason"] == "content_farm"
     assert "I could not find reliable web sources" in payload["message"]["content"]
     assert "Top10 Python releases" not in payload["message"]["content"]
+
+
+def test_chinese_simple_web_failure_uses_chinese_message() -> None:
+    from agent_service.web_research import answer_simple_web_inquiry
+
+    provider = FakeSearchProvider(
+        [
+            SearchResponse(
+                results=[],
+                failure=SearchFailure(
+                    kind="network_error",
+                    message="所有搜索服务暂时不可用。",
+                ),
+            )
+        ]
+    )
+    message = UserMessage(
+        task_id="simple-web",
+        content="现在最新的 Python 稳定版本是什么？请给出来源。",
+    )
+
+    event = answer_simple_web_inquiry(
+        message,
+        classify_route(message),
+        search_provider=provider,
+    )
+
+    content = event.payload["message"]["content"]
+    assert content == "联网搜索暂时没有完成：所有搜索服务暂时不可用。请稍后重试，或提供一个可直接读取的来源链接。"
+    assert "I could not complete" not in content
 
 
 class FakeWeatherProvider:

@@ -202,6 +202,13 @@ def test_context_policy_selects_recent_allowed_memory_records() -> None:
     assert budget.max_chars > 0
 
 
+def test_context_policy_uses_expanded_context_budgets() -> None:
+    assert budget_for_mode("chat").max_chars == 6400
+    assert budget_for_mode("planning").max_chars == 9600
+    assert budget_for_mode("execution").max_chars == 4800
+    assert budget_for_mode("research").max_chars == 8000
+
+
 def test_memory_id_for_source_is_stable_and_path_safe() -> None:
     first = memory_id_for_source(
         "artifact_summary",

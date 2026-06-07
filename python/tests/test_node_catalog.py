@@ -105,6 +105,8 @@ def test_builder_registers_system_model_human_verifier_and_output_nodes() -> Non
 
     node_ids = {node.node_id for node in snapshot.nodes}
 
+    assert "web.search.parallel" in node_ids
+    assert "web.fetch.sources" in node_ids
     assert "model.reasoning" in node_ids
     assert "document.summarize" in node_ids
     assert "research.synthesize" in node_ids
@@ -112,6 +114,10 @@ def test_builder_registers_system_model_human_verifier_and_output_nodes() -> Non
     assert "verify.artifact_exists" in node_ids
     assert "output.final_response" in node_ids
     assert snapshot.node_by_id("model.reasoning").execution.type == "model"
+    assert snapshot.node_by_id("web.search.parallel").execution.type == "tool"
+    assert snapshot.node_by_id("web.fetch.sources").execution.type == "tool"
+    assert snapshot.node_by_id("web.search.parallel").permissions.network == "external"
+    assert snapshot.node_by_id("web.fetch.sources").permissions.network == "external"
     assert snapshot.node_by_id("document.summarize").execution.type == "model"
     assert snapshot.node_by_id("research.synthesize").execution.type == "model"
     assert snapshot.node_by_id("human.clarify").execution.type == "human"

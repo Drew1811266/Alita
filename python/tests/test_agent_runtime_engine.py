@@ -181,7 +181,10 @@ def test_engine_run_from_agent_state_wraps_legacy_events_with_runtime_events():
         deep_runtime_runner=_simple_deep_runtime,
     )
     run_state = AgentRunState.from_user_message(
-        UserMessage(task_id="task-runtime-entry", content="hello")
+        UserMessage(
+            task_id="task-runtime-entry",
+            content="Create a one sentence greeting for the user.",
+        )
     ).model_copy(
         update={"project_path": "D:/Project/demo.alita", "run_id": "run-entry"}
     )

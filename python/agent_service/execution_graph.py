@@ -216,7 +216,7 @@ def _compile_tool_binding(
             provider_id=provider_id,
             operation=operation,
             arguments_template=_argument_template_for_tool(tool_id, manifest, operation),
-            input_mappings=_input_mappings_for_tool(tool_id),
+            input_mappings=_input_mappings_for_tool(tool_id, node),
             output_schema=dict(manifest.output_schema) if manifest.output_schema else None,
             expected_artifacts=_expected_artifacts_for_tool(tool_id),
             permission_scope=_permission_scope_for_tool(node, manifest),
@@ -303,6 +303,12 @@ def _argument_template_for_tool(
     manifest: ToolManifestSpec,
     operation: str | None,
 ) -> ExecutionArgumentTemplate:
+    if tool_id in _WEB_ARGUMENT_TEMPLATES:
+        return ExecutionArgumentTemplate(
+            values=dict(_WEB_ARGUMENT_TEMPLATES[tool_id]),
+            required=_schema_required_arguments(manifest.input_schema),
+        )
+
     if tool_id in _DOCUMENT_ARGUMENT_TEMPLATES:
         return ExecutionArgumentTemplate(
             values=dict(_DOCUMENT_ARGUMENT_TEMPLATES[tool_id]),
@@ -322,7 +328,20 @@ def _argument_template_for_tool(
     )
 
 
-def _input_mappings_for_tool(tool_id: str) -> list[ExecutionInputMapping]:
+def _input_mappings_for_tool(
+    tool_id: str,
+    node: GraphNode,
+) -> list[ExecutionInputMapping]:
+    if tool_id == "web.fetch.sources" and node.dependencies:
+        return [
+            ExecutionInputMapping(
+                source=node.dependencies[0],
+                source_key="results",
+                target_argument="sources",
+                required=True,
+            )
+        ]
+
     return [
         ExecutionInputMapping(**mapping)
         for mapping in _DOCUMENT_INPUT_MAPPINGS.get(tool_id, [])
@@ -373,6 +392,19 @@ _DEFAULT_OPERATION_BY_TOOL = {
     "document.receive_attachment": "receive_attachment",
     "document.markitdown_convert": "convert_local_file",
     "document.typst_compile": "compile_report_pdf",
+    "web.search.parallel": "search",
+    "web.fetch.sources": "fetch_sources",
+}
+
+
+_WEB_ARGUMENT_TEMPLATES: dict[str, dict[str, Any]] = {
+    "web.search.parallel": {
+        "operation": "search",
+        "query": "{graph.metadata.objective}",
+    },
+    "web.fetch.sources": {
+        "operation": "fetch_sources",
+    },
 }
 
 

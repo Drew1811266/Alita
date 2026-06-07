@@ -43,6 +43,12 @@ class FakeDeepModel:
         )
 
 
+class FakeRouteCodeDeepModel(FakeDeepModel):
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        del messages, temperature, max_tokens, policy
+        return "G"
+
+
 class FakeSemanticModel:
     def __init__(
         self,
@@ -706,6 +712,32 @@ def test_runtime_engine_task_request_uses_deep_agent_runtime_not_legacy_runner()
     graph = graph_event.payload["graph"]
     assert graph["metadata"]["generatedBy"] == "deep_agent_runtime"
     assert graph["nodes"][0]["metadata"]["sourcePlanStepId"] == "draft"
+
+
+def test_runtime_engine_reuses_semantic_deep_planning_decision_without_reasoning_gate() -> None:
+    model = FakeRouteCodeDeepModel([_plan_payload()])
+    engine = AgentRuntimeEngine()
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-semantic-direct-deep",
+            content="帮我创建一个 Python 脚本，统计 CSV 文件的行数。",
+        )
+    ).model_copy(
+        update={
+            "project_path": "D:/Project/demo.alita",
+            "run_id": "run-semantic-direct-deep",
+        }
+    )
+
+    result = engine.run_from_state(run_state, model_client=model)
+
+    assert model.calls == 1
+    assert [event.type for event in result.events][:3] == [
+        "runtime.run_started",
+        "reasoning.decision_created",
+        "planning.started",
+    ]
+    assert any(event.type == "node_graph.created" for event in result.events)
 
 
 def test_runtime_engine_stream_uses_deep_agent_stream_runner_without_legacy_fallback(

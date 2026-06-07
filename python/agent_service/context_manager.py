@@ -205,13 +205,17 @@ def _catalog_node_is_available_for_context(
         return False
     if node.execution.type != "tool":
         return True
+    disabled = _expanded_tool_ids(disabled_tool_ids)
+    if node.source == "system":
+        return not (
+            equivalent_tool_ids(node.execution.tool_id or node.node_id) & disabled
+        )
 
     tool_id = node.execution.tool_id
     if not tool_id:
         return False
 
     tool_equivalents = equivalent_tool_ids(tool_id)
-    disabled = _expanded_tool_ids(disabled_tool_ids)
     return bool(tool_equivalents & available_tool_ids) and not (
         tool_equivalents & disabled
     )

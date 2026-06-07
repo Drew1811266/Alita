@@ -31,7 +31,7 @@ class ModelBinding(BaseModel):
     prompt_template: str = ""
     output_key: str = ""
     temperature: float = 0.2
-    max_tokens: int = 1024
+    max_tokens: int = 4096
 
 
 class TaskNodeUi(BaseModel):
@@ -153,7 +153,7 @@ def build_document_task_graph(task_id: str, goal_spec: GoalSpec) -> TaskGraph:
                     prompt_template="document.content_organizer.zh.v1",
                     output_key="outline",
                     temperature=0.2,
-                    max_tokens=1024,
+                    max_tokens=4096,
                 ),
                 ui=TaskNodeUi(
                     display_name="整理内容",
@@ -178,7 +178,7 @@ def build_document_task_graph(task_id: str, goal_spec: GoalSpec) -> TaskGraph:
                     prompt_template="document.report_writer.zh.v1",
                     output_key="report",
                     temperature=0.2,
-                    max_tokens=1536,
+                    max_tokens=6144,
                 ),
                 ui=TaskNodeUi(
                     display_name="生成报告",

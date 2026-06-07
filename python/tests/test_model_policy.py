@@ -115,3 +115,10 @@ def test_policy_constants_have_expected_profiles() -> None:
     assert FAST_FACTUAL_POLICY.profile == ModelCallProfile.FAST_FACTUAL
     assert DEEP_REASONING_POLICY.profile == ModelCallProfile.DEEP_REASONING
     assert NODE_REASONING_POLICY.profile == ModelCallProfile.NODE_REASONING
+
+
+def test_policy_constants_use_expanded_token_budgets() -> None:
+    assert FAST_CHAT_POLICY.max_tokens == 3072
+    assert FAST_FACTUAL_POLICY.max_tokens == 4096
+    assert DEEP_REASONING_POLICY.max_tokens == 32768
+    assert NODE_REASONING_POLICY.max_tokens == 16384

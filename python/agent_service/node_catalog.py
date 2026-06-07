@@ -413,6 +413,102 @@ def _system_nodes() -> list[NodeDefinition]:
                 )
             ],
         ),
+        NodeDefinition(
+            node_id="web.search.parallel",
+            kind="tool",
+            display_name="Parallel Web Search",
+            description="Run web search queries and return ranked source snippets.",
+            category="web",
+            capabilities=[
+                "web.search",
+                "web.search.parallel",
+                "web_search",
+                "research.web_search",
+            ],
+            input_ports=[
+                NodePortDefinition(
+                    id="queries-input",
+                    label="Queries",
+                    data_type="json",
+                    multiple=True,
+                    description="Search query objects or query strings.",
+                )
+            ],
+            output_ports=[
+                NodePortDefinition(
+                    id="search-results-output",
+                    label="Search Results",
+                    data_type="json",
+                    description="Ranked web search results with URLs and snippets.",
+                )
+            ],
+            execution=NodeExecutionBinding(
+                type="tool",
+                tool_id="web.search.parallel",
+                operation="search",
+            ),
+            permissions=NodePermissionProfile(
+                permissions=["network"],
+                risk_level="medium",
+                network="external",
+                sandbox="sidecar",
+            ),
+            examples=[
+                NodeExample(
+                    title="Search current product prices",
+                    input={"queries": [{"query": "current GPU prices China"}]},
+                )
+            ],
+            source="system",
+        ),
+        NodeDefinition(
+            node_id="web.fetch.sources",
+            kind="tool",
+            display_name="Fetch Web Sources",
+            description="Fetch accepted web sources so synthesis can use page content.",
+            category="web",
+            capabilities=[
+                "web.fetch",
+                "web.fetch.sources",
+                "source.fetch",
+                "research.source_fetch",
+            ],
+            input_ports=[
+                NodePortDefinition(
+                    id="source-set-input",
+                    label="Sources",
+                    data_type="json",
+                    multiple=True,
+                    description="Accepted source URLs to fetch.",
+                )
+            ],
+            output_ports=[
+                NodePortDefinition(
+                    id="source-content-output",
+                    label="Source Content",
+                    data_type="json",
+                    description="Fetched source content and metadata.",
+                )
+            ],
+            execution=NodeExecutionBinding(
+                type="tool",
+                tool_id="web.fetch.sources",
+                operation="fetch_sources",
+            ),
+            permissions=NodePermissionProfile(
+                permissions=["network"],
+                risk_level="medium",
+                network="external",
+                sandbox="sidecar",
+            ),
+            examples=[
+                NodeExample(
+                    title="Fetch reviewed sources",
+                    input={"sources": [{"url": "https://example.com/article"}]},
+                )
+            ],
+            source="system",
+        ),
         _model_node(
             node_id="research.synthesize",
             display_name="Synthesize Research",

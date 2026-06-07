@@ -94,6 +94,41 @@ class FakeGraphSemanticModel:
         )
 
 
+class RoutedStreamingModel:
+    def __init__(self) -> None:
+        self.router_calls = 0
+        self.stream_calls = 0
+
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        del messages, temperature, max_tokens, policy
+        self.router_calls += 1
+        return json.dumps(
+            {
+                "route": "response_only",
+                "intent": "graph_stream_test",
+                "complexity": "simple",
+                "requiresGraph": False,
+                "requiresTools": False,
+                "requiresWeb": False,
+                "requiresFiles": False,
+                "requiresClarification": False,
+                "language": "zh",
+                "confidence": 0.93,
+                "contextUsed": ["current_message"],
+                "missingInputs": [],
+                "requiredCapabilities": [],
+                "toolCandidates": [],
+                "reason": "已有路由不应该再次调用。",
+            }
+        )
+
+    def stream_chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        del messages, temperature, max_tokens
+        self.stream_calls += 1
+        assert policy is not None
+        yield "你好"
+
+
 class FakeSearchProvider:
     def __init__(self, response: SearchResponse) -> None:
         self.response = response
@@ -555,6 +590,36 @@ def test_stream_agent_events_from_state_matches_public_stream_behavior() -> None
     }
     assert events[3].payload == {"messageId": message["messageId"]}
     assert client.calls
+
+
+def test_stream_agent_events_from_state_respects_existing_route_decision() -> None:
+    client = RoutedStreamingModel()
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="task-routed-stream-chat", content="你好")
+    ).model_copy(
+        update={
+            "intent": "chat",
+            "route_decision": {
+                "intent": {"kind": "chat"},
+                "reason": "pre-routed by runtime engine",
+                "missing_inputs": [],
+            },
+            "structured_route_decision": {
+                "intent": "chat",
+                "semanticRoute": {"route": "response_only"},
+            },
+        }
+    )
+
+    events = list(stream_agent_events_from_state(run_state, model_client=client))
+
+    assert client.router_calls == 0
+    assert client.stream_calls == 1
+    assert [event.type for event in events] == [
+        "message.started",
+        "message.delta",
+        "message.completed",
+    ]
 
 
 def test_stream_agent_events_from_state_routes_non_chat_through_router_v2(

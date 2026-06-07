@@ -873,8 +873,8 @@ class PlannedTaskExecutor:
             try:
                 content = self.model_client.chat(
                     messages,
-                    temperature=0.2,
-                    max_tokens=1536,
+                    temperature=model_policy.temperature,
+                    max_tokens=model_policy.max_tokens,
                     policy=model_policy,
                 )
             except Exception as error:
@@ -885,8 +885,8 @@ class PlannedTaskExecutor:
                     status="error",
                     started_at=span_started_at,
                     duration_ms=int((perf_counter() - span_start) * 1000),
-                    temperature=0.2,
-                    max_tokens=1536,
+                    temperature=model_policy.temperature,
+                    max_tokens=model_policy.max_tokens,
                     react_enabled=False,
                     error_code=type(error).__name__,
                 )
@@ -898,8 +898,8 @@ class PlannedTaskExecutor:
                 status="ok",
                 started_at=span_started_at,
                 duration_ms=int((perf_counter() - span_start) * 1000),
-                temperature=0.2,
-                max_tokens=1536,
+                temperature=model_policy.temperature,
+                max_tokens=model_policy.max_tokens,
                 react_enabled=False,
                 error_code=None,
             )
@@ -1592,8 +1592,11 @@ def run_graph_events(
 
     started_at = _now_iso()
     disabled_tool_ids = _expanded_tool_ids(request.disabled_tool_ids)
+    approved_permissions = list(request.approved_permissions)
+    if _is_research_graph(request) and "network" not in approved_permissions:
+        approved_permissions.append("network")
     gate = permission_gate or PermissionGate(
-        approved_permissions=request.approved_permissions
+        approved_permissions=approved_permissions
     )
     journal.write_run(
         {

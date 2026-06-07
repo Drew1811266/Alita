@@ -149,6 +149,30 @@ def test_build_context_bundle_includes_compact_catalog_node_summaries(
     assert convert_node.availability["status"] == "available"
 
 
+def test_build_context_bundle_includes_available_system_tool_nodes(
+    tmp_path: Path,
+) -> None:
+    registry = ToolRegistry.from_packages_root(
+        Path(__file__).resolve().parents[2] / "tool-packages"
+    )
+    catalog = NodeCatalogBuilder(tool_registry=registry).build()
+
+    bundle = build_context_bundle(
+        message=UserMessage(task_id="task-1", content="请上网搜索电脑配件价格"),
+        goal_spec=parse_goal_spec(
+            UserMessage(task_id="task-1", content="请上网搜索电脑配件价格")
+        ),
+        project_path=str(tmp_path / "workspace.alita"),
+        tool_registry=registry,
+        node_catalog=catalog,
+    )
+
+    node_ids = {node.node_id for node in bundle.available_nodes}
+
+    assert "web.search.parallel" in node_ids
+    assert "web.fetch.sources" in node_ids
+
+
 @pytest.mark.parametrize(
     "disabled_tool_id",
     ["document.markitdown_convert", "internal:document.markitdown_convert"],

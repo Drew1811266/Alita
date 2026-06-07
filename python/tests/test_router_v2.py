@@ -356,16 +356,17 @@ def test_route_message_does_not_call_classify_route_for_natural_language(
     assert model.calls == 1
 
 
-def test_route_message_model_failure_returns_missing_input_not_keyword_guess() -> None:
+def test_route_message_model_failure_keeps_nonempty_message_in_chat_path() -> None:
     decision = route_message(
         UserMessage(task_id="router-model-missing", content="帮我做一下这个"),
         model_client=None,
     )
 
-    assert decision.intent == "missing_input"
+    assert decision.intent == "chat"
     assert decision.source == "fallback"
-    assert decision.should_clarify is True
-    assert decision.missing_inputs == ["router_decision"]
+    assert decision.should_clarify is False
+    assert decision.missing_inputs == []
+    assert decision.structured_route["route"] == "response_only"
 
 
 def test_route_message_malformed_model_output_falls_back_safely(
@@ -381,8 +382,9 @@ def test_route_message_malformed_model_output_falls_back_safely(
 
     assert model_client.calls == 2
     assert decision.source == "fallback"
-    assert decision.intent == "missing_input"
-    assert decision.missing_inputs == ["router_decision"]
+    assert decision.intent == "chat"
+    assert decision.missing_inputs == []
+    assert decision.structured_route["route"] == "response_only"
 
 
 def test_route_message_malformed_model_output_preserves_complex_choice_fallback(
@@ -401,10 +403,11 @@ def test_route_message_malformed_model_output_preserves_complex_choice_fallback(
 
     assert model_client.calls == 2
     assert decision.source == "fallback"
-    assert decision.intent == "missing_input"
-    assert decision.missing_inputs == ["router_decision"]
-    assert decision.legacy_route["intent"]["kind"] == "need_input"
-    assert decision.legacy_route["missing_inputs"] == ["router_decision"]
+    assert decision.intent == "chat"
+    assert decision.missing_inputs == []
+    assert decision.legacy_route["intent"]["kind"] == "chat"
+    assert decision.legacy_route["missing_inputs"] == []
+    assert decision.structured_route["route"] == "response_only"
 
 
 def test_route_message_invalid_model_payload_falls_back_safely(
@@ -429,8 +432,9 @@ def test_route_message_invalid_model_payload_falls_back_safely(
 
     assert model_client.calls == 2
     assert decision.source == "fallback"
-    assert decision.intent == "missing_input"
-    assert decision.missing_inputs == ["router_decision"]
+    assert decision.intent == "chat"
+    assert decision.missing_inputs == []
+    assert decision.structured_route["route"] == "response_only"
 
 
 def test_route_message_string_list_model_payload_falls_back_without_character_list(
@@ -456,8 +460,9 @@ def test_route_message_string_list_model_payload_falls_back_without_character_li
 
     assert model_client.calls == 2
     assert decision.source == "fallback"
-    assert decision.intent == "missing_input"
-    assert decision.missing_inputs == ["router_decision"]
+    assert decision.intent == "chat"
+    assert decision.missing_inputs == []
+    assert decision.structured_route["route"] == "response_only"
 
 
 def test_route_message_string_bool_model_payload_falls_back_safely(
@@ -483,7 +488,9 @@ def test_route_message_string_bool_model_payload_falls_back_safely(
 
     assert model_client.calls == 2
     assert decision.source == "fallback"
-    assert decision.intent == "missing_input"
+    assert decision.intent == "chat"
+    assert decision.missing_inputs == []
+    assert decision.structured_route["route"] == "response_only"
 
 
 def test_route_message_high_confidence_model_route_returns_model_decision(

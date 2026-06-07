@@ -1363,6 +1363,127 @@ def test_planned_fixed_tool_executes_from_runtime_binding_without_tool_id_branch
     }
 
 
+def test_planned_web_system_tools_render_objective_and_map_search_results(
+    tmp_path: Path,
+) -> None:
+    class WebGateway:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def list_tools(self):
+            return []
+
+        def call_tool(self, invocation, *, timeout_ms=None):
+            self.calls.append(invocation)
+            if invocation.tool_id == "internal:web.search.parallel":
+                assert invocation.arguments == {
+                    "operation": "search",
+                    "query": "组装一台一万元左右的电脑配置",
+                }
+                return UnifiedToolResult(
+                    ok=True,
+                    content=[
+                        ToolResultContent(
+                            type="json",
+                            value={
+                                "results": [
+                                    {
+                                        "title": "CPU price",
+                                        "url": "https://example.com/cpu",
+                                        "snippet": "CPU price data",
+                                    }
+                                ]
+                            },
+                        )
+                    ],
+                    structured_content={
+                        "results": [
+                            {
+                                "title": "CPU price",
+                                "url": "https://example.com/cpu",
+                                "snippet": "CPU price data",
+                            }
+                        ]
+                    },
+                    artifacts=[],
+                    metadata={},
+                )
+            assert invocation.tool_id == "internal:web.fetch.sources"
+            assert invocation.arguments == {
+                "operation": "fetch_sources",
+                "sources": [
+                    {
+                        "title": "CPU price",
+                        "url": "https://example.com/cpu",
+                        "snippet": "CPU price data",
+                    }
+                ],
+            }
+            return UnifiedToolResult(
+                ok=True,
+                content=[
+                    ToolResultContent(
+                        type="json",
+                        value={
+                            "sourceContents": [
+                                {
+                                    "url": "https://example.com/cpu",
+                                    "title": "CPU price",
+                                    "text": "CPU price page",
+                                }
+                            ]
+                        },
+                    )
+                ],
+                structured_content={
+                    "sourceContents": [
+                        {
+                            "url": "https://example.com/cpu",
+                            "title": "CPU price",
+                            "text": "CPU price page",
+                        }
+                    ]
+                },
+                artifacts=[],
+                metadata={},
+            )
+
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "web-search",
+                "fixed_tool",
+                [],
+                tool_ref="web.search.parallel",
+                permissions=["network"],
+            ),
+            build_node(
+                "web-fetch",
+                "fixed_tool",
+                ["web-search"],
+                tool_ref="web.fetch.sources",
+                permissions=["network"],
+            ),
+        ],
+        graph_metadata={
+            "taskKind": "web_research",
+            "objective": "组装一台一万元左右的电脑配置",
+        },
+    )
+    executor = PlannedTaskExecutor(
+        request,
+        tool_gateway=WebGateway(),
+        execution_graph=compile_execution_graph(request),
+    )
+
+    search_output = executor.run("web-search", {})
+    fetch_output = executor.run("web-fetch", {"web-search": search_output})
+
+    assert search_output.values["results"][0]["url"] == "https://example.com/cpu"
+    assert fetch_output.values["sourceContents"][0]["text"] == "CPU price page"
+
+
 def test_document_fixed_tools_execute_from_bindings_without_document_executor_branch(
     tmp_path: Path,
 ) -> None:
@@ -2272,7 +2393,7 @@ def test_planned_model_nodes_use_node_reasoning_policy(tmp_path: Path) -> None:
         ModelCallProfile.NODE_REASONING
     ]
     assert client.temperatures == [0.2]
-    assert client.max_tokens == [1536]
+    assert client.max_tokens == [16384]
 
 
 def test_planned_model_node_fails_without_bound_runtime(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from typing import Any, Literal, Protocol
@@ -7,7 +8,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, Field
 
 from agent_service.model_client import ChatMessage as ModelChatMessage
-from agent_service.model_policy import ModelCallPolicy
+from agent_service.model_policy import ModelCallPolicy, ModelCallProfile
 from agent_service.schemas import RunGraph, UserMessage
 
 
@@ -38,7 +39,26 @@ LOCAL_PATH_FRAGMENT_PATTERNS = (
     re.compile(r"(?i)(?<![A-Za-z0-9])agent_service(?![A-Za-z0-9])"),
 )
 
-SEMANTIC_ROUTER_MAX_TOKENS = 2048
+SEMANTIC_ROUTER_MAX_TOKENS = 32
+SEMANTIC_ROUTER_TIMEOUT_SECONDS = 5.0
+SEMANTIC_ROUTER_POLICY = ModelCallPolicy(
+    profile=ModelCallProfile.FAST_CHAT,
+    temperature=0.0,
+    max_tokens=SEMANTIC_ROUTER_MAX_TOKENS,
+    thinking="off",
+    preserve_thinking=False,
+    stream=False,
+)
+ROUTE_CODE_TO_ROUTE: dict[str, SemanticRoute] = {
+    "A": "response_only",
+    "B": "local_answer",
+    "C": "simple_tool_answer",
+    "D": "web_answer",
+    "E": "graph_feedback",
+    "F": "clarification_required",
+    "G": "deep_planning",
+    "H": "research_planning",
+}
 
 
 class SemanticRouterModelClient(Protocol):
@@ -125,8 +145,11 @@ def route_semantically(
 ) -> SemanticRouteDecision:
     if model_client is None:
         return _router_unavailable_decision(
+            message=message,
             language=_infer_language(message.content),
             reason="semantic router model unavailable",
+            current_graph=current_graph,
+            pending_choice=pending_choice,
         )
 
     messages = build_semantic_router_messages(
@@ -136,27 +159,38 @@ def route_semantically(
         available_capabilities=available_capabilities,
     )
     try:
-        response = model_client.chat(
-            messages,
-            temperature=0.0,
-            max_tokens=SEMANTIC_ROUTER_MAX_TOKENS,
+        response = _chat_semantic_router(model_client, messages)
+    except Exception:
+        return _router_unavailable_decision(
+            message=message,
+            language=_infer_language(message.content),
+            reason="semantic router failed",
+            current_graph=current_graph,
+            pending_choice=pending_choice,
         )
+
+    try:
+        route_code_decision = _route_code_decision(response, message)
+        if route_code_decision is not None:
+            return route_code_decision
         return parse_semantic_route_response(response)
     except Exception as first_error:
         try:
-            repair_response = model_client.chat(
+            repair_response = _chat_semantic_router(
+                model_client,
                 _repair_messages(
                     str(first_error),
-                    response if "response" in locals() else "",
+                    response,
                 ),
-                temperature=0.0,
-                max_tokens=SEMANTIC_ROUTER_MAX_TOKENS,
             )
             return parse_semantic_route_response(repair_response)
         except Exception:
             return _router_unavailable_decision(
+                message=message,
                 language=_infer_language(message.content),
                 reason="semantic router failed",
+                current_graph=current_graph,
+                pending_choice=pending_choice,
             )
 
 
@@ -195,20 +229,121 @@ def build_semantic_router_messages(
             role="system",
             content=(
                 "You are Alita's Semantic Router. Decide the user's route from "
-                "meaning and runtime context, not keywords. Return only JSON with "
-                "route, intent, complexity, requiresGraph, requiresTools, "
-                "requiresWeb, requiresFiles, requiresClarification, language, "
-                "confidence, contextUsed, missingInputs, requiredCapabilities, "
-                "toolCandidates, reason, clarificationPrompt. Use the user's "
-                "language for reason and clarificationPrompt. Allowed route values: "
-                "response_only, local_answer, simple_tool_answer, web_answer, "
-                "graph_feedback, clarification_required, deep_planning, "
-                "research_planning. Allowed complexity values: simple, bounded_tool, "
-                "multi_step, research. Never include local paths."
+                "meaning and runtime context, not keywords. Return exactly one "
+                "plain route code and nothing else. Codes: A=response_only, "
+                "B=local_answer, C=simple_tool_answer, D=web_answer, "
+                "E=graph_feedback, F=clarification_required, G=deep_planning, "
+                "H=research_planning. Complexity meanings: simple, bounded_tool, "
+                "multi_step, research. The primary distinction is the user's "
+                "desired outcome. If the user wants an answer, choose A/B/C/D/H "
+                "as appropriate. If the user wants Alita to produce or change "
+                "an artifact, choose G/H. Short social turns, greetings, thanks, "
+                "identity questions, and casual conversation are A=response_only. "
+                "Choose D=web_answer only for factual/current-information questions "
+                "where an answer is the deliverable; never choose D when the "
+                "user asks for a script, file, document, workflow, or executable "
+                "task as the deliverable. If the user asks Alita to "
+                "create, write, modify, build, execute, generate, or produce a "
+                "script, file, document, workflow, or other deliverable, choose "
+                "G=deep_planning even when web knowledge could help. Choose "
+                "H=research_planning only when the requested deliverable is a "
+                "research workflow, comparison, sourced report, or synthesis. "
+                "Examples: 你好 -> A; Python 如何统计 CSV 行数？ -> B; "
+                "帮我创建一个 Python 脚本，统计 CSV 文件的行数。 -> G; "
+                "联网调研电脑配件价格并输出配置报告 -> H. "
+                "Do not ask for clarification just because the message is not a "
+                "task. Never include local paths."
             ),
         ),
         ModelChatMessage(role="user", content=json.dumps(envelope, ensure_ascii=False)),
     ]
+
+
+def _chat_semantic_router(
+    model_client: SemanticRouterModelClient,
+    messages: list[ModelChatMessage],
+) -> str:
+    kwargs: dict[str, Any] = {
+        "temperature": 0.0,
+        "max_tokens": SEMANTIC_ROUTER_MAX_TOKENS,
+        "policy": SEMANTIC_ROUTER_POLICY,
+    }
+    if _chat_accepts_timeout_seconds(model_client):
+        kwargs["timeout_seconds"] = SEMANTIC_ROUTER_TIMEOUT_SECONDS
+    return model_client.chat(messages, **kwargs)
+
+
+def _chat_accepts_timeout_seconds(model_client: SemanticRouterModelClient) -> bool:
+    try:
+        signature = inspect.signature(model_client.chat)
+    except (TypeError, ValueError):
+        return False
+    return "timeout_seconds" in signature.parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
+def _route_code_decision(
+    response: str,
+    message: UserMessage,
+) -> SemanticRouteDecision | None:
+    code = response.strip().strip("`'\".。 \r\n\t").upper()
+    if code not in ROUTE_CODE_TO_ROUTE:
+        return None
+
+    route = ROUTE_CODE_TO_ROUTE[code]
+    language = _infer_language(message.content)
+    return SemanticRouteDecision(
+        route=route,
+        intent="route_code",
+        complexity=_complexity_for_route(route),
+        requires_graph=route in {"graph_feedback", "deep_planning", "research_planning"},
+        requires_tools=route
+        in {
+            "simple_tool_answer",
+            "web_answer",
+            "deep_planning",
+            "research_planning",
+        },
+        requires_web=route in {"web_answer", "research_planning"},
+        requires_files=bool(message.attachments),
+        requires_clarification=route == "clarification_required",
+        language=language,
+        confidence=0.9,
+        context_used=["current_message", "route_code"],
+        missing_inputs=(["clarification"] if route == "clarification_required" else []),
+        required_capabilities=[],
+        tool_candidates=[],
+        reason=_route_code_reason(route, language=language),
+        clarification_prompt=(
+            _default_clarification_prompt(language)
+            if route == "clarification_required"
+            else None
+        ),
+    )
+
+
+def _complexity_for_route(route: SemanticRoute) -> SemanticComplexity:
+    if route in {"simple_tool_answer", "web_answer"}:
+        return "bounded_tool"
+    if route == "research_planning":
+        return "research"
+    if route in {"graph_feedback", "deep_planning"}:
+        return "multi_step"
+    return "simple"
+
+
+def _route_code_reason(route: SemanticRoute, *, language: str) -> str:
+    if language == "zh":
+        return f"模型快速路由为 {route}。"
+    return f"Model fast-routed to {route}."
+
+
+def _default_clarification_prompt(language: str) -> str:
+    if language == "zh":
+        return "请补充你的目标或约束，我再继续。"
+    return "Please add the goal or constraints before I continue."
 
 
 def _repair_messages(error: str, invalid_response: str) -> list[ModelChatMessage]:
@@ -228,9 +363,38 @@ def _repair_messages(error: str, invalid_response: str) -> list[ModelChatMessage
 
 def _router_unavailable_decision(
     *,
+    message: UserMessage | None = None,
     language: str,
     reason: str,
+    current_graph: RunGraph | None = None,
+    pending_choice: dict[str, Any] | None = None,
 ) -> SemanticRouteDecision:
+    if (
+        message is not None
+        and message.content.strip()
+        and not message.attachments
+        and current_graph is None
+        and pending_choice is None
+    ):
+        return SemanticRouteDecision(
+            route="response_only",
+            intent="router_unavailable_response_fallback",
+            complexity="simple",
+            requires_graph=False,
+            requires_tools=False,
+            requires_web=False,
+            requires_files=False,
+            requires_clarification=False,
+            language=language,
+            confidence=0.0,
+            context_used=["current_message", "router_fallback"],
+            missing_inputs=[],
+            required_capabilities=[],
+            tool_candidates=[],
+            reason=reason,
+            clarification_prompt=None,
+        )
+
     is_zh = language == "zh"
     return SemanticRouteDecision(
         route="clarification_required",

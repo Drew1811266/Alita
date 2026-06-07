@@ -20,28 +20,28 @@ def budget_for_mode(mode: str) -> ContextBudget:
         return ContextBudget(
             mode="chat",
             max_memory_records=3,
-            max_chars=1600,
+            max_chars=6400,
             allowed_kinds=["preference", "graph_summary"],
         )
     if mode == "planning":
         return ContextBudget(
             mode="planning",
             max_memory_records=2,
-            max_chars=2400,
+            max_chars=9600,
             allowed_kinds=["preference", "graph_summary", "tool_outcome"],
         )
     if mode == "execution":
         return ContextBudget(
             mode="execution",
             max_memory_records=3,
-            max_chars=1200,
+            max_chars=4800,
             allowed_kinds=["tool_outcome", "graph_summary"],
         )
     if mode == "research":
         return ContextBudget(
             mode="research",
             max_memory_records=4,
-            max_chars=2000,
+            max_chars=8000,
             allowed_kinds=["graph_summary", "artifact_summary"],
         )
     raise ValueError(f"unsupported context mode: {mode}")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -24,6 +25,7 @@ from agent_service.web_search import (
 
 
 SNIPPET_LIMIT = 240
+CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 REPORT_SECTION_ORDER = [
     "summary",
     "key_findings",
@@ -381,10 +383,26 @@ def _synthesize_answer(
     sources: list[dict[str, Any]],
     failure: SearchFailure | None,
 ) -> str:
+    uses_chinese = _uses_chinese(question)
     if failure is not None and not sources:
+        if uses_chinese:
+            return (
+                f"联网搜索暂时没有完成：{failure.message}"
+                "请稍后重试，或提供一个可直接读取的来源链接。"
+            )
         return f"I could not complete the web search: {failure.message}"
     if not sources:
+        if uses_chinese:
+            return "我没有找到足够可靠的联网来源来回答这个问题。请换一个更具体的问题，或提供来源链接。"
         return "I could not find reliable web sources for this question."
+
+    if uses_chinese:
+        lines = [f"根据联网结果，关于“{question.strip()}”："]
+        for source in sources[:3]:
+            snippet = source["snippet"]
+            lines.append(f"{source['ref']} {source['title']}：{snippet}")
+        lines.append("来源已在引用列表中列出。")
+        return "\n".join(lines)
 
     lines = [f"Based on the web results for: {question.strip()}"]
     for source in sources[:3]:
@@ -392,6 +410,10 @@ def _synthesize_answer(
         lines.append(f"{source['ref']} {source['title']}: {snippet}")
     lines.append("Sources are listed with each reference.")
     return "\n".join(lines)
+
+
+def _uses_chinese(text: str) -> bool:
+    return bool(CJK_PATTERN.search(text))
 
 
 def source_payload(result: SearchResult, index: int) -> dict[str, Any]:

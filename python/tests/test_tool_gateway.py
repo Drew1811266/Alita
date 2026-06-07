@@ -64,6 +64,24 @@ def test_internal_provider_lists_existing_manifest_tools() -> None:
     assert "internal:document.typst_compile" in tool_ids
 
 
+def test_internal_provider_lists_virtual_web_system_tools() -> None:
+    registry = ToolRegistry.from_packages_root(_packages_root())
+    provider = InternalToolProvider(registry=registry)
+
+    tools = {tool.id: tool for tool in provider.list_tools()}
+
+    assert "internal:web.search.parallel" in tools
+    assert "internal:web.fetch.sources" in tools
+    assert tools["internal:web.search.parallel"].safety_policy.network == (
+        "provider_declared"
+    )
+    assert tools["internal:web.fetch.sources"].safety_policy.network == (
+        "provider_declared"
+    )
+    assert "network" in tools["internal:web.search.parallel"].permissions
+    assert "network" in tools["internal:web.fetch.sources"].permissions
+
+
 def test_internal_provider_preserves_manifest_permissions() -> None:
     registry = ToolRegistry.from_packages_root(_packages_root())
     provider = InternalToolProvider(registry=registry)

@@ -43,6 +43,7 @@ from agent_service.tool_registry import ToolRegistry
 SIDECAR_TOKEN_ENV = "ALITA_SIDECAR_TOKEN"
 SIDECAR_DEV_BYPASS_ENV = "ALITA_SIDECAR_ALLOW_UNAUTHENTICATED_DEV"
 SIDECAR_TOKEN_HEADER = "X-Alita-Sidecar-Token"
+SIDECAR_HEALTH_NAME = "alita-agent-sidecar"
 ALLOWED_CORS_ORIGINS = [
     "http://127.0.0.1:1420",
     "http://localhost:1420",
@@ -79,7 +80,7 @@ def require_sidecar_token(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"name": SIDECAR_HEALTH_NAME, "status": "ok"}
 
 
 @app.get("/asr/status", response_model=ASRStatus)

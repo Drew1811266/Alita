@@ -691,7 +691,8 @@ def stream_agent_events_from_state(
         )
         return
 
-    run_state = _route_run_state(run_state, model_client=model_client)
+    if run_state.intent is None:
+        run_state = _route_run_state(run_state, model_client=model_client)
     feedback_event = _semantic_graph_feedback_event_for_run_state(run_state)
     if feedback_event is not None:
         yield feedback_event
