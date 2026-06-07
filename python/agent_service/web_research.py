@@ -13,7 +13,7 @@ from agent_service.tool_providers.weather import (
 )
 from agent_service.tool_providers.web_search import default_search_provider
 from agent_service.tool_result import ToolFailure, ToolResult
-from agent_service.tool_router import route_tool_for_message
+from agent_service.tool_router import route_tool_for_message, route_tool_from_candidate
 from agent_service.web_search import (
     SearchFailure,
     SearchProvider,
@@ -211,8 +211,9 @@ def answer_simple_web_inquiry(
     search_provider: SearchProvider | None = None,
     weather_provider: WeatherProvider | None = None,
 ) -> AgentEvent:
-    del route_decision
-    tool_route = route_tool_for_message(message)
+    tool_route = _tool_route_from_semantic_candidates(message, route_decision)
+    if tool_route is None:
+        tool_route = route_tool_for_message(message)
     if tool_route is not None and tool_route.tool_name.startswith("weather."):
         return _answer_weather_inquiry(message, tool_route, provider=weather_provider)
 
@@ -241,6 +242,48 @@ def answer_simple_web_inquiry(
             },
         },
     )
+
+
+def _tool_route_from_semantic_candidates(
+    message: UserMessage,
+    route_decision: RouteDecision | dict,
+) -> Any | None:
+    for candidate in _semantic_tool_candidates(route_decision):
+        tool_route = route_tool_from_candidate(message, candidate)
+        if tool_route is not None:
+            return tool_route
+    return None
+
+
+def _semantic_tool_candidates(route_decision: RouteDecision | dict) -> list[str]:
+    if not isinstance(route_decision, dict):
+        return []
+
+    candidates: list[str] = []
+    for key in ("toolCandidates", "tool_candidates"):
+        candidates.extend(_string_items(route_decision.get(key)))
+
+    semantic_route = route_decision.get("semanticRoute") or route_decision.get(
+        "semantic_route"
+    )
+    if isinstance(semantic_route, dict):
+        for key in ("toolCandidates", "tool_candidates"):
+            candidates.extend(_string_items(semantic_route.get(key)))
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        normalized = candidate.strip()
+        if normalized and normalized not in seen:
+            deduped.append(normalized)
+            seen.add(normalized)
+    return deduped
+
+
+def _string_items(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
 
 
 def _answer_weather_inquiry(

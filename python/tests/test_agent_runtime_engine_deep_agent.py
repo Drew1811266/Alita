@@ -49,9 +49,11 @@ class FakeSemanticModel:
         route: str,
         *,
         tool_candidates: list[str] | None = None,
+        required_capabilities: list[str] | None = None,
     ):
         self.route = route
         self.tool_candidates = list(tool_candidates or [])
+        self.required_capabilities = list(required_capabilities or [])
         self.calls = 0
 
     def chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
@@ -65,9 +67,14 @@ class FakeSemanticModel:
                     "simple" if self.route == "response_only" else "multi_step"
                 ),
                 "requiresGraph": self.route
-                in {"deep_planning", "research_planning"},
+                in {"graph_feedback", "deep_planning", "research_planning"},
                 "requiresTools": self.route
-                in {"web_answer", "deep_planning", "research_planning"},
+                in {
+                    "simple_tool_answer",
+                    "web_answer",
+                    "deep_planning",
+                    "research_planning",
+                },
                 "requiresWeb": self.route in {"web_answer", "research_planning"},
                 "requiresFiles": False,
                 "requiresClarification": False,
@@ -75,7 +82,7 @@ class FakeSemanticModel:
                 "confidence": 0.94,
                 "contextUsed": ["current_message"],
                 "missingInputs": [],
-                "requiredCapabilities": [],
+                "requiredCapabilities": list(self.required_capabilities),
                 "toolCandidates": list(self.tool_candidates),
                 "reason": "语义路由测试。",
             }
@@ -229,6 +236,37 @@ def test_current_graph_question_does_not_preflight_as_graph_feedback() -> None:
         "runtime.run_started",
         "node_graph.created",
     ]
+
+
+def test_semantic_graph_feedback_route_bypasses_deep_agent_runtime() -> None:
+    deep_calls: list[UserMessage] = []
+
+    def deep_runtime(message: UserMessage, **kwargs):
+        del kwargs
+        deep_calls.append(message)
+        raise AssertionError("semantic graph_feedback must not enter Deep Agent")
+
+    engine = AgentRuntimeEngine(deep_runtime_runner=deep_runtime)
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="task-semantic-graph-feedback",
+            content="请把这个方案调整得更稳妥一些。",
+        ),
+        current_graph=_existing_graph(),
+    ).model_copy(update={"project_path": "D:/Project/demo.alita"})
+
+    result = engine.run_from_state(
+        run_state,
+        model_client=FakeSemanticModel("graph_feedback"),
+    )
+
+    assert deep_calls == []
+    assert [event.type for event in result.events] == [
+        "runtime.run_started",
+        "runtime.state_delta",
+        "graph.replanned",
+    ]
+    assert result.events[1].payload["delta"]["decision"]["kind"] == "graph_feedback"
 
 
 def test_streaming_current_graph_feedback_bypasses_deep_agent_runtime(

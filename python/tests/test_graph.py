@@ -614,6 +614,23 @@ def test_run_agent_from_state_uses_semantic_router_not_classify_route(
     assert events[0].type == "message.created"
 
 
+def test_run_agent_from_state_honors_semantic_graph_feedback_route() -> None:
+    run_state = AgentRunState.from_user_message(
+        UserMessage(
+            task_id="graph-semantic-feedback",
+            content="请把当前方案调整得更稳妥一些。",
+        ),
+        current_graph=_existing_graph(),
+    )
+
+    events = run_agent_from_state(
+        run_state,
+        model_client=FakeGraphSemanticModel("graph_feedback"),
+    )
+
+    assert [event.type for event in events] == ["graph.replanned"]
+
+
 def test_route_run_state_passes_graph_context_to_semantic_router(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

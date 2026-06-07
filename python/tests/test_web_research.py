@@ -302,6 +302,29 @@ def test_simple_weather_inquiry_uses_weather_provider_without_search() -> None:
     assert event.payload["sourceMetadata"]["toolName"] == "weather.current"
 
 
+def test_semantic_weather_candidate_uses_weather_provider_without_keyword() -> None:
+    from agent_service.web_research import answer_simple_web_inquiry
+
+    weather_provider = FakeWeatherProvider()
+    message = UserMessage(task_id="weather-semantic", content="今天上海怎么样？")
+    event = answer_simple_web_inquiry(
+        message,
+        {
+            "semanticRoute": {
+                "route": "simple_tool_answer",
+                "toolCandidates": ["weather.current"],
+            },
+            "toolCandidates": ["weather.current"],
+        },
+        search_provider=FailingSearchProvider(),
+        weather_provider=weather_provider,
+    )
+
+    assert event.type == "message.created"
+    assert weather_provider.current_locations == ["上海"]
+    assert event.payload["sourceMetadata"]["toolName"] == "weather.current"
+
+
 def test_weather_provider_exception_returns_failure_message_without_raising() -> None:
     from agent_service.web_research import answer_simple_web_inquiry
 

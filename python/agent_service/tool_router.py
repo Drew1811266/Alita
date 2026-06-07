@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
-from typing import Literal
+from typing import Literal, cast
 
 from agent_service.schemas import UserMessage
 
@@ -66,6 +66,30 @@ def route_tool_for_message(message: UserMessage) -> ToolRoute | None:
     )
 
 
+def route_tool_from_candidate(
+    message: UserMessage,
+    tool_name: str,
+) -> ToolRoute | None:
+    if tool_name not in {"weather.current", "weather.forecast"}:
+        return None
+
+    weather_tool = cast(ToolName, tool_name)
+    location = _extract_location(message.content) or _extract_semantic_weather_location(
+        message.content
+    )
+    if not location:
+        return ToolRoute(
+            tool_name=weather_tool,
+            status="missing_input",
+            missing_inputs=["location"],
+        )
+    return ToolRoute(
+        tool_name=weather_tool,
+        status="ready",
+        arguments={"location": location},
+    )
+
+
 def _is_weather_question(content: str) -> bool:
     if not _contains_any(content, _WEATHER_MARKERS):
         return False
@@ -87,6 +111,19 @@ def _extract_location(content: str) -> str | None:
         if match:
             return _clean_location(match.group("location"))
 
+    return None
+
+
+def _extract_semantic_weather_location(content: str) -> str | None:
+    normalized = content.strip()
+    for pattern in _CHINESE_SEMANTIC_WEATHER_LOCATION_PATTERNS:
+        match = pattern.search(normalized)
+        if match:
+            return _clean_location(match.group("location"))
+    for pattern in _ENGLISH_SEMANTIC_WEATHER_LOCATION_PATTERNS:
+        match = pattern.search(normalized)
+        if match:
+            return _clean_location(match.group("location"))
     return None
 
 
@@ -297,6 +334,23 @@ _CHINESE_LOCATION_PATTERNS = [
     ),
 ]
 
+_CHINESE_SEMANTIC_WEATHER_LOCATION_PATTERNS = [
+    re.compile(
+        rf"(?:^|[，,。！？\s]){_CHINESE_REQUEST_PREFIX_PATTERN}"
+        rf"{_CHINESE_TIME_PATTERN}"
+        rf"{_CHINESE_LOCATION}"
+        rf"(?:市|省|县|区)?(?:的)?"
+        r"(?:怎么样|如何|什么情况|还好吗|可以吗)"
+    ),
+    re.compile(
+        rf"(?:^|[，,。！？\s]){_CHINESE_REQUEST_PREFIX_PATTERN}"
+        rf"{_CHINESE_LOCATION}"
+        rf"(?:市|省|县|区)?(?:的)?"
+        rf"{_CHINESE_TIME_PATTERN}(?:的)?"
+        r"(?:怎么样|如何|什么情况|还好吗|可以吗)"
+    ),
+]
+
 _ENGLISH_LOCATION_PATTERNS = [
     re.compile(
         r"\b(?:what(?:'s| is)|how(?:'s| is))\s+the\s+weather\s+"
@@ -334,6 +388,20 @@ _ENGLISH_LOCATION_PATTERNS = [
         r"\bin\s+(?P<location>[A-Za-z][A-Za-z .'-]{1,60})\s+"
         r"(?:today|tonight|tomorrow|now|currently)?\s*"
         r"(?:weather|temperature|forecast|rain|snow)",
+        re.IGNORECASE,
+    ),
+]
+
+_ENGLISH_SEMANTIC_WEATHER_LOCATION_PATTERNS = [
+    re.compile(
+        r"\bhow(?:'s| is)\s+"
+        r"(?P<location>[A-Z][A-Za-z .'-]{1,60}?)\s+"
+        r"(?:today|tonight|tomorrow|now|currently)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:today|tonight|tomorrow|now|currently)\s+in\s+"
+        r"(?P<location>[A-Z][A-Za-z .'-]{1,60})",
         re.IGNORECASE,
     ),
 ]

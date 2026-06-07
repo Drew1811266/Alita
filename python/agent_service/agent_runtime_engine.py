@@ -18,6 +18,7 @@ from agent_service.capability_gate import (
 )
 from agent_service.graph import (
     _is_explicit_graph_constraint_feedback,
+    _semantic_graph_feedback_event,
     run_agent_from_state,
     stream_agent_events_from_state,
 )
@@ -35,7 +36,6 @@ from agent_service.runtime_state import (
 )
 from agent_service.runtime_store import RuntimeStore
 from agent_service.schemas import AgentEvent, RunGraph, UserMessage
-from agent_service.tool_router import route_tool_for_message
 
 
 @dataclass(frozen=True)
@@ -138,7 +138,11 @@ class AgentRuntimeEngine:
                 events=[*started.events, *guard_events],
             )
 
-        feedback_result = self._current_graph_feedback_result(started.state, run_state)
+        feedback_result = self._current_graph_feedback_result(
+            started.state,
+            run_state,
+            model_client=model_client,
+        )
         if feedback_result is not None:
             feedback_events, next_state = feedback_result
             return RuntimeEngineResult(
@@ -250,7 +254,11 @@ class AgentRuntimeEngine:
                 yield event
             return
 
-        feedback_result = self._current_graph_feedback_result(started.state, run_state)
+        feedback_result = self._current_graph_feedback_result(
+            started.state,
+            run_state,
+            model_client=model_client,
+        )
         if feedback_result is not None:
             feedback_events, _next_state = feedback_result
             for event in feedback_events:
@@ -622,20 +630,40 @@ class AgentRuntimeEngine:
         self,
         state: RuntimeState,
         run_state: AgentRunState,
+        *,
+        model_client: Any | None = None,
     ) -> tuple[list[AgentEvent], RuntimeState] | None:
         current_graph = run_state.current_graph
         if current_graph is None:
             return None
-        if not _should_preflight_graph_feedback(run_state):
-            return None
 
-        feedback_event = apply_graph_feedback(
-            run_state.message,
-            current_graph,
-            has_run_history=run_state.has_run_history,
-            artifact_refs=run_state.artifact_refs,
-            pending_choice=run_state.pending_choice,
-        )
+        if _should_preflight_graph_feedback(run_state):
+            feedback_event = apply_graph_feedback(
+                run_state.message,
+                current_graph,
+                has_run_history=run_state.has_run_history,
+                artifact_refs=run_state.artifact_refs,
+                pending_choice=run_state.pending_choice,
+            )
+        else:
+            decision = route_message(
+                run_state.message,
+                inquiry_choice=run_state.inquiry_choice,
+                model_client=model_client,
+                current_graph=current_graph,
+                pending_choice=run_state.pending_choice,
+                available_capabilities=_runtime_available_capabilities(),
+            )
+            route = str(decision.structured_route.get("route") or "")
+            if route != "graph_feedback":
+                return None
+            feedback_event = _semantic_graph_feedback_event(
+                run_state.message,
+                current_graph,
+                has_run_history=run_state.has_run_history,
+                artifact_refs=run_state.artifact_refs,
+                pending_choice=run_state.pending_choice,
+            )
         next_state = state.model_copy(update={"stage": "plan"})
         delta_event = self._record_transition(
             state,
@@ -823,7 +851,7 @@ def _run_state_for_pre_deep_response(
     *,
     model_client: Any | None,
 ) -> AgentRunState | None:
-    if run_state.current_graph is not None:
+    if run_state.current_graph is not None and model_client is None:
         return None
     if run_state.pending_choice is not None:
         return None
@@ -961,16 +989,6 @@ def _deterministic_input_guard_event(run_state: AgentRunState) -> AgentEvent | N
             payload={
                 "prompt": "请先输入你想让我处理的问题或任务。",
                 "missing": ["message"],
-            },
-        )
-
-    tool_route = route_tool_for_message(run_state.message)
-    if tool_route is not None and tool_route.status == "missing_input":
-        return AgentEvent(
-            type="input.required",
-            payload={
-                "prompt": "请告诉我要查询哪个城市的天气。",
-                "missing": list(tool_route.missing_inputs),
             },
         )
 

@@ -24,7 +24,8 @@ def evaluate_route_capabilities(
     if decision.requires_files and not message.attachments:
         missing_inputs.append("attachment")
 
-    missing = _missing_tool_candidates(
+    missing = _missing_route_capabilities(
+        decision.required_capabilities,
         decision.tool_candidates,
         available_capabilities,
     )
@@ -64,7 +65,8 @@ def evaluate_route_capabilities(
     return CapabilityGateResult(allowed=True, reason="capabilities available")
 
 
-def _missing_tool_candidates(
+def _missing_route_capabilities(
+    required_capabilities: list[str],
     tool_candidates: list[str],
     available_capabilities: list[str],
 ) -> list[str]:
@@ -80,4 +82,34 @@ def _missing_tool_candidates(
         if normalized and normalized not in available and normalized not in seen:
             missing.append(normalized)
             seen.add(normalized)
+    for capability in required_capabilities:
+        normalized = capability.strip()
+        if (
+            normalized
+            and not _required_capability_available(
+                normalized,
+                available=available,
+                tool_candidates=tool_candidates,
+            )
+            and normalized not in seen
+        ):
+            missing.append(normalized)
+            seen.add(normalized)
     return missing
+
+
+def _required_capability_available(
+    capability: str,
+    *,
+    available: set[str],
+    tool_candidates: list[str],
+) -> bool:
+    if capability in available:
+        return True
+    for candidate in tool_candidates:
+        normalized = candidate.strip()
+        if not normalized:
+            continue
+        if normalized == capability or normalized.startswith(capability):
+            return True
+    return False

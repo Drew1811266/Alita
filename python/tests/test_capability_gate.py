@@ -49,6 +49,22 @@ def test_capability_gate_blocks_missing_web_tool_without_changing_intent() -> No
     assert "当前任务需要尚未接入的能力" in result.user_message
 
 
+def test_capability_gate_blocks_missing_required_capability_without_tool_candidate() -> None:
+    result = evaluate_route_capabilities(
+        _decision(
+            requiredCapabilities=["legal.database"],
+            toolCandidates=[],
+            reason="需要法律数据库能力。",
+        ),
+        UserMessage(task_id="cap-required", content="查询最新法律条文"),
+        available_capabilities=[],
+    )
+
+    assert result.allowed is False
+    assert result.missing_capabilities == ["legal.database"]
+    assert "legal.database" in result.user_message
+
+
 def test_capability_gate_blocks_required_file_without_attachment() -> None:
     result = evaluate_route_capabilities(
         _decision(
