@@ -65,7 +65,8 @@ AgentIntent = Literal[
 ]
 InquiryChoice = Literal["quick_answer", "research_flow"]
 RESEARCH_CHOICE_PROMPT = (
-    "这个问题可以快速回答，也可以转成研究流程。请选择接下来的处理方式。"
+    "This question can be answered quickly or turned into a research flow. "
+    "Choose how to proceed."
 )
 
 
@@ -382,13 +383,13 @@ def choose_research_mode(state: AgentState) -> AgentState:
                     "choices": [
                         {
                             "id": "quick_answer",
-                            "label": "快速回答",
-                            "description": "立即检索网络，并返回简洁且带来源的回答。",
+                            "label": "Quick answer",
+                            "description": "Search the web now and return a concise sourced answer.",
                         },
                         {
                             "id": "research_flow",
-                            "label": "研究流程",
-                            "description": "创建包含规划、来源审查和报告合成的研究图。",
+                            "label": "Research flow",
+                            "description": "Create a research graph for planning, source review, and report synthesis.",
                         },
                     ]
                 },
@@ -679,8 +680,7 @@ def stream_agent_events_from_state(
         )
         return
 
-    if run_state.intent is None:
-        run_state = _route_run_state(run_state, model_client=model_client)
+    run_state = _route_run_state(run_state, model_client=model_client)
     if run_state.intent == "task":
         run_state = _run_state_with_structured_route_for_planning(message, run_state)
         graph_payload = _graph_payload_for_task(
@@ -847,14 +847,6 @@ def _looks_like_external_web_request(content: str) -> bool:
 
 def _build_model_messages(message: UserMessage) -> list[ModelChatMessage]:
     user_content = message.content.strip() or "请根据当前对话继续。"
-    history = _conversation_history_text(message)
-    if history:
-        user_content = (
-            "最近对话上下文：\n"
-            f"{history}\n\n"
-            "当前用户消息：\n"
-            f"{user_content}"
-        )
     if message.attachments:
         attachment_names = "、".join(attachment.name for attachment in message.attachments)
         user_content = f"{user_content}\n\n当前项目附件：{attachment_names}"
@@ -871,21 +863,6 @@ def _build_model_messages(message: UserMessage) -> list[ModelChatMessage]:
         ),
         ModelChatMessage(role="user", content=user_content),
     ]
-
-
-def _conversation_history_text(message: UserMessage) -> str:
-    lines: list[str] = []
-    for turn in message.conversation_history[-12:]:
-        content = turn.content.strip()
-        if not content:
-            continue
-        role = {
-            "user": "用户",
-            "assistant": "助手",
-            "system": "系统",
-        }.get(turn.role, turn.role)
-        lines.append(f"{role}：{content}")
-    return "\n".join(lines)
 
 
 def _assistant_message(content: str) -> dict:

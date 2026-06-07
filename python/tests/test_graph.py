@@ -9,7 +9,6 @@ from pydantic import ValidationError
 import agent_service.graph as graph_module
 from agent_service.agent_run_state import AgentRunState
 from agent_service.graph import (
-    _build_model_messages,
     _classify_message,
     _node,
     build_graph,
@@ -140,32 +139,47 @@ def _semantic_decision(
     )
 
 
-def _semantic_route_for_legacy_graph_test(
-    message: UserMessage,
-    *,
-    inquiry_choice: str | None = None,
-) -> str:
-    normalized = message.content.lower()
-    if "research" in normalized and ("compare" in normalized or "github" in normalized):
-        return "research_planning"
-    decision = classify_route(message)
-    intent = graph_module._compatible_intent(
-        message,
-        decision,
-        inquiry_choice=inquiry_choice,
-        goal_spec=parse_goal_spec(message),
-    )
-    if intent == "chat":
-        return "response_only"
-    if intent == "local_inquiry":
-        return "local_answer"
-    if intent == "web_simple_inquiry":
-        return "web_answer"
-    if intent in {"web_complex_choice", "web_complex_research_flow"}:
-        return "research_planning"
-    if intent == "task":
-        return "deep_planning"
-    return "clarification_required"
+_TEST_SEMANTIC_ROUTES_BY_TASK_ID: dict[str, str] = {
+    "complex-web": "research_planning",
+    "complex-web-from-state": "research_planning",
+    "default-router-off": "response_only",
+    "empty-message": "clarification_required",
+    "github-research": "research_planning",
+    "medium-model-route": "clarification_required",
+    "planner-chain-code": "deep_planning",
+    "planner-chain-document": "deep_planning",
+    "planner-chain-event-shape": "deep_planning",
+    "simple-web": "web_answer",
+    "stream-quick-answer-once": "research_planning",
+    "task-1": "clarification_required",
+    "task-2": "deep_planning",
+    "task-attached-route": "deep_planning",
+    "task-chat": "response_only",
+    "task-chat-from-state": "response_only",
+    "task-effective-route": "research_planning",
+    "task-feedback-guard": "response_only",
+    "task-general": "deep_planning",
+    "task-latest-doc": "deep_planning",
+    "task-latest-only-doc": "deep_planning",
+    "task-legacy-route": "web_answer",
+    "task-planner-chain": "deep_planning",
+    "task-route": "web_answer",
+    "task-run-state-route": "web_answer",
+    "task-runtime-engine-compat": "deep_planning",
+    "weather": "simple_tool_answer",
+}
+
+
+_TEST_MISSING_INPUTS_BY_TASK_ID: dict[str, list[str]] = {
+    "empty-message": ["message"],
+    "task-1": ["document_file"],
+}
+
+
+_TEST_ROUTE_REASONS_BY_TASK_ID: dict[str, str] = {
+    "task-route": "question requests current or external factual data",
+    "task-run-state-route": "question requests current or external factual data",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -182,47 +196,22 @@ def route_legacy_graph_tests_semantically(monkeypatch: pytest.MonkeyPatch) -> No
         route = (
             model_client.route
             if isinstance(model_client, FakeGraphSemanticModel)
-            else _semantic_route_for_legacy_graph_test(message)
+            else _TEST_SEMANTIC_ROUTES_BY_TASK_ID.get(message.task_id, "response_only")
         )
-        decision = classify_route(message)
-        missing_inputs = _ordered_unique(
-            [*decision.missing_inputs, *parse_goal_spec(message).missing_inputs]
-        )
+        missing_inputs = _TEST_MISSING_INPUTS_BY_TASK_ID.get(message.task_id)
+        if missing_inputs is None:
+            missing_inputs = parse_goal_spec(message).missing_inputs
         return _semantic_decision(
             route,
             message=message,
             missing_inputs=missing_inputs,
-            reason=decision.reason,
+            reason=_TEST_ROUTE_REASONS_BY_TASK_ID.get(
+                message.task_id,
+                f"test semantic route for {message.task_id}",
+            ),
         )
 
     monkeypatch.setattr("agent_service.router_v2.route_semantically", fake_route_semantically)
-
-
-def _ordered_unique(values: list[str]) -> list[str]:
-    result: list[str] = []
-    for value in values:
-        if value not in result:
-            result.append(value)
-    return result
-
-
-def test_model_messages_include_recent_conversation_history() -> None:
-    messages = _build_model_messages(
-        UserMessage(
-            task_id="task-chat-history",
-            content="继续按这个方案。",
-            conversation_history=[
-                {"role": "user", "content": "预算是一万元。"},
-                {"role": "assistant", "content": "请补充用途。"},
-            ],
-        )
-    )
-
-    user_prompt = messages[1].content
-    assert "最近对话上下文" in user_prompt
-    assert "用户：预算是一万元。" in user_prompt
-    assert "助手：请补充用途。" in user_prompt
-    assert "继续按这个方案。" in user_prompt
 
 
 def _existing_graph() -> RunGraph:
@@ -612,10 +601,14 @@ def test_run_agent_from_state_uses_semantic_router_not_classify_route(
         raise AssertionError("classify_route must not run in graph route path")
 
     monkeypatch.setattr("agent_service.graph.classify_route", fail_classify_route)
-    events = run_agent(
+    run_state = AgentRunState.from_user_message(
         UserMessage(task_id="graph-semantic", content="你好"),
-        model_client=FakeGraphSemanticModel("response_only"),
         current_graph=_existing_graph(),
+    )
+
+    events = run_agent_from_state(
+        run_state,
+        model_client=FakeGraphSemanticModel("response_only"),
     )
 
     assert events[0].type == "message.created"
