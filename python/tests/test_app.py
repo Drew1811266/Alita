@@ -24,6 +24,7 @@ class FakeDeepModel:
         self.direct_reply = direct_reply
         self.calls = 0
         self.chat_calls = 0
+        self.semantic_calls = 0
 
     def chat_with_diagnostics(self, messages, *, policy=None, **kwargs):
         del messages, policy, kwargs
@@ -46,6 +47,7 @@ class FakeDeepModel:
         del policy, kwargs
         self.chat_calls += 1
         if _is_semantic_router_call(messages):
+            self.semantic_calls += 1
             payload = (
                 self.semantic_payloads.pop(0)
                 if self.semantic_payloads
@@ -479,6 +481,9 @@ def test_agent_message_greeting_uses_semantic_router(monkeypatch: pytest.MonkeyP
     assert "planning.failed" not in event_types
     assert "node_graph.created" not in event_types
     assert "message.created" in event_types
+    assert model.semantic_calls == 1
+    assert model.semantic_payloads == []
+    assert model.chat_calls >= 2
 
 
 def test_agent_message_rejects_planning_confirmation_without_decision(
