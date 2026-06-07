@@ -60,10 +60,12 @@ UserMessage -> State Guard -> Semantic Router LLM -> Router Validator -> Capabil
 当前主要入口行为包括：
 
 - `response_only`：普通聊天和本地问答，直接回复。
-- `tool_answer`：可由已启用工具直接回答的请求。
+- `local_answer`：不需要联网或工具的本地知识问答。
+- `simple_tool_answer`：可由已启用工具直接回答的请求，例如天气。
+- `web_answer`：简单联网事实问答，直接返回来源化回答。
 - `graph_feedback`：用户对当前 Agent Plan Graph 的明确反馈。
 - `deep_planning` / `research_planning`：复杂任务或调研请求，进入 Deep Agent 规划。
-- `clarify`：语义路由失败、输入不完整或能力不足时，用中文澄清下一步。
+- `clarification_required`：语义路由失败、输入不完整或能力不足时，用中文澄清下一步。
 
 旧的关键词/模板路由路径保留为 legacy 兼容和回归覆盖，但当前 HTTP Agent 主路径不再由 `intent.py` 决定。
 
