@@ -567,27 +567,13 @@ def test_semantic_research_planning_quick_answer_enters_deep_agent() -> None:
 
 def test_semantic_response_only_missing_capability_routes_to_missing_input() -> None:
     deep_calls: list[UserMessage] = []
-    legacy_calls: list[AgentRunState] = []
 
     def deep_runtime(message: UserMessage, **kwargs):
         del kwargs
         deep_calls.append(message)
         raise AssertionError("blocked semantic route must not enter Deep Agent")
 
-    def legacy_runner(run_state: AgentRunState, **kwargs):
-        del kwargs
-        legacy_calls.append(run_state)
-        return [
-            AgentEvent(
-                type="input.required",
-                payload={"missing": ["capability"]},
-            )
-        ]
-
-    engine = AgentRuntimeEngine(
-        route_runner=legacy_runner,
-        deep_runtime_runner=deep_runtime,
-    )
+    engine = AgentRuntimeEngine(deep_runtime_runner=deep_runtime)
     run_state = AgentRunState.from_user_message(
         UserMessage(task_id="semantic-capability-block", content="你好")
     ).model_copy(
@@ -603,8 +589,15 @@ def test_semantic_response_only_missing_capability_routes_to_missing_input() -> 
     )
 
     assert deep_calls == []
-    assert len(legacy_calls) == 1
-    assert legacy_calls[0].intent == "missing_input"
+    required_event = next(
+        event for event in result.events if event.type == "input.required"
+    )
+    assert "当前任务需要尚未接入的能力" in required_event.payload["prompt"]
+    assert required_event.payload["missing"] != ["message"]
+    assert "clarification" in required_event.payload["missing"]
+    assert "capability:unavailable.semantic.capability" in required_event.payload[
+        "missing"
+    ]
     assert result.state.stage == "plan"
 
 

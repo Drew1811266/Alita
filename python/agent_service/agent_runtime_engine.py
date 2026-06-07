@@ -12,7 +12,10 @@ from agent_service.deep_agent_runtime_graph import (
     stream_deep_agent_runtime_events,
 )
 from agent_service.deep_agent_runtime_models import PlanningResumeCommand
-from agent_service.capability_gate import evaluate_route_capabilities
+from agent_service.capability_gate import (
+    CapabilityGateResult,
+    evaluate_route_capabilities,
+)
 from agent_service.graph import (
     _is_explicit_graph_constraint_feedback,
     run_agent_from_state,
@@ -844,12 +847,19 @@ def _run_state_for_pre_deep_response(
         return None
     if not _semantic_route_allows_pre_deep_response(decision):
         return None
-    if _semantic_capability_blocked(run_state, decision):
+    gate_result = _semantic_capability_gate_result(run_state, decision)
+    if gate_result is not None and not gate_result.allowed:
         return run_state.model_copy(
             update={
                 "intent": "missing_input",
-                "route_decision": decision.legacy_route,
-                "structured_route_decision": decision.to_payload(),
+                "route_decision": _route_decision_for_capability_gate(
+                    decision,
+                    gate_result,
+                ),
+                "structured_route_decision": _structured_route_for_capability_gate(
+                    decision,
+                    gate_result,
+                ),
             }
         )
 
@@ -873,22 +883,63 @@ def _semantic_route_allows_pre_deep_response(decision: RouterV2Decision) -> bool
     }
 
 
-def _semantic_capability_blocked(
+def _semantic_capability_gate_result(
     run_state: AgentRunState,
     decision: RouterV2Decision,
-) -> bool:
+) -> CapabilityGateResult | None:
     try:
         semantic_decision = SemanticRouteDecision.model_validate(
             decision.structured_route
         )
     except Exception:
-        return False
-    gate_result = evaluate_route_capabilities(
+        return None
+    return evaluate_route_capabilities(
         semantic_decision,
         run_state.message,
         available_capabilities=_runtime_available_capabilities(),
     )
-    return not gate_result.allowed
+
+
+def _route_decision_for_capability_gate(
+    decision: RouterV2Decision,
+    gate_result: CapabilityGateResult,
+) -> dict[str, Any]:
+    route_decision = dict(decision.legacy_route)
+    route_decision["intent"] = "missing_input"
+    route_decision["missing_inputs"] = _capability_gate_missing_inputs(gate_result)
+    route_decision["missing_capabilities"] = list(gate_result.missing_capabilities)
+    route_decision["reason"] = gate_result.reason
+    return route_decision
+
+
+def _structured_route_for_capability_gate(
+    decision: RouterV2Decision,
+    gate_result: CapabilityGateResult,
+) -> dict[str, Any]:
+    payload = decision.to_payload()
+    payload["intent"] = "missing_input"
+    payload["missingInputs"] = _capability_gate_missing_inputs(gate_result)
+    payload["clarificationPrompt"] = gate_result.user_message
+    payload["capabilityGate"] = gate_result.model_dump()
+    return payload
+
+
+def _capability_gate_missing_inputs(
+    gate_result: CapabilityGateResult,
+) -> list[str]:
+    missing: list[str] = []
+    for item in gate_result.missing_inputs:
+        if item and item not in missing:
+            missing.append(item)
+    if gate_result.missing_capabilities and "clarification" not in missing:
+        missing.append("clarification")
+    for capability in gate_result.missing_capabilities:
+        marker = f"capability:{capability}"
+        if marker not in missing:
+            missing.append(marker)
+    if not missing:
+        missing.append("clarification")
+    return missing
 
 
 def _runtime_available_capabilities() -> list[str]:
