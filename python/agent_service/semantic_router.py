@@ -38,6 +38,8 @@ LOCAL_PATH_FRAGMENT_PATTERNS = (
     re.compile(r"(?i)(?<![A-Za-z0-9])agent_service(?![A-Za-z0-9])"),
 )
 
+SEMANTIC_ROUTER_MAX_TOKENS = 2048
+
 
 class SemanticRouterModelClient(Protocol):
     def chat(
@@ -113,6 +115,51 @@ def parse_semantic_route_response(response: str) -> SemanticRouteDecision:
     return SemanticRouteDecision.model_validate(_scrub_route_payload(raw))
 
 
+def route_semantically(
+    message: UserMessage,
+    *,
+    model_client: SemanticRouterModelClient | None,
+    current_graph: RunGraph | None = None,
+    pending_choice: dict[str, Any] | None = None,
+    available_capabilities: list[str] | None = None,
+) -> SemanticRouteDecision:
+    if model_client is None:
+        return _router_unavailable_decision(
+            language=_infer_language(message.content),
+            reason="semantic router model unavailable",
+        )
+
+    messages = build_semantic_router_messages(
+        message,
+        current_graph=current_graph,
+        pending_choice=pending_choice,
+        available_capabilities=available_capabilities,
+    )
+    try:
+        response = model_client.chat(
+            messages,
+            temperature=0.0,
+            max_tokens=SEMANTIC_ROUTER_MAX_TOKENS,
+        )
+        return parse_semantic_route_response(response)
+    except Exception as first_error:
+        try:
+            repair_response = model_client.chat(
+                _repair_messages(
+                    str(first_error),
+                    response if "response" in locals() else "",
+                ),
+                temperature=0.0,
+                max_tokens=SEMANTIC_ROUTER_MAX_TOKENS,
+            )
+            return parse_semantic_route_response(repair_response)
+        except Exception:
+            return _router_unavailable_decision(
+                language=_infer_language(message.content),
+                reason="semantic router failed",
+            )
+
+
 def build_semantic_router_messages(
     message: UserMessage,
     *,
@@ -162,6 +209,58 @@ def build_semantic_router_messages(
         ),
         ModelChatMessage(role="user", content=json.dumps(envelope, ensure_ascii=False)),
     ]
+
+
+def _repair_messages(error: str, invalid_response: str) -> list[ModelChatMessage]:
+    return [
+        ModelChatMessage(
+            role="system",
+            content=(
+                "Repair this invalid Semantic Router response. Return only one "
+                "valid JSON object matching the Semantic Router schema. Do not "
+                "include markdown, commentary, or local paths.\n"
+                f"Error: {_safe_text(error)}\n"
+                f"Invalid response: {_safe_text(invalid_response)}"
+            ),
+        )
+    ]
+
+
+def _router_unavailable_decision(
+    *,
+    language: str,
+    reason: str,
+) -> SemanticRouteDecision:
+    is_zh = language == "zh"
+    return SemanticRouteDecision(
+        route="clarification_required",
+        intent="router_unavailable",
+        complexity="simple",
+        requires_graph=False,
+        requires_tools=False,
+        requires_web=False,
+        requires_files=False,
+        requires_clarification=True,
+        language=language,
+        confidence=0.0,
+        context_used=["current_message"],
+        missing_inputs=["router_decision"],
+        required_capabilities=["model.semantic_router"],
+        tool_candidates=[],
+        reason=reason,
+        clarification_prompt=(
+            "我需要确认你的目标后才能继续。你想让我直接回答、使用工具、联网研究，还是制定多步骤计划？"
+            if is_zh
+            else (
+                "I need to confirm your goal before continuing. Do you want a "
+                "direct answer, tool use, web research, or a multi-step plan?"
+            )
+        ),
+    )
+
+
+def _infer_language(content: str) -> str:
+    return "zh" if re.search(r"[\u3400-\u9fff]", content) else "en"
 
 
 def _graph_summary(current_graph: RunGraph | None) -> dict[str, Any] | None:

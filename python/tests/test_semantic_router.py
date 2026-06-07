@@ -10,7 +10,54 @@ from agent_service.semantic_router import (
     SemanticRouteDecision,
     build_semantic_router_messages,
     parse_semantic_route_response,
+    route_semantically,
 )
+
+
+class FakeSemanticRouterModel:
+    def __init__(
+        self,
+        responses: list[str] | None = None,
+        error: Exception | None = None,
+    ):
+        self.responses = list(responses or [])
+        self.error = error
+        self.calls = []
+
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None) -> str:
+        self.calls.append(
+            {
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "policy": policy,
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        return self.responses.pop(0)
+
+
+def _semantic_response(route: str, confidence: float = 0.95) -> str:
+    return json.dumps(
+        {
+            "route": route,
+            "intent": "greeting",
+            "complexity": "simple",
+            "requiresGraph": False,
+            "requiresTools": False,
+            "requiresWeb": False,
+            "requiresFiles": False,
+            "requiresClarification": False,
+            "language": "zh",
+            "confidence": confidence,
+            "contextUsed": ["current_message"],
+            "missingInputs": [],
+            "requiredCapabilities": [],
+            "toolCandidates": [],
+            "reason": "用户是在问候。",
+        }
+    )
 
 
 def test_semantic_route_decision_payload_is_frontend_safe() -> None:
@@ -279,3 +326,65 @@ def test_router_graph_summary_scrubs_user_controlled_string_fields() -> None:
     assert envelope["currentGraph"]["graphId"] == "[local_path]"
     assert envelope["currentGraph"]["nodes"][0]["nodeId"] == "[local_path]"
     assert envelope["currentGraph"]["nodes"][0]["displayName"] == "Review [local_path]"
+
+
+def test_route_semantically_uses_model_decision() -> None:
+    model = FakeSemanticRouterModel([_semantic_response("response_only")])
+
+    decision = route_semantically(
+        UserMessage(task_id="semantic-greeting", content="早上好"),
+        model_client=model,
+    )
+
+    assert decision.route == "response_only"
+    assert decision.language == "zh"
+    assert len(model.calls) == 1
+    assert model.calls[0]["temperature"] == 0.0
+    assert model.calls[0]["max_tokens"] == 2048
+
+
+def test_route_semantically_repairs_malformed_json_once() -> None:
+    model = FakeSemanticRouterModel(
+        [
+            "not json",
+            _semantic_response("response_only"),
+        ]
+    )
+
+    decision = route_semantically(
+        UserMessage(task_id="semantic-repair", content="你好"),
+        model_client=model,
+    )
+
+    assert decision.route == "response_only"
+    assert len(model.calls) == 2
+    assert (
+        "Repair this invalid Semantic Router response"
+        in model.calls[1]["messages"][0].content
+    )
+
+
+def test_route_semantically_model_failure_returns_clarification_without_keyword_guess() -> None:
+    model = FakeSemanticRouterModel(error=TimeoutError("router timed out"))
+
+    decision = route_semantically(
+        UserMessage(task_id="semantic-timeout", content="帮我看看这个事情"),
+        model_client=model,
+    )
+
+    assert decision.route == "clarification_required"
+    assert decision.requires_clarification is True
+    assert decision.confidence == 0.0
+    assert decision.missing_inputs == ["router_decision"]
+    assert "我需要确认你的目标" in (decision.clarification_prompt or "")
+
+
+def test_route_semantically_without_model_returns_clarification_without_keyword_guess() -> None:
+    decision = route_semantically(
+        UserMessage(task_id="semantic-no-model", content="研究一下这个问题"),
+        model_client=None,
+    )
+
+    assert decision.route == "clarification_required"
+    assert decision.requires_clarification is True
+    assert decision.required_capabilities == ["model.semantic_router"]
