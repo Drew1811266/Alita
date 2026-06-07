@@ -33,6 +33,11 @@ LOCAL_PATH_PATTERN = re.compile(
     r")"
 )
 
+LOCAL_PATH_FRAGMENT_PATTERNS = (
+    re.compile(r"(?i)Software Project[\\/]Alita"),
+    re.compile(r"(?i)(?<![A-Za-z0-9])agent_service(?![A-Za-z0-9])"),
+)
+
 
 class SemanticRouterModelClient(Protocol):
     def chat(
@@ -132,7 +137,9 @@ def build_semantic_router_messages(
         ],
         "currentGraph": _graph_summary(current_graph),
         "pendingChoice": _pending_choice_summary(pending_choice),
-        "availableCapabilities": list(available_capabilities or []),
+        "availableCapabilities": [
+            _safe_text(capability) for capability in available_capabilities or []
+        ],
     }
     return [
         ModelChatMessage(
@@ -189,7 +196,10 @@ def _extract_json_object(response: str) -> str:
 
 
 def _safe_text(value: str) -> str:
-    return LOCAL_PATH_PATTERN.sub("[local_path]", value)
+    scrubbed = LOCAL_PATH_PATTERN.sub("[local_path]", value)
+    for pattern in LOCAL_PATH_FRAGMENT_PATTERNS:
+        scrubbed = pattern.sub("[local_path_fragment]", scrubbed)
+    return scrubbed
 
 
 def _scrub_payload(value: Any) -> Any:

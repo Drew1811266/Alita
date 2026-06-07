@@ -100,6 +100,41 @@ def test_parse_semantic_route_response_accepts_camel_and_snake_case() -> None:
     assert decision.context_used == ["current_message", "attachments"]
 
 
+def test_parse_semantic_route_response_accepts_snake_case() -> None:
+    response = json.dumps(
+        {
+            "route": "clarification_required",
+            "intent": "missing_attachment",
+            "complexity": "bounded_tool",
+            "requires_graph": False,
+            "requires_tools": True,
+            "requires_web": False,
+            "requires_files": True,
+            "requires_clarification": True,
+            "language": "zh",
+            "confidence": 0.82,
+            "context_used": ["current_message"],
+            "missing_inputs": ["attachment"],
+            "required_capabilities": ["document.read"],
+            "tool_candidates": ["document.read_write"],
+            "reason": "用户提到附件，但没有提供附件。",
+            "clarification_prompt": "请上传需要处理的附件。",
+        }
+    )
+
+    decision = parse_semantic_route_response(response)
+
+    assert decision.requires_graph is False
+    assert decision.requires_tools is True
+    assert decision.requires_files is True
+    assert decision.requires_clarification is True
+    assert decision.context_used == ["current_message"]
+    assert decision.missing_inputs == ["attachment"]
+    assert decision.required_capabilities == ["document.read"]
+    assert decision.tool_candidates == ["document.read_write"]
+    assert decision.clarification_prompt == "请上传需要处理的附件。"
+
+
 def test_router_prompt_does_not_include_raw_local_paths() -> None:
     local_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
     message = UserMessage(task_id="semantic-scrub", content=f"请看看 {local_path}")
@@ -107,5 +142,25 @@ def test_router_prompt_does_not_include_raw_local_paths() -> None:
     prompt_dump = repr(build_semantic_router_messages(message))
 
     assert local_path not in prompt_dump
+    assert "Software Project\\Alita" not in prompt_dump
+    assert "agent_service" not in prompt_dump
+
+
+def test_router_prompt_scrubs_available_capabilities_and_path_fragments() -> None:
+    message = UserMessage(
+        task_id="semantic-capability-scrub",
+        content=r"请检查 Software Project\Alita 下面的 agent_service 模块",
+    )
+
+    prompt_dump = repr(
+        build_semantic_router_messages(
+            message,
+            available_capabilities=[
+                r"D:\Software Project\Alita\python\agent_service\graph.py",
+                r"agent_service.debug",
+            ],
+        )
+    )
+
     assert "Software Project\\Alita" not in prompt_dump
     assert "agent_service" not in prompt_dump
