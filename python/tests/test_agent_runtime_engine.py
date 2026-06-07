@@ -1,8 +1,41 @@
+import json
+
 from agent_service.agent_run_state import AgentRunState
 from agent_service.agent_runtime_engine import AgentRuntimeEngine
 from agent_service.runtime_loop import RuntimeCheckpoint
 from agent_service.runtime_store import RuntimeStore
 from agent_service.schemas import AgentEvent, UserMessage
+
+
+class FakeSemanticModel:
+    def __init__(self, route: str) -> None:
+        self.route = route
+        self.calls = 0
+
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        del messages, temperature, max_tokens, policy
+        self.calls += 1
+        return json.dumps(
+            {
+                "route": self.route,
+                "intent": "runtime_engine_test",
+                "complexity": (
+                    "simple" if self.route == "response_only" else "multi_step"
+                ),
+                "requiresGraph": self.route == "deep_planning",
+                "requiresTools": self.route == "deep_planning",
+                "requiresWeb": False,
+                "requiresFiles": False,
+                "requiresClarification": False,
+                "language": "en",
+                "confidence": 0.94,
+                "contextUsed": ["current_message"],
+                "missingInputs": [],
+                "requiredCapabilities": [],
+                "toolCandidates": [],
+                "reason": "Semantic router test route.",
+            }
+        )
 
 
 def _simple_deep_runtime(*args, **kwargs) -> list[AgentEvent]:
@@ -153,19 +186,21 @@ def test_engine_run_from_agent_state_wraps_legacy_events_with_runtime_events():
         update={"project_path": "D:/Project/demo.alita", "run_id": "run-entry"}
     )
 
-    result = engine.run_from_state(run_state)
+    result = engine.run_from_state(
+        run_state,
+        model_client=FakeSemanticModel("response_only"),
+    )
 
     assert captured[0].task_id == "task-runtime-entry"
+    assert captured[0].intent == "chat"
     assert [event.type for event in result.events] == [
         "runtime.run_started",
-        "reasoning.decision_created",
-        "reasoning.completed",
         "runtime.state_delta",
         "message.created",
     ]
     assert result.state.stage == "plan"
     assert (
-        result.events[3].payload["delta"]["decision"]["kind"]
+        result.events[1].payload["delta"]["decision"]["kind"]
         == "legacy_response_only"
     )
 
@@ -278,7 +313,12 @@ def test_engine_stream_terminal_deep_runtime_persists_plan_state(tmp_path):
         UserMessage(task_id="task-stream-store", content="Create a graph.")
     ).model_copy(update={"project_path": project_path, "run_id": "run-stream-store"})
 
-    events = list(engine.stream_from_state(run_state))
+    events = list(
+        engine.stream_from_state(
+            run_state,
+            model_client=FakeSemanticModel("deep_planning"),
+        )
+    )
 
     assert [event.type for event in events] == [
         "runtime.run_started",

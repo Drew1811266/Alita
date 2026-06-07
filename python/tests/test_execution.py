@@ -98,6 +98,36 @@ class FakeModelClient:
         return "report result"
 
 
+class FakeSemanticModel:
+    def __init__(self, route: str, *, requires_files: bool = False) -> None:
+        self.route = route
+        self.requires_files = requires_files
+        self.calls = 0
+
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        del messages, temperature, max_tokens, policy
+        self.calls += 1
+        return json.dumps(
+            {
+                "route": self.route,
+                "intent": "execution_test",
+                "complexity": "multi_step",
+                "requiresGraph": self.route == "deep_planning",
+                "requiresTools": self.route == "deep_planning",
+                "requiresWeb": False,
+                "requiresFiles": self.requires_files,
+                "requiresClarification": False,
+                "language": "en",
+                "confidence": 0.94,
+                "contextUsed": ["current_message"],
+                "missingInputs": [],
+                "requiredCapabilities": [],
+                "toolCandidates": [],
+                "reason": "Semantic router test route.",
+            }
+        )
+
+
 DOCUMENT_FLOW_APPROVED_PERMISSIONS = [
     "write_project_outputs",
     "run_python_plugin",
@@ -366,7 +396,8 @@ def test_run_graph_events_executes_generic_planner_graph_from_run_agent(
         UserMessage(
             task_id="task-generic-run",
             content="Can you create a Python script that counts rows in a CSV file?",
-        )
+        ),
+        model_client=FakeSemanticModel("deep_planning"),
     )[0]
     request = RunGraphRequest(
         task_id="task-generic-run",
@@ -1404,7 +1435,8 @@ def test_execution_graph_does_not_change_run_event_shape(tmp_path: Path) -> None
         UserMessage(
             task_id="execution-graph-event-shape",
             content="Create a Python script that counts rows in a CSV file.",
-        )
+        ),
+        model_client=FakeSemanticModel("deep_planning"),
     )[0]
     graph = graph_event.payload["graph"]
     request = RunGraphRequest(
@@ -2363,7 +2395,8 @@ def test_generated_markdown_conversion_graph_exports_converted_artifact(
             task_id="task-markdown-convert",
             content="Please convert this document to Markdown.",
             attachments=[attachment],
-        )
+        ),
+        model_client=FakeSemanticModel("deep_planning", requires_files=True),
     )[0]
     request = RunGraphRequest(
         task_id="task-markdown-convert",
