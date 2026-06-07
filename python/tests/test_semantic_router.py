@@ -134,6 +134,60 @@ def test_parse_semantic_route_response_accepts_snake_case() -> None:
     assert decision.clarification_prompt == "请上传需要处理的附件。"
 
 
+def test_capability_ids_survive_parse_and_payload_scrubbing() -> None:
+    windows_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
+    posix_path = "/Users/drew/Software Project/Alita/python/agent_service/graph.py"
+    response = json.dumps(
+        {
+            "route": "simple_tool_answer",
+            "intent": "tool_lookup",
+            "complexity": "bounded_tool",
+            "requiresGraph": False,
+            "requiresTools": True,
+            "requiresWeb": False,
+            "requiresFiles": False,
+            "requiresClarification": False,
+            "language": "en",
+            "confidence": 0.9,
+            "requiredCapabilities": [
+                "agent_service.debug",
+                "web.search.parallel",
+                windows_path,
+            ],
+            "toolCandidates": [
+                "weather.current",
+                "document.read_write",
+                posix_path,
+            ],
+            "reason": "Use available tools.",
+        }
+    )
+
+    decision = parse_semantic_route_response(response)
+    payload = decision.to_payload()
+
+    assert decision.required_capabilities == [
+        "agent_service.debug",
+        "web.search.parallel",
+        "[local_path]",
+    ]
+    assert decision.tool_candidates == [
+        "weather.current",
+        "document.read_write",
+        "[local_path]",
+    ]
+    assert payload["requiredCapabilities"] == [
+        "agent_service.debug",
+        "web.search.parallel",
+        "[local_path]",
+    ]
+    assert payload["toolCandidates"] == [
+        "weather.current",
+        "document.read_write",
+        "[local_path]",
+    ]
+
+
 def test_router_prompt_does_not_include_raw_local_paths() -> None:
     local_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
     message = UserMessage(task_id="semantic-scrub", content=f"请看看 {local_path}")

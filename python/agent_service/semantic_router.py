@@ -92,9 +92,11 @@ class SemanticRouteDecision(BaseModel):
             "contextUsed": [_safe_text(item) for item in self.context_used],
             "missingInputs": [_safe_text(item) for item in self.missing_inputs],
             "requiredCapabilities": [
-                _safe_text(item) for item in self.required_capabilities
+                _safe_capability(item) for item in self.required_capabilities
             ],
-            "toolCandidates": [_safe_text(item) for item in self.tool_candidates],
+            "toolCandidates": [
+                _safe_capability(item) for item in self.tool_candidates
+            ],
             "reason": _safe_text(self.reason),
             "clarificationPrompt": (
                 _safe_text(self.clarification_prompt)
@@ -108,7 +110,7 @@ def parse_semantic_route_response(response: str) -> SemanticRouteDecision:
     raw = json.loads(_extract_json_object(response))
     if not isinstance(raw, dict):
         raise ValueError("semantic router response must be a JSON object")
-    return SemanticRouteDecision.model_validate(_scrub_payload(raw))
+    return SemanticRouteDecision.model_validate(_scrub_route_payload(raw))
 
 
 def build_semantic_router_messages(
@@ -224,3 +226,16 @@ def _scrub_payload(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _scrub_payload(item) for key, item in value.items()}
     return value
+
+
+def _scrub_route_payload(value: dict[str, Any]) -> dict[str, Any]:
+    scrubbed = _scrub_payload(value)
+    for key in (
+        "requiredCapabilities",
+        "required_capabilities",
+        "toolCandidates",
+        "tool_candidates",
+    ):
+        if key in value and isinstance(value[key], list):
+            scrubbed[key] = [_safe_capability(str(item)) for item in value[key]]
+    return scrubbed
