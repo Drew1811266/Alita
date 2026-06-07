@@ -138,7 +138,7 @@ def build_semantic_router_messages(
         "currentGraph": _graph_summary(current_graph),
         "pendingChoice": _pending_choice_summary(pending_choice),
         "availableCapabilities": [
-            _safe_text(capability) for capability in available_capabilities or []
+            _safe_capability(capability) for capability in available_capabilities or []
         ],
     }
     return [
@@ -151,7 +151,11 @@ def build_semantic_router_messages(
                 "requiresWeb, requiresFiles, requiresClarification, language, "
                 "confidence, contextUsed, missingInputs, requiredCapabilities, "
                 "toolCandidates, reason, clarificationPrompt. Use the user's "
-                "language for reason and clarificationPrompt. Never include local paths."
+                "language for reason and clarificationPrompt. Allowed route values: "
+                "response_only, local_answer, simple_tool_answer, web_answer, "
+                "graph_feedback, clarification_required, deep_planning, "
+                "research_planning. Allowed complexity values: simple, bounded_tool, "
+                "multi_step, research. Never include local paths."
             ),
         ),
         ModelChatMessage(role="user", content=json.dumps(envelope, ensure_ascii=False)),
@@ -162,15 +166,15 @@ def _graph_summary(current_graph: RunGraph | None) -> dict[str, Any] | None:
     if current_graph is None:
         return None
     return {
-        "graphId": current_graph.graphId,
+        "graphId": _safe_text(current_graph.graphId),
         "nodeCount": len(current_graph.nodes),
         "edgeCount": len(current_graph.edges),
         "nodes": [
             {
-                "nodeId": node.nodeId,
-                "nodeType": node.nodeType,
+                "nodeId": _safe_text(node.nodeId),
+                "nodeType": _safe_text(node.nodeType),
                 "displayName": _safe_text(node.displayName),
-                "status": node.status,
+                "status": _safe_text(node.status),
             }
             for node in current_graph.nodes[:12]
         ],
@@ -200,6 +204,16 @@ def _safe_text(value: str) -> str:
     for pattern in LOCAL_PATH_FRAGMENT_PATTERNS:
         scrubbed = pattern.sub("[local_path_fragment]", scrubbed)
     return scrubbed
+
+
+def _safe_capability(value: str) -> str:
+    if LOCAL_PATH_PATTERN.search(value):
+        return _safe_text(value)
+    if re.search(r"(?i)Software Project[\\/]+Alita", value):
+        return _safe_text(value)
+    if "\\" in value or "/" in value:
+        return _safe_text(value)
+    return value
 
 
 def _scrub_payload(value: Any) -> Any:

@@ -5,9 +5,8 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from agent_service.schemas import UserMessage
+from agent_service.schemas import GraphNode, RunGraph, UserMessage
 from agent_service.semantic_router import (
-    SemanticRoute,
     SemanticRouteDecision,
     build_semantic_router_messages,
     parse_semantic_route_response,
@@ -152,15 +151,77 @@ def test_router_prompt_scrubs_available_capabilities_and_path_fragments() -> Non
         content=r"请检查 Software Project\Alita 下面的 agent_service 模块",
     )
 
-    prompt_dump = repr(
-        build_semantic_router_messages(
-            message,
-            available_capabilities=[
-                r"D:\Software Project\Alita\python\agent_service\graph.py",
-                r"agent_service.debug",
-            ],
-        )
+    messages = build_semantic_router_messages(
+        message,
+        available_capabilities=[
+            r"D:\Software Project\Alita\python\agent_service\graph.py",
+            r"agent_service.debug",
+            "weather.current",
+            "web.search.parallel",
+        ],
     )
+    envelope = json.loads(messages[1].content)
+    prompt_dump = json.dumps(envelope, ensure_ascii=False)
 
     assert "Software Project\\Alita" not in prompt_dump
+    assert r"D:\Software Project\Alita\python\agent_service\graph.py" not in prompt_dump
+    assert envelope["availableCapabilities"] == [
+        "[local_path]",
+        "agent_service.debug",
+        "weather.current",
+        "web.search.parallel",
+    ]
+
+
+def test_router_system_prompt_lists_allowed_enum_values() -> None:
+    system_prompt = build_semantic_router_messages(
+        UserMessage(task_id="semantic-enums", content="hello")
+    )[0].content
+
+    for route in [
+        "response_only",
+        "local_answer",
+        "simple_tool_answer",
+        "web_answer",
+        "graph_feedback",
+        "clarification_required",
+        "deep_planning",
+        "research_planning",
+    ]:
+        assert route in system_prompt
+
+    for complexity in ["simple", "bounded_tool", "multi_step", "research"]:
+        assert complexity in system_prompt
+
+
+def test_router_graph_summary_scrubs_user_controlled_string_fields() -> None:
+    local_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
+    graph = RunGraph(
+        graphId=local_path,
+        nodes=[
+            GraphNode(
+                nodeId=local_path,
+                nodeType="model",
+                displayName=f"Review {local_path}",
+                status="waiting",
+                summary="summary",
+                createdBy="test",
+                position={"x": 0.0, "y": 0.0},
+            )
+        ],
+        edges=[],
+    )
+
+    messages = build_semantic_router_messages(
+        UserMessage(task_id="semantic-graph-scrub", content="inspect graph"),
+        current_graph=graph,
+    )
+    envelope = json.loads(messages[1].content)
+    prompt_dump = json.dumps(envelope, ensure_ascii=False)
+
+    assert local_path not in prompt_dump
+    assert "Software Project\\Alita" not in prompt_dump
     assert "agent_service" not in prompt_dump
+    assert envelope["currentGraph"]["graphId"] == "[local_path]"
+    assert envelope["currentGraph"]["nodes"][0]["nodeId"] == "[local_path]"
+    assert envelope["currentGraph"]["nodes"][0]["displayName"] == "Review [local_path]"
