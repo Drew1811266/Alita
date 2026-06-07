@@ -45,29 +45,37 @@ Alita 目前达到了一个“本地 Agent 工作台 MVP+”阶段：
 
 这使 Alita 更接近一个长期工作的项目环境：用户围绕一个工程持续与 Agent 协作，而不是一次性问答。
 
-### 2. Agent 意图路由
+### 2. Agent 语义路由
 
-Python sidecar 现在由 `AgentRuntimeEngine` 统一入口。普通聊天和简单事实问题仍可走结构化路由；复杂调研、比较、方案、报告、文档处理和可执行任务默认进入 Deep Planning LangGraph，由模型先推理任务、生成 Agent Plan Graph，再通过 `planning.confirmation_required` 等待用户确认。
+Python sidecar 现在由 `AgentRuntimeEngine` 统一入口。用户自然语言意图不再由关键词、正则或模板判断；自然语言判断由 Semantic Router 模型输出结构化 JSON。程序只保留非语义状态守卫：空输入、pending choice、附件状态、权限状态、工具可用性、明确图反馈等。
+
+路由顺序：
+
+```text
+UserMessage -> State Guard -> Semantic Router LLM -> Router Validator -> Capability Gate -> response / tool answer / graph feedback / Deep Agent planning
+```
+
+这保证“你好”这类普通输入不会进入任务规划，也保证复杂任务不会因为缺少固定关键词而被当作普通问答。
 
 当前主要入口行为包括：
 
-- `chat`：普通对话，走快速本地模型回复。
-- `local_inquiry`：不需要联网的本地知识问答。
-- `web_simple_inquiry`：当前信息、天气、版本、价格、法律、GitHub、官方文档等简单联网问题。
-- `deep_planning`：复杂调研、方案、报告、文档处理和可执行任务，生成待确认的 Agent Plan Graph。
-- `planning.clarification`：缺少关键信息时通过 LangGraph interrupt 暂停，并在用户补充后同线程恢复。
-- `planning.confirmation`：计划图生成后等待用户确认、修订或取消。
-- `missing_input`：缺少问题、缺少文档、缺少天气城市等输入。
+- `response_only`：普通聊天和本地问答，直接回复。
+- `tool_answer`：可由已启用工具直接回答的请求。
+- `graph_feedback`：用户对当前 Agent Plan Graph 的明确反馈。
+- `deep_planning` / `research_planning`：复杂任务或调研请求，进入 Deep Agent 规划。
+- `clarify`：语义路由失败、输入不完整或能力不足时，用中文澄清下一步。
 
-旧的 `web_complex_choice` / `web_complex_research_flow` 路径保留为兼容回归覆盖，但不是当前 HTTP Agent 任务入口的默认行为。
+旧的关键词/模板路由路径保留为 legacy 兼容和回归覆盖，但当前 HTTP Agent 主路径不再由 `intent.py` 决定。
 
 路由代码主要位于：
 
-- `python/agent_service/intent.py`
-- `python/agent_service/graph.py`
 - `python/agent_service/agent_runtime_engine.py`
+- `python/agent_service/semantic_router.py`
+- `python/agent_service/capability_gate.py`
 - `python/agent_service/deep_agent_runtime_graph.py`
 - `python/agent_service/tool_router.py`
+- `python/agent_service/graph.py`
+- `python/agent_service/intent.py`（legacy 兼容，不是主路由判定入口）
 
 ### 3. 模型调用策略
 
@@ -75,12 +83,14 @@ Alita 在模型客户端和 LangGraph 路由结果之间加入了模型调用策
 
 | Policy | 用途 | thinking | token 预算 |
 | --- | --- | --- | --- |
-| `fast_chat` | 普通聊天、本地问答 | `off` | 768 |
-| `fast_factual` | 简单联网事实问答、研究模式选择 | `auto` | 1024 |
-| `deep_reasoning` | 任务规划、复杂研究流程 | `deep` | 8192 |
-| `node_reasoning` | 节点内模型推理 | `auto` | 4096 |
+| `fast_chat` | 普通聊天、本地问答 | `off` | 3072 |
+| `fast_factual` | 简单联网事实问答、研究模式选择 | `auto` | 4096 |
+| `deep_reasoning` | 任务规划、复杂研究流程 | `deep` | 32768 |
+| `node_reasoning` | 节点内模型推理 | `auto` | 16384 |
 
 策略会转换为 `llama.cpp` OpenAI-compatible 请求参数，包括 `temperature`、`max_tokens`、`stream` 和 Qwen thinking 相关的 `chat_template_kwargs`。如果当前 `llama.cpp` runtime 不支持这些额外字段，客户端会降级重试，不让策略字段导致请求失败。
+
+本地 `llama.cpp` 运行时默认以 `--ctx-size 131072` 启动。这里的上下文窗口是单次请求的 prompt + 输出总窗口；上表 token 预算是单次输出上限，不等同于总上下文窗口。
 
 相关代码：
 
