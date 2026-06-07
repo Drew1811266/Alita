@@ -763,9 +763,10 @@ def _should_handle_graph_feedback(
     if feedback_decision.kind in {
         GraphFeedbackKind.LOCAL_MODIFICATION,
         GraphFeedbackKind.FULL_REPLAN,
-        GraphFeedbackKind.CONSTRAINT_UPDATE,
     }:
         return True
+    if feedback_decision.kind == GraphFeedbackKind.CONSTRAINT_UPDATE:
+        return _is_explicit_graph_constraint_feedback(message.content)
     return False
 
 

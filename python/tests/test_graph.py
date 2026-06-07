@@ -614,6 +614,49 @@ def test_run_agent_from_state_uses_semantic_router_not_classify_route(
     assert events[0].type == "message.created"
 
 
+def test_route_run_state_passes_graph_context_to_semantic_router(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def capture_route_semantically(
+        message: UserMessage,
+        *,
+        model_client,
+        current_graph=None,
+        pending_choice=None,
+        available_capabilities=None,
+    ) -> SemanticRouteDecision:
+        del available_capabilities
+        captured["message"] = message
+        captured["model_client"] = model_client
+        captured["current_graph"] = current_graph
+        captured["pending_choice"] = pending_choice
+        return _semantic_decision("response_only", message=message)
+
+    monkeypatch.setattr(
+        "agent_service.router_v2.route_semantically",
+        capture_route_semantically,
+    )
+    current_graph = _existing_graph()
+    pending_choice = {"kind": "planning.confirm", "runId": "run-1"}
+    model_client = FakeGraphSemanticModel("response_only")
+    run_state = AgentRunState.from_user_message(
+        UserMessage(task_id="graph-context", content="继续"),
+        current_graph=current_graph,
+        pending_choice=pending_choice,
+    )
+
+    routed = graph_module._route_run_state(run_state, model_client=model_client)
+
+    assert routed.intent == "chat"
+    assert captured["message"] is run_state.message
+    assert captured["model_client"] is model_client
+    assert captured["current_graph"] is current_graph
+    assert run_state.pending_choice == pending_choice
+    assert captured["pending_choice"] is run_state.pending_choice
+
+
 def test_graph_feedback_guard_does_not_use_legacy_classifier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -803,7 +846,7 @@ def test_web_simple_inquiry_after_graph_exists_uses_inquiry_router() -> None:
     assert events[0].payload["sources"][0]["url"] == "https://docs.python.org/3/"
 
 
-def test_sources_question_after_graph_exists_uses_graph_feedback() -> None:
+def test_sources_question_after_graph_exists_uses_web_inquiry_router() -> None:
     provider = FakeSearchProvider(
         SearchResponse(
             results=[
@@ -825,8 +868,9 @@ def test_sources_question_after_graph_exists_uses_graph_feedback() -> None:
         current_graph=_existing_graph(),
     )
 
-    assert provider.queries == []
-    assert [event.type for event in events] == ["graph.replanned"]
+    assert provider.queries == ["What sources discuss the latest Python release?"]
+    assert [event.type for event in events] == ["message.created"]
+    assert events[0].payload["sources"][0]["url"] == "https://docs.python.org/3/"
 
 
 @pytest.mark.parametrize(
@@ -839,7 +883,7 @@ def test_sources_question_after_graph_exists_uses_graph_feedback() -> None:
         "Can you explain what a constraint means?",
     ],
 )
-def test_local_questions_with_constraint_words_after_graph_exists_use_graph_feedback(
+def test_local_questions_with_constraint_words_after_graph_exists_use_semantic_router(
     content: str,
 ) -> None:
     client = FakeModelClient("local inquiry answer")
@@ -850,8 +894,9 @@ def test_local_questions_with_constraint_words_after_graph_exists_use_graph_feed
         current_graph=_existing_graph(),
     )
 
-    assert [event.type for event in events] == ["graph.replanned"]
-    assert client.calls == []
+    assert [event.type for event in events] == ["message.created"]
+    assert events[0].payload["message"]["content"] == "local inquiry answer"
+    assert client.calls
 
 
 @pytest.mark.parametrize(
