@@ -12,9 +12,18 @@ from agent_service.script_review import script_review_fingerprint
 
 
 class FakeDeepModel:
-    def __init__(self, payloads: list[dict[str, Any]]) -> None:
-        self.payloads = payloads
+    def __init__(
+        self,
+        payloads: list[dict[str, Any]],
+        *,
+        semantic_payloads: list[dict[str, Any]] | None = None,
+        direct_reply: str = "hello",
+    ) -> None:
+        self.payloads = list(payloads)
+        self.semantic_payloads = list(semantic_payloads or [])
+        self.direct_reply = direct_reply
         self.calls = 0
+        self.chat_calls = 0
 
     def chat_with_diagnostics(self, messages, *, policy=None, **kwargs):
         del messages, policy, kwargs
@@ -34,8 +43,20 @@ class FakeDeepModel:
         )
 
     def chat(self, messages, *, policy=None, **kwargs) -> str:
+        del policy, kwargs
+        self.chat_calls += 1
+        if _is_semantic_router_call(messages):
+            payload = (
+                self.semantic_payloads.pop(0)
+                if self.semantic_payloads
+                else _semantic_payload_for_messages(messages)
+            )
+            return json.dumps(payload)
+        return self.direct_reply
+
+    def stream_chat(self, messages, *, policy=None, **kwargs):
         del messages, policy, kwargs
-        return "hello"
+        yield self.direct_reply
 
 
 def _install_fake_model(
@@ -155,6 +176,60 @@ def test_agent_message_endpoint_passes_agent_run_state_to_orchestrator(
         "kind": "full_replan",
     }
     assert run_state.project_path == "D:/Project/demo.alita"
+
+
+def _semantic_route_payload(
+    route: str,
+    *,
+    intent: str = "runtime_test",
+    complexity: str | None = None,
+    language: str = "zh",
+) -> dict[str, Any]:
+    requires_graph = route in {"deep_planning", "research_planning"}
+    requires_web = route in {"web_answer", "research_planning"}
+    return {
+        "route": route,
+        "intent": intent,
+        "complexity": complexity
+        or ("simple" if route == "response_only" else "multi_step"),
+        "requiresGraph": requires_graph,
+        "requiresTools": requires_web or requires_graph,
+        "requiresWeb": requires_web,
+        "requiresFiles": False,
+        "requiresClarification": False,
+        "language": language,
+        "confidence": 0.96,
+        "contextUsed": ["current_message"],
+        "missingInputs": [],
+        "requiredCapabilities": [],
+        "toolCandidates": [],
+        "reason": "语义路由测试。",
+    }
+
+
+def _is_semantic_router_call(messages) -> bool:
+    return bool(messages and "Semantic Router" in getattr(messages[0], "content", ""))
+
+
+def _semantic_payload_for_messages(messages) -> dict[str, Any]:
+    current_message = ""
+    try:
+        current_message = json.loads(messages[1].content).get("currentMessage", "")
+    except Exception:
+        current_message = ""
+    normalized = current_message.lower()
+    if any(marker in normalized for marker in ("hello", "你好", "早啊")):
+        return _semantic_route_payload(
+            "response_only",
+            intent="greeting",
+            complexity="simple",
+        )
+    if any(
+        marker in normalized
+        for marker in ("research", "compare", "latest", "联网", "搜索")
+    ):
+        return _semantic_route_payload("research_planning", intent="research")
+    return _semantic_route_payload("deep_planning", intent="task")
 
 
 def test_node_catalog_endpoint_returns_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -381,6 +456,31 @@ def test_agent_message_stream_exposes_public_deep_planning_sse_events(
     assert "runtime.state_delta" not in response.text
 
 
+def test_agent_message_greeting_uses_semantic_router(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = FakeDeepModel(
+        [],
+        semantic_payloads=[
+            _semantic_route_payload(
+                "response_only",
+                intent="greeting",
+                complexity="simple",
+            )
+        ],
+    )
+    monkeypatch.setattr("agent_service.app.create_model_client", lambda *args, **kwargs: model)
+
+    response = TestClient(app).post(
+        "/agent/message",
+        json={"task_id": "app-semantic-hi", "content": "你好", "attachments": []},
+    )
+
+    assert response.status_code == 200
+    event_types = [event["type"] for event in response.json()]
+    assert "planning.failed" not in event_types
+    assert "node_graph.created" not in event_types
+    assert "message.created" in event_types
+
+
 def test_agent_message_rejects_planning_confirmation_without_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -433,7 +533,7 @@ def test_agent_message_stream_returns_error_for_planning_confirmation_without_de
     assert "invalid_planning_resume" in response.text
 
 
-def test_agent_message_complex_inquiry_default_returns_research_choice_payload(
+def test_agent_message_simple_answer_decision_does_not_return_research_choice_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_fake_model(monkeypatch, [_reasoning_payload("simple_answer")])
@@ -453,24 +553,9 @@ def test_agent_message_complex_inquiry_default_returns_research_choice_payload(
     assert [event["type"] for event in events] == [
         "reasoning.decision_created",
         "reasoning.completed",
-        "research.choice_required",
+        "message.created",
     ]
-    assert events[-1]["payload"] == {
-        "taskId": "task-choice",
-        "prompt": "This question can be answered quickly or turned into a research flow. Choose how to proceed.",
-        "choices": [
-            {
-                "id": "quick_answer",
-                "label": "Quick answer",
-                "description": "Search the web now and return a concise sourced answer.",
-            },
-            {
-                "id": "research_flow",
-                "label": "Research flow",
-                "description": "Create a research graph for planning, source review, and report synthesis.",
-            },
-        ],
-    }
+    assert events[-1]["payload"]["message"]["content"] == "hello"
 
 
 def test_agent_message_complex_inquiry_research_flow_choice_blocks_legacy_graph(
