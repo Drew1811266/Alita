@@ -127,16 +127,17 @@ AgentRuntimeEngine
   -> planning failed: timed out
 ```
 
-根因是 RuntimeEngine 在进入 Deep Agent 前没有做“响应型输入”预路由，导致 `chat`、本地问答和简单联网问答都可能被当作需要任务规划的请求处理。
+根因是 RuntimeEngine 在进入 Deep Agent 前没有完成 Semantic Router 编排：入口应先处理非语义状态守卫，再由 Semantic Router 判断自然语言意图，否则普通聊天、本地问答和简单工具问答都可能被当作需要任务规划的请求处理。
 
 修复原则：
 
-- 在 `AgentRuntimeEngine.run_from_state()` 和 `stream_from_state()` 进入 Deep Agent 前，先调用 deterministic router。
-- `chat`、`local_inquiry`、`web_simple_inquiry` 直接走 response-only 路径。
-- `task`、`web_complex_research_flow`、`pending_choice`、`current_graph` 场景继续进入图反馈或 Deep Agent，避免误伤任务规划、确认续跑和图重规划。
-- 增加同步与流式回归测试，断言普通问候不会调用 Deep Agent。
+- `AgentRuntimeEngine.run_from_state()` 和 `stream_from_state()` 先执行非语义状态守卫，例如空输入、pending choice、附件状态、权限状态、工具可用性和明确图反馈。
+- 自然语言意图统一交给 Semantic Router，输出 `response_only`、`local_answer`、`simple_tool_answer`、`web_answer`、`graph_feedback`、`deep_planning`、`research_planning` 或 `clarification_required`。
+- `response_only`、`local_answer`、`simple_tool_answer` 和 `web_answer` 不进入 Deep Agent 规划；`graph_feedback` 进入图反馈路径；只有 `deep_planning` 和 `research_planning` 进入 Deep Agent 规划；`clarification_required` 返回中文澄清。
+- 程序不再用 deterministic/keyword router 判断自然语言意图；旧 deterministic/legacy route 仅用于兼容测试或非语义状态 guard。
+- 增加同步与流式回归测试，断言普通问候由 Semantic Router 决策后不会调用 Deep Agent。
 
-判断：这是编排层优先级错误，不应通过增大 token 预算解决。增大预算会让错误路径等待更久，不能改变“普通聊天不该规划”的事实。
+判断：这是 Semantic Router 编排层优先级错误，不应通过增大 token 预算解决。增大预算会让错误路径等待更久，不能改变“普通聊天不该规划”的事实。
 
 执行计划：`docs/superpowers/plans/2026-06-07-semantic-router-agent-judgment-implementation-plan.md`。
 
