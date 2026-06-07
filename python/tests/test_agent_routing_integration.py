@@ -32,6 +32,7 @@ class FakeModelClient:
         self.deep_payloads = list(deep_payloads or [])
         self.deep_calls: list[list[ChatMessage]] = []
         self.semantic_route = semantic_route
+        self.semantic_routes_returned: list[str] = []
 
     def chat(
         self,
@@ -45,6 +46,7 @@ class FakeModelClient:
         self.calls.append(messages)
         if _is_semantic_router_call(messages):
             route = self.semantic_route or _semantic_route_for_messages(messages)
+            self.semantic_routes_returned.append(route)
             return json.dumps(_semantic_route_payload(route))
         return self.reply
 
@@ -185,6 +187,7 @@ def _patch_deep_planning_model(
     monkeypatch,
     *,
     step_ids: list[str] | None = None,
+    semantic_route: str | None = None,
 ) -> FakeModelClient:
     step_ids = step_ids or ["understand", "execute"]
     plan_payload = _plan_payload(step_ids)
@@ -193,6 +196,7 @@ def _patch_deep_planning_model(
         plan_payload["steps"][0]["preferred_node_ids"] = ["web.search.parallel"]
     client = FakeModelClient(
         "unused",
+        semantic_route=semantic_route,
         deep_payloads=[
             _reasoning_payload(),
             plan_payload,
@@ -274,6 +278,7 @@ def test_complex_web_inquiry_enters_deep_planning_confirmation(monkeypatch) -> N
     client = _patch_deep_planning_model(
         monkeypatch,
         step_ids=["compare_options", "recommend_path"],
+        semantic_route="research_planning",
     )
 
     response = TestClient(app).post(
@@ -292,6 +297,9 @@ def test_complex_web_inquiry_enters_deep_planning_confirmation(monkeypatch) -> N
     assert "research.choice_required" not in [event["type"] for event in events]
     graph = graph_event["payload"]["graph"]
     assert graph["metadata"]["generatedBy"] == "deep_agent_runtime"
+    assert client.semantic_routes_returned == ["research_planning"]
+    assert graph["nodes"][0]["toolRef"] == "web.search.parallel"
+    assert graph["nodes"][0]["metadata"]["requiredCapabilities"] == ["web.search"]
     assert [
         node["metadata"]["sourcePlanStepId"]
         for node in graph["nodes"]
