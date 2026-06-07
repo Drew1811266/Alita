@@ -30,6 +30,7 @@ from agent_service.model_policy import (
     policy_for_agent_intent,
 )
 from agent_service.plan_feedback import (
+    GraphFeedbackDecision,
     GraphFeedbackKind,
     apply_graph_feedback,
     classify_graph_feedback,
@@ -179,6 +180,8 @@ def _route_run_state(
         message,
         inquiry_choice=effective_inquiry_choice,
         model_client=model_client,
+        current_graph=run_state.current_graph,
+        pending_choice=run_state.pending_choice,
     )
     goal_spec = parse_goal_spec(message)
     intent = router_decision.intent
@@ -521,7 +524,8 @@ def answer_with_web(
         "events": [
             answer_simple_web_inquiry(
                 state["message"],
-                state.get("route_decision", {}),
+                state.get("structured_route_decision")
+                or state.get("route_decision", {}),
                 search_provider=search_provider,
                 weather_provider=weather_provider,
             )
@@ -611,6 +615,9 @@ def run_agent_from_state(
         ]
 
     if run_state.intent is not None:
+        feedback_event = _semantic_graph_feedback_event_for_run_state(run_state)
+        if feedback_event is not None:
+            return [feedback_event]
         return _events_for_routed_run_state(
             run_state,
             model_client=model_client,
@@ -618,14 +625,20 @@ def run_agent_from_state(
             weather_provider=weather_provider,
         )
 
-    app = build_graph(
+    routed_run_state = _route_run_state(
+        run_state,
+        inquiry_choice=run_state.inquiry_choice,
+        model_client=model_client,
+    )
+    feedback_event = _semantic_graph_feedback_event_for_run_state(routed_run_state)
+    if feedback_event is not None:
+        return [feedback_event]
+    return _events_for_routed_run_state(
+        routed_run_state,
         model_client=model_client,
         search_provider=search_provider,
         weather_provider=weather_provider,
-        inquiry_choice=run_state.inquiry_choice,
     )
-    result = app.invoke(_agent_state_from_run_state(run_state))
-    return result["events"]
 
 
 def stream_agent_events(
@@ -678,7 +691,13 @@ def stream_agent_events_from_state(
         )
         return
 
-    run_state = _route_run_state(run_state, model_client=model_client)
+    if run_state.intent is None:
+        run_state = _route_run_state(run_state, model_client=model_client)
+    feedback_event = _semantic_graph_feedback_event_for_run_state(run_state)
+    if feedback_event is not None:
+        yield feedback_event
+        return
+
     if run_state.intent == "task":
         run_state = _run_state_with_structured_route_for_planning(message, run_state)
         graph_payload = _graph_payload_for_task(
@@ -755,7 +774,6 @@ def _should_handle_graph_feedback(
     if pending_choice is not None:
         return True
 
-    route_decision = classify_route(message)
     feedback_decision = classify_graph_feedback(message.content, current_graph)
     if feedback_decision.kind == GraphFeedbackKind.NEW_TASK:
         return False
@@ -764,17 +782,82 @@ def _should_handle_graph_feedback(
         GraphFeedbackKind.FULL_REPLAN,
     }:
         return True
-    if _is_explicit_graph_constraint_feedback(message.content):
-        return True
-    if route_decision.intent.kind == IntentKind.INQUIRY:
-        return False
-    if route_decision.intent.kind == IntentKind.CHAT:
-        return False
-    return True
+    if feedback_decision.kind == GraphFeedbackKind.CONSTRAINT_UPDATE:
+        return _is_explicit_graph_constraint_feedback(message.content)
+    return False
+
+
+def _semantic_graph_feedback_event_for_run_state(
+    run_state: AgentRunState,
+) -> AgentEvent | None:
+    if run_state.current_graph is None:
+        return None
+    if _semantic_route_name(run_state) != "graph_feedback":
+        return None
+    return _semantic_graph_feedback_event(
+        run_state.message,
+        run_state.current_graph,
+        has_run_history=run_state.has_run_history,
+        artifact_refs=run_state.artifact_refs,
+        pending_choice=run_state.pending_choice,
+    )
+
+
+def _semantic_graph_feedback_event(
+    message: UserMessage,
+    current_graph: RunGraph,
+    *,
+    has_run_history: bool = False,
+    artifact_refs: list[str] | None = None,
+    pending_choice: dict | None = None,
+) -> AgentEvent:
+    return apply_graph_feedback(
+        message,
+        current_graph,
+        has_run_history=has_run_history,
+        artifact_refs=artifact_refs,
+        pending_choice=pending_choice,
+        model_feedback_hook=_semantic_graph_feedback_decision,
+    )
+
+
+def _semantic_graph_feedback_decision(
+    message: str,
+    current_graph: RunGraph,
+    has_run_history: bool,
+) -> GraphFeedbackDecision:
+    del message, current_graph, has_run_history
+    return GraphFeedbackDecision(
+        GraphFeedbackKind.CONSTRAINT_UPDATE,
+        reason="semantic router graph feedback",
+    )
+
+
+def _semantic_route_name(run_state: AgentRunState) -> str:
+    structured = run_state.structured_route_decision
+    if not isinstance(structured, dict):
+        return ""
+    route = structured.get("route")
+    if isinstance(route, str):
+        return route
+    semantic_route = structured.get("semanticRoute")
+    if isinstance(semantic_route, dict):
+        route = semantic_route.get("route")
+        if isinstance(route, str):
+            return route
+    return ""
 
 
 def _is_explicit_graph_constraint_feedback(content: str) -> bool:
     normalized = content.strip().lower()
+    if re.match(r"^(what|why|how|when|where|which|who)\b", normalized):
+        return False
+    if re.match(
+        r"^(can you explain|could you explain|please explain|explain)\b",
+        normalized,
+    ):
+        return False
+
     graph_referential = any(
         phrase in normalized
         for phrase in (
@@ -791,20 +874,26 @@ def _is_explicit_graph_constraint_feedback(content: str) -> bool:
             "workflow",
         )
     )
-    if graph_referential:
-        return True
 
-    if re.match(r"^(what|why|how|when|where|which|who|can you explain)\b", normalized):
-        return False
-
-    return re.match(
+    if re.match(
         r"^(please\s+)?("
         r"(add|set|apply)\s+(the\s+|this\s+|a\s+)?constraint\b"
+        r"|can you\s+use\s+.+\b(sources|style|order)\b"
         r"|use\s+.+\b(sources|style|order)\b"
         r"|constraint\s*:"
         r")",
         normalized,
-    ) is not None
+    ):
+        return True
+
+    return bool(
+        graph_referential
+        and re.match(
+            r"^(please\s+)?apply\s+.+\b(to|for)\s+"
+            r"(this|the|current)\s+(graph|plan|workflow|flow)\b",
+            normalized,
+        )
+    )
 
 
 def _route_intent(state: AgentState) -> AgentIntent:

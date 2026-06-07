@@ -98,6 +98,36 @@ class FakeModelClient:
         return "report result"
 
 
+class FakeSemanticModel:
+    def __init__(self, route: str, *, requires_files: bool = False) -> None:
+        self.route = route
+        self.requires_files = requires_files
+        self.calls = 0
+
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None):
+        del messages, temperature, max_tokens, policy
+        self.calls += 1
+        return json.dumps(
+            {
+                "route": self.route,
+                "intent": "execution_test",
+                "complexity": "multi_step",
+                "requiresGraph": self.route == "deep_planning",
+                "requiresTools": self.route == "deep_planning",
+                "requiresWeb": False,
+                "requiresFiles": self.requires_files,
+                "requiresClarification": False,
+                "language": "en",
+                "confidence": 0.94,
+                "contextUsed": ["current_message"],
+                "missingInputs": [],
+                "requiredCapabilities": [],
+                "toolCandidates": [],
+                "reason": "Semantic router test route.",
+            }
+        )
+
+
 DOCUMENT_FLOW_APPROVED_PERMISSIONS = [
     "write_project_outputs",
     "run_python_plugin",
@@ -366,7 +396,8 @@ def test_run_graph_events_executes_generic_planner_graph_from_run_agent(
         UserMessage(
             task_id="task-generic-run",
             content="Can you create a Python script that counts rows in a CSV file?",
-        )
+        ),
+        model_client=FakeSemanticModel("deep_planning"),
     )[0]
     request = RunGraphRequest(
         task_id="task-generic-run",
@@ -1332,6 +1363,127 @@ def test_planned_fixed_tool_executes_from_runtime_binding_without_tool_id_branch
     }
 
 
+def test_planned_web_system_tools_render_objective_and_map_search_results(
+    tmp_path: Path,
+) -> None:
+    class WebGateway:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def list_tools(self):
+            return []
+
+        def call_tool(self, invocation, *, timeout_ms=None):
+            self.calls.append(invocation)
+            if invocation.tool_id == "internal:web.search.parallel":
+                assert invocation.arguments == {
+                    "operation": "search",
+                    "query": "组装一台一万元左右的电脑配置",
+                }
+                return UnifiedToolResult(
+                    ok=True,
+                    content=[
+                        ToolResultContent(
+                            type="json",
+                            value={
+                                "results": [
+                                    {
+                                        "title": "CPU price",
+                                        "url": "https://example.com/cpu",
+                                        "snippet": "CPU price data",
+                                    }
+                                ]
+                            },
+                        )
+                    ],
+                    structured_content={
+                        "results": [
+                            {
+                                "title": "CPU price",
+                                "url": "https://example.com/cpu",
+                                "snippet": "CPU price data",
+                            }
+                        ]
+                    },
+                    artifacts=[],
+                    metadata={},
+                )
+            assert invocation.tool_id == "internal:web.fetch.sources"
+            assert invocation.arguments == {
+                "operation": "fetch_sources",
+                "sources": [
+                    {
+                        "title": "CPU price",
+                        "url": "https://example.com/cpu",
+                        "snippet": "CPU price data",
+                    }
+                ],
+            }
+            return UnifiedToolResult(
+                ok=True,
+                content=[
+                    ToolResultContent(
+                        type="json",
+                        value={
+                            "sourceContents": [
+                                {
+                                    "url": "https://example.com/cpu",
+                                    "title": "CPU price",
+                                    "text": "CPU price page",
+                                }
+                            ]
+                        },
+                    )
+                ],
+                structured_content={
+                    "sourceContents": [
+                        {
+                            "url": "https://example.com/cpu",
+                            "title": "CPU price",
+                            "text": "CPU price page",
+                        }
+                    ]
+                },
+                artifacts=[],
+                metadata={},
+            )
+
+    request = build_request(
+        tmp_path,
+        nodes=[
+            build_node(
+                "web-search",
+                "fixed_tool",
+                [],
+                tool_ref="web.search.parallel",
+                permissions=["network"],
+            ),
+            build_node(
+                "web-fetch",
+                "fixed_tool",
+                ["web-search"],
+                tool_ref="web.fetch.sources",
+                permissions=["network"],
+            ),
+        ],
+        graph_metadata={
+            "taskKind": "web_research",
+            "objective": "组装一台一万元左右的电脑配置",
+        },
+    )
+    executor = PlannedTaskExecutor(
+        request,
+        tool_gateway=WebGateway(),
+        execution_graph=compile_execution_graph(request),
+    )
+
+    search_output = executor.run("web-search", {})
+    fetch_output = executor.run("web-fetch", {"web-search": search_output})
+
+    assert search_output.values["results"][0]["url"] == "https://example.com/cpu"
+    assert fetch_output.values["sourceContents"][0]["text"] == "CPU price page"
+
+
 def test_document_fixed_tools_execute_from_bindings_without_document_executor_branch(
     tmp_path: Path,
 ) -> None:
@@ -1404,7 +1556,8 @@ def test_execution_graph_does_not_change_run_event_shape(tmp_path: Path) -> None
         UserMessage(
             task_id="execution-graph-event-shape",
             content="Create a Python script that counts rows in a CSV file.",
-        )
+        ),
+        model_client=FakeSemanticModel("deep_planning"),
     )[0]
     graph = graph_event.payload["graph"]
     request = RunGraphRequest(
@@ -2240,7 +2393,7 @@ def test_planned_model_nodes_use_node_reasoning_policy(tmp_path: Path) -> None:
         ModelCallProfile.NODE_REASONING
     ]
     assert client.temperatures == [0.2]
-    assert client.max_tokens == [1536]
+    assert client.max_tokens == [16384]
 
 
 def test_planned_model_node_fails_without_bound_runtime(
@@ -2363,7 +2516,8 @@ def test_generated_markdown_conversion_graph_exports_converted_artifact(
             task_id="task-markdown-convert",
             content="Please convert this document to Markdown.",
             attachments=[attachment],
-        )
+        ),
+        model_client=FakeSemanticModel("deep_planning", requires_files=True),
     )[0]
     request = RunGraphRequest(
         task_id="task-markdown-convert",

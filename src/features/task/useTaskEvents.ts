@@ -11,12 +11,18 @@ export type SubmitMessagePayload = {
   projectPath?: string;
   content: string;
   attachments: ChatAttachment[];
+  conversationHistory?: ConversationTurn[];
   inquiryChoice?: "quick_answer" | "research_flow";
   currentGraph?: NodeGraph;
   hasRunHistory?: boolean;
   artifactRefs?: string[];
   pendingChoice?: Record<string, unknown>;
   modelSessionId?: string | null;
+};
+
+export type ConversationTurn = {
+  role: "user" | "assistant" | "system";
+  content: string;
 };
 
 export type ResearchChoiceSubmitActionPayload = Omit<
@@ -289,6 +295,9 @@ function toSidecarMessage(payload: SubmitMessagePayload) {
     content: payload.content,
     model_session_id: payload.modelSessionId ?? null,
     attachments: payload.attachments.map(toSidecarAttachment),
+    ...(payload.conversationHistory
+      ? { conversation_history: payload.conversationHistory }
+      : {}),
     ...(payload.inquiryChoice ? { inquiry_choice: payload.inquiryChoice } : {}),
     ...(payload.currentGraph ? { current_graph: payload.currentGraph } : {}),
     ...(payload.hasRunHistory !== undefined

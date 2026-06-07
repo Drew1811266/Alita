@@ -14,7 +14,7 @@ from agent_service.model_policy import ModelCallPolicy, apply_policy_defaults
 
 ChatRole = Literal["system", "user", "assistant", "tool"]
 DEFAULT_TEMPERATURE = 0.2
-DEFAULT_MAX_TOKENS = 1024
+DEFAULT_MAX_TOKENS = 4096
 
 
 @dataclass(frozen=True)
@@ -144,10 +144,14 @@ class LlamaCppModelClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         policy: ModelCallPolicy | None = None,
+        timeout_seconds: float | None = None,
     ) -> str:
         if not self.config.enabled:
             raise ModelRuntimeDisabled("llama.cpp model runtime is not configured")
 
+        request_timeout = (
+            self.config.timeout_seconds if timeout_seconds is None else timeout_seconds
+        )
         payload = self._chat_payload(
             messages,
             temperature=temperature,
@@ -162,7 +166,7 @@ class LlamaCppModelClient:
             response = self._transport(
                 endpoint,
                 payload,
-                self.config.timeout_seconds,
+                request_timeout,
             )
         except ModelRuntimeRequestFailed as error:
             if not policy_has_extra_body or not _should_retry_without_policy_extra_body(error):
@@ -179,7 +183,7 @@ class LlamaCppModelClient:
             response = self._transport(
                 endpoint,
                 payload,
-                self.config.timeout_seconds,
+                request_timeout,
             )
 
         content = _extract_chat_content(response)
@@ -194,7 +198,7 @@ class LlamaCppModelClient:
             retry_response = self._transport(
                 endpoint,
                 retry_payload,
-                self.config.timeout_seconds,
+                request_timeout,
             )
             retry_content = _extract_chat_content(retry_response)
             if retry_content.strip():
@@ -209,10 +213,14 @@ class LlamaCppModelClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         policy: ModelCallPolicy | None = None,
+        timeout_seconds: float | None = None,
     ) -> ChatDiagnosticsResponse:
         if not self.config.enabled:
             raise ModelRuntimeDisabled("llama.cpp model runtime is not configured")
 
+        request_timeout = (
+            self.config.timeout_seconds if timeout_seconds is None else timeout_seconds
+        )
         payload = self._chat_payload(
             messages,
             temperature=temperature,
@@ -235,7 +243,7 @@ class LlamaCppModelClient:
             response = self._transport(
                 endpoint,
                 payload,
-                self.config.timeout_seconds,
+                request_timeout,
             )
         except ModelRuntimeRequestFailed as error:
             if not policy_has_extra_body or not _should_retry_without_policy_extra_body(error):
@@ -254,7 +262,7 @@ class LlamaCppModelClient:
             response = self._transport(
                 endpoint,
                 payload,
-                self.config.timeout_seconds,
+                request_timeout,
             )
 
         content = _extract_chat_content(response)
@@ -276,7 +284,7 @@ class LlamaCppModelClient:
             retry_response = self._transport(
                 endpoint,
                 retry_payload,
-                self.config.timeout_seconds,
+                request_timeout,
             )
             retry_content = _extract_chat_content(retry_response)
             if retry_content.strip():
@@ -427,8 +435,12 @@ class OpenAICompatibleModelClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         policy: ModelCallPolicy | None = None,
+        timeout_seconds: float | None = None,
     ) -> str:
         self._ensure_enabled()
+        request_timeout = (
+            self.config.timeout_seconds if timeout_seconds is None else timeout_seconds
+        )
         payload = self._payload(
             messages,
             temperature,
@@ -439,7 +451,7 @@ class OpenAICompatibleModelClient:
         response = self._transport(
             self._chat_url(),
             payload,
-            self.config.timeout_seconds,
+            request_timeout,
             self._headers(),
         )
         content = _extract_api_chat_content(response)
@@ -455,8 +467,12 @@ class OpenAICompatibleModelClient:
         temperature: float | None = None,
         max_tokens: int | None = None,
         policy: ModelCallPolicy | None = None,
+        timeout_seconds: float | None = None,
     ) -> ChatDiagnosticsResponse:
         self._ensure_enabled()
+        request_timeout = (
+            self.config.timeout_seconds if timeout_seconds is None else timeout_seconds
+        )
         payload = self._payload(
             messages,
             temperature,
@@ -467,7 +483,7 @@ class OpenAICompatibleModelClient:
         response = self._transport(
             self._chat_url(),
             payload,
-            self.config.timeout_seconds,
+            request_timeout,
             self._headers(),
         )
         content = _extract_api_chat_content(response)

@@ -12,6 +12,8 @@ python/build/
 python/dist/
 python/*.spec
 python/*.egg-info/
+node-runs/
+python/node-runs/
 python/**/__pycache__/
 python/.pytest_cache/
 __pycache__/

@@ -12,7 +12,24 @@ from agent_service.deep_agent_runtime_graph import (
     stream_deep_agent_runtime_events,
 )
 from agent_service.deep_agent_runtime_models import PlanningResumeCommand
-from agent_service.graph import run_agent_from_state, stream_agent_events_from_state
+from agent_service.deep_agent_models import ReasoningDecision
+from agent_service.capability_gate import (
+    CapabilityGateResult,
+    evaluate_route_capabilities,
+)
+from agent_service.graph import (
+    _is_explicit_graph_constraint_feedback,
+    _semantic_graph_feedback_event,
+    run_agent_from_state,
+    stream_agent_events_from_state,
+)
+from agent_service.router_v2 import RouterV2Decision, route_message
+from agent_service.semantic_router import SemanticRouteDecision
+from agent_service.plan_feedback import (
+    GraphFeedbackKind,
+    apply_graph_feedback,
+    classify_graph_feedback,
+)
 from agent_service.runtime_state import (
     RuntimeState,
     RuntimeStateDelta,
@@ -39,6 +56,12 @@ _DEFAULT_DEEP_RUNTIME_STREAM_RUNNER = object()
 class DeepAgentProductPathDecision:
     kind: Literal["handled", "allow_legacy_response", "blocked"]
     reason: str
+
+
+@dataclass(frozen=True)
+class RuntimeRouteResult:
+    pre_deep_response_run_state: AgentRunState | None
+    semantic_decision: RouterV2Decision | None
 
 
 class AgentRuntimeEngine:
@@ -111,6 +134,47 @@ class AgentRuntimeEngine:
             thread_id=run_state.thread_id,
         )
         self._write_state(started.state)
+        input_guard_result = self._deterministic_input_guard_result(
+            started.state,
+            run_state,
+        )
+        if input_guard_result is not None:
+            guard_events, next_state = input_guard_result
+            return RuntimeEngineResult(
+                state=next_state,
+                events=[*started.events, *guard_events],
+            )
+
+        feedback_result = self._current_graph_feedback_result(
+            started.state,
+            run_state,
+            model_client=model_client,
+        )
+        if feedback_result is not None:
+            feedback_events, next_state = feedback_result
+            return RuntimeEngineResult(
+                state=next_state,
+                events=[*started.events, *feedback_events],
+            )
+
+        route_result = _runtime_route_result(
+            run_state,
+            model_client=model_client,
+        )
+        pre_deep_response_run_state = route_result.pre_deep_response_run_state
+        if pre_deep_response_run_state is not None:
+            route_events, next_state = self._legacy_response_only(
+                started.state,
+                pre_deep_response_run_state,
+                model_client=model_client,
+                search_provider=search_provider,
+                weather_provider=weather_provider,
+            )
+            return RuntimeEngineResult(
+                state=next_state,
+                events=[*started.events, *route_events],
+            )
+
         deep_events = self.deep_runtime_runner(
             run_state.message,
             project_path=run_state.project_path or "project.alita",
@@ -118,6 +182,11 @@ class AgentRuntimeEngine:
             thread_id=started.state.thread_id,
             model_client=model_client,
             runtime_store=self.runtime_store,
+            disabled_tool_ids=list(run_state.disabled_tool_ids),
+            initial_reasoning_decision=_initial_reasoning_decision_from_route_result(
+                run_state,
+                route_result,
+            ),
             resume_command=planning_resume_command_from_pending_choice(
                 run_state.pending_choice,
                 answer_fallback=run_state.message.content,
@@ -153,9 +222,13 @@ class AgentRuntimeEngine:
                 state=next_state,
                 events=[*started.events, *deep_events, delta_event, *blocked_events],
             )
+        response_run_state = _run_state_for_allowed_deep_response(
+            run_state,
+            deep_events,
+        )
         route_events, next_state = self._legacy_response_only(
             started.state,
-            run_state,
+            response_run_state,
             model_client=model_client,
             search_provider=search_provider,
             weather_provider=weather_provider,
@@ -183,6 +256,80 @@ class AgentRuntimeEngine:
         for event in started.events:
             yield event
 
+        input_guard_result = self._deterministic_input_guard_result(
+            started.state,
+            run_state,
+        )
+        if input_guard_result is not None:
+            guard_events, _next_state = input_guard_result
+            for event in guard_events:
+                yield event
+            return
+
+        feedback_result = self._current_graph_feedback_result(
+            started.state,
+            run_state,
+            model_client=model_client,
+        )
+        if feedback_result is not None:
+            feedback_events, _next_state = feedback_result
+            for event in feedback_events:
+                yield event
+            return
+
+        route_result = _runtime_route_result(
+            run_state,
+            model_client=model_client,
+        )
+        pre_deep_response_run_state = route_result.pre_deep_response_run_state
+        if pre_deep_response_run_state is not None:
+            emitted_events: list[AgentEvent] = []
+            for event in self.stream_runner(
+                pre_deep_response_run_state,
+                model_client=model_client,
+                search_provider=search_provider,
+                weather_provider=weather_provider,
+            ):
+                emitted_events.append(event)
+                blocked_event_types = _legacy_graph_event_types(emitted_events)
+                if blocked_event_types:
+                    next_state = started.state.model_copy(update={"stage": "failed"})
+                    blocked_events = _legacy_graph_blocked_events(
+                        next_state,
+                        blocked_event_types=blocked_event_types,
+                    )
+                    yield self._record_transition(
+                        started.state,
+                        next_state,
+                        checkpoint_label="legacy-stream-blocked",
+                        decision={
+                            "kind": "legacy_graph_blocked",
+                            "blockedEventTypes": blocked_event_types,
+                        },
+                        emitted_events=blocked_events,
+                    )
+                    for blocked_event in blocked_events:
+                        yield blocked_event
+                    return
+                yield event
+
+            next_state = started.state.model_copy(update={"stage": "plan"})
+            delta = RuntimeStateDelta(
+                previous_checkpoint_id=None,
+                checkpoint_id=f"{started.state.run_id}:route:0",
+                stage_before=started.state.stage,
+                stage_after=next_state.stage,
+                decision={"kind": "legacy_response_only"},
+                emitted_events=[event.model_dump() for event in emitted_events],
+            )
+            self._write_delta(delta)
+            self._write_state(next_state)
+            yield AgentEvent(
+                type="runtime.state_delta",
+                payload={"delta": delta.model_dump()},
+            )
+            return
+
         deep_events: list[AgentEvent] = []
         for event in self.deep_runtime_stream_runner(
             run_state.message,
@@ -191,6 +338,11 @@ class AgentRuntimeEngine:
             thread_id=started.state.thread_id,
             model_client=model_client,
             runtime_store=self.runtime_store,
+            disabled_tool_ids=list(run_state.disabled_tool_ids),
+            initial_reasoning_decision=_initial_reasoning_decision_from_route_result(
+                run_state,
+                route_result,
+            ),
             resume_command=planning_resume_command_from_pending_choice(
                 run_state.pending_choice,
                 answer_fallback=run_state.message.content,
@@ -225,9 +377,13 @@ class AgentRuntimeEngine:
                 yield event
             return
 
+        response_run_state = _run_state_for_allowed_deep_response(
+            run_state,
+            deep_events,
+        )
         emitted_events: list[AgentEvent] = []
         for event in self.stream_runner(
-            run_state,
+            response_run_state,
             model_client=model_client,
             search_provider=search_provider,
             weather_provider=weather_provider,
@@ -465,6 +621,76 @@ class AgentRuntimeEngine:
             *routed_events,
         ], next_state
 
+    def _deterministic_input_guard_result(
+        self,
+        state: RuntimeState,
+        run_state: AgentRunState,
+    ) -> tuple[list[AgentEvent], RuntimeState] | None:
+        guard_event = _deterministic_input_guard_event(run_state)
+        if guard_event is None:
+            return None
+
+        next_state = state.model_copy(update={"stage": "interrupted"})
+        delta_event = self._record_transition(
+            state,
+            next_state,
+            checkpoint_label="input-guard",
+            decision={
+                "kind": "deterministic_input_guard",
+                "missing": list(guard_event.payload.get("missing") or []),
+            },
+            emitted_events=[guard_event],
+        )
+        return [delta_event, guard_event], next_state
+
+    def _current_graph_feedback_result(
+        self,
+        state: RuntimeState,
+        run_state: AgentRunState,
+        *,
+        model_client: Any | None = None,
+    ) -> tuple[list[AgentEvent], RuntimeState] | None:
+        current_graph = run_state.current_graph
+        if current_graph is None:
+            return None
+
+        if _should_preflight_graph_feedback(run_state):
+            feedback_event = apply_graph_feedback(
+                run_state.message,
+                current_graph,
+                has_run_history=run_state.has_run_history,
+                artifact_refs=run_state.artifact_refs,
+                pending_choice=run_state.pending_choice,
+            )
+        else:
+            decision = route_message(
+                run_state.message,
+                inquiry_choice=run_state.inquiry_choice,
+                model_client=model_client,
+                current_graph=current_graph,
+                pending_choice=run_state.pending_choice,
+                available_capabilities=_runtime_available_capabilities(),
+            )
+            route = str(decision.structured_route.get("route") or "")
+            if route != "graph_feedback":
+                return None
+            feedback_event = _semantic_graph_feedback_event(
+                run_state.message,
+                current_graph,
+                has_run_history=run_state.has_run_history,
+                artifact_refs=run_state.artifact_refs,
+                pending_choice=run_state.pending_choice,
+            )
+        next_state = state.model_copy(update={"stage": "plan"})
+        delta_event = self._record_transition(
+            state,
+            next_state,
+            checkpoint_label="graph-feedback",
+            decision={"kind": "graph_feedback"},
+            emitted_events=[feedback_event],
+        )
+        return [delta_event, feedback_event], next_state
+
     def _write_state(self, state: RuntimeState) -> None:
         if self.runtime_store is not None:
             self.runtime_store.write_state(state)
@@ -573,7 +799,7 @@ def _deep_agent_product_path_decision(
     for event in reversed(events):
         if event.type == "reasoning.completed":
             next_action = _event_next_action(event)
-            if next_action in {"simple_answer", "tool_action", "bounded_tool"}:
+            if next_action == "simple_answer":
                 return DeepAgentProductPathDecision(
                     kind="allow_legacy_response",
                     reason=f"deep_agent_runtime_allowed_response_path:{next_action}",
@@ -611,6 +837,299 @@ def _event_next_action(event: AgentEvent) -> str:
     decision = payload.get("decision")
     source = decision if isinstance(decision, dict) else payload
     return str(source.get("nextAction") or source.get("next_action") or "")
+
+
+def _run_state_for_allowed_deep_response(
+    run_state: AgentRunState,
+    events: list[AgentEvent],
+) -> AgentRunState:
+    for event in reversed(events):
+        next_action = _event_next_action(event)
+        if next_action == "simple_answer":
+            if run_state.inquiry_choice is not None:
+                return run_state
+            return run_state.model_copy(
+                update={
+                    "intent": "chat",
+                    "route_decision": {"intent": "chat"},
+                    "structured_route_decision": {
+                        "intent": "chat",
+                        "source": "deep_agent_reasoning_gate",
+                    },
+                }
+            )
+        if next_action:
+            return run_state
+    return run_state
+
+
+def _runtime_route_result(
+    run_state: AgentRunState,
+    *,
+    model_client: Any | None,
+) -> RuntimeRouteResult:
+    if run_state.current_graph is not None and model_client is None:
+        return RuntimeRouteResult(None, None)
+    if run_state.pending_choice is not None:
+        return RuntimeRouteResult(None, None)
+    if run_state.inquiry_choice == "research_flow":
+        return RuntimeRouteResult(None, None)
+
+    decision = route_message(
+        run_state.message,
+        inquiry_choice=run_state.inquiry_choice,
+        model_client=model_client,
+        current_graph=run_state.current_graph,
+        pending_choice=run_state.pending_choice,
+        available_capabilities=_runtime_available_capabilities(),
+    )
+    if decision.intent not in {
+        "chat",
+        "local_inquiry",
+        "web_simple_inquiry",
+        "missing_input",
+    }:
+        return RuntimeRouteResult(None, decision)
+    if not _semantic_route_allows_pre_deep_response(decision):
+        return RuntimeRouteResult(None, decision)
+    gate_result = _semantic_capability_gate_result(run_state, decision)
+    if gate_result is not None and not gate_result.allowed:
+        return RuntimeRouteResult(
+            run_state.model_copy(
+                update={
+                    "intent": "missing_input",
+                    "route_decision": _route_decision_for_capability_gate(
+                        decision,
+                        gate_result,
+                    ),
+                    "structured_route_decision": _structured_route_for_capability_gate(
+                        decision,
+                        gate_result,
+                    ),
+                }
+            ),
+            decision,
+        )
+
+    return RuntimeRouteResult(
+        run_state.model_copy(
+            update={
+                "intent": decision.intent,
+                "route_decision": decision.legacy_route,
+                "structured_route_decision": decision.to_payload(),
+            }
+        ),
+        decision,
+    )
+
+
+def _initial_reasoning_decision_from_route_result(
+    run_state: AgentRunState,
+    route_result: RuntimeRouteResult,
+) -> ReasoningDecision | None:
+    decision = route_result.semantic_decision
+    if decision is None or decision.should_clarify:
+        return None
+    if not _semantic_decision_came_from_route_code(decision):
+        return None
+    route = str(decision.structured_route.get("route") or "")
+    if route not in {"deep_planning", "research_planning", "graph_feedback"}:
+        return None
+
+    return ReasoningDecision(
+        task_id=run_state.message.task_id,
+        task_understanding=_non_empty_text(
+            run_state.message.content,
+            fallback="User requested Agent planning.",
+        ),
+        intent=_non_empty_text(decision.intent, fallback="task"),
+        complexity="graph_task",
+        why_this_path=_non_empty_text(
+            decision.reason,
+            fallback="Semantic router selected the planning path.",
+        ),
+        confidence=decision.confidence,
+        needs_clarification=False,
+        required_capabilities=_required_capabilities_from_route_decision(decision),
+        next_action="deep_planning",
+    )
+
+
+def _required_capabilities_from_route_decision(
+    decision: RouterV2Decision,
+) -> list[str]:
+    values: list[str] = []
+    structured = decision.structured_route
+    required = structured.get("requiredCapabilities")
+    if isinstance(required, list):
+        values.extend(str(item) for item in required if str(item).strip())
+    values.extend(str(item) for item in decision.tool_candidates if str(item).strip())
+    return list(dict.fromkeys(values))
+
+
+def _semantic_decision_came_from_route_code(decision: RouterV2Decision) -> bool:
+    structured = decision.structured_route
+    if structured.get("intent") == "route_code":
+        return True
+    context_used = structured.get("contextUsed")
+    return isinstance(context_used, list) and "route_code" in context_used
+
+
+def _non_empty_text(value: Any, *, fallback: str) -> str:
+    text = str(value or "").strip()
+    return text or fallback
+
+
+def _semantic_route_allows_pre_deep_response(decision: RouterV2Decision) -> bool:
+    route = str(decision.structured_route.get("route") or "")
+    return route in {
+        "response_only",
+        "local_answer",
+        "simple_tool_answer",
+        "web_answer",
+        "clarification_required",
+    }
+
+
+def _semantic_capability_gate_result(
+    run_state: AgentRunState,
+    decision: RouterV2Decision,
+) -> CapabilityGateResult | None:
+    try:
+        semantic_decision = SemanticRouteDecision.model_validate(
+            decision.structured_route
+        )
+    except Exception:
+        return None
+    return evaluate_route_capabilities(
+        semantic_decision,
+        run_state.message,
+        available_capabilities=_runtime_available_capabilities(),
+    )
+
+
+def _route_decision_for_capability_gate(
+    decision: RouterV2Decision,
+    gate_result: CapabilityGateResult,
+) -> dict[str, Any]:
+    route_decision = dict(decision.legacy_route)
+    route_decision["intent"] = "missing_input"
+    route_decision["missing_inputs"] = _capability_gate_missing_inputs(gate_result)
+    route_decision["missing_capabilities"] = list(gate_result.missing_capabilities)
+    route_decision["reason"] = gate_result.reason
+    return route_decision
+
+
+def _structured_route_for_capability_gate(
+    decision: RouterV2Decision,
+    gate_result: CapabilityGateResult,
+) -> dict[str, Any]:
+    payload = decision.to_payload()
+    payload["intent"] = "missing_input"
+    payload["missingInputs"] = _capability_gate_missing_inputs(gate_result)
+    payload["clarificationPrompt"] = gate_result.user_message
+    payload["capabilityGate"] = gate_result.model_dump()
+    return payload
+
+
+def _capability_gate_missing_inputs(
+    gate_result: CapabilityGateResult,
+) -> list[str]:
+    missing: list[str] = []
+    for item in gate_result.missing_inputs:
+        if item and item not in missing:
+            missing.append(item)
+    if gate_result.missing_capabilities and "clarification" not in missing:
+        missing.append("clarification")
+    for capability in gate_result.missing_capabilities:
+        marker = f"capability:{capability}"
+        if marker not in missing:
+            missing.append(marker)
+    if not missing:
+        missing.append("clarification")
+    return missing
+
+
+def _runtime_available_capabilities() -> list[str]:
+    return [
+        "weather.current",
+        "web.search.parallel",
+        "web.fetch.sources",
+        "document.read_write",
+        "output.final_response",
+        "output.pdf",
+    ]
+
+
+def _deterministic_input_guard_event(run_state: AgentRunState) -> AgentEvent | None:
+    content = run_state.message.content.strip()
+    if not content and not run_state.message.attachments:
+        return AgentEvent(
+            type="input.required",
+            payload={
+                "prompt": "请先输入你想让我处理的问题或任务。",
+                "missing": ["message"],
+            },
+        )
+
+    if _document_task_missing_attachment(run_state):
+        return AgentEvent(
+            type="input.required",
+            payload={
+                "prompt": "请先添加需要处理的文档。",
+                "missing": ["attachment"],
+            },
+        )
+
+    return None
+
+
+def _should_preflight_graph_feedback(run_state: AgentRunState) -> bool:
+    current_graph = run_state.current_graph
+    if current_graph is None:
+        return False
+    if run_state.pending_choice is not None:
+        return True
+    feedback_decision = classify_graph_feedback(
+        run_state.message.content,
+        current_graph,
+    )
+    if feedback_decision.kind == GraphFeedbackKind.LOCAL_MODIFICATION:
+        return True
+    if _is_explicit_graph_constraint_feedback(run_state.message.content):
+        return True
+    return False
+
+
+def _document_task_missing_attachment(run_state: AgentRunState) -> bool:
+    if run_state.message.attachments:
+        return False
+    normalized = run_state.message.content.strip().lower()
+    if not normalized:
+        return False
+    document_markers = (
+        "这个文档",
+        "这份文档",
+        "文档",
+        "文件",
+        "附件",
+        "readme",
+        "docx",
+        "pdf",
+    )
+    processing_markers = (
+        "整理",
+        "总结",
+        "摘要",
+        "提取",
+        "改写",
+        "导出",
+        "生成报告",
+        "中文报告",
+    )
+    return any(marker in normalized for marker in document_markers) and any(
+        marker in normalized for marker in processing_markers
+    )
 
 
 def _deep_agent_product_path_blocked_events(

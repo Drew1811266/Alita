@@ -14,7 +14,7 @@ fn default_config_is_disabled_until_model_path_is_set() {
     assert!(!config.is_enabled());
     assert_eq!(config.host, "127.0.0.1");
     assert_eq!(config.port, 8766);
-    assert_eq!(config.context_size, 16384);
+    assert_eq!(config.context_size, 131072);
     assert_eq!(config.gpu_layers, "all");
     assert_eq!(config.health_url(), "http://127.0.0.1:8766/health");
 }
@@ -35,7 +35,7 @@ fn config_with_model_path_builds_llama_server_args() {
             "--model",
             "D:\\Models\\test.gguf",
             "--ctx-size",
-            "16384",
+            "131072",
             "--gpu-layers",
             "all",
         ]

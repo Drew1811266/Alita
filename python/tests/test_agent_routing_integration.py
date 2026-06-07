@@ -25,11 +25,14 @@ class FakeModelClient:
         reply: str,
         *,
         deep_payloads: list[dict[str, Any]] | None = None,
+        semantic_route: str | None = None,
     ) -> None:
         self.reply = reply
         self.calls: list[list[ChatMessage]] = []
         self.deep_payloads = list(deep_payloads or [])
         self.deep_calls: list[list[ChatMessage]] = []
+        self.semantic_route = semantic_route
+        self.semantic_routes_returned: list[str] = []
 
     def chat(
         self,
@@ -41,6 +44,10 @@ class FakeModelClient:
     ) -> str:
         del temperature, max_tokens, policy
         self.calls.append(messages)
+        if _is_semantic_router_call(messages):
+            route = self.semantic_route or _semantic_route_for_messages(messages)
+            self.semantic_routes_returned.append(route)
+            return json.dumps(_semantic_route_payload(route))
         return self.reply
 
     def chat_with_diagnostics(
@@ -98,6 +105,48 @@ def _reasoning_payload(next_action: str = "deep_planning") -> dict[str, Any]:
     }
 
 
+def _semantic_route_payload(route: str) -> dict[str, Any]:
+    requires_graph = route in {"deep_planning", "research_planning"}
+    requires_web = route in {"web_answer", "research_planning"}
+    return {
+        "route": route,
+        "intent": "integration_test",
+        "complexity": "simple" if route == "response_only" else "multi_step",
+        "requiresGraph": requires_graph,
+        "requiresTools": requires_graph or requires_web,
+        "requiresWeb": requires_web,
+        "requiresFiles": False,
+        "requiresClarification": False,
+        "language": "en",
+        "confidence": 0.95,
+        "contextUsed": ["current_message"],
+        "missingInputs": [],
+        "requiredCapabilities": [],
+        "toolCandidates": [],
+        "reason": "Semantic integration route.",
+    }
+
+
+def _is_semantic_router_call(messages: list[ChatMessage]) -> bool:
+    return bool(messages and "Semantic Router" in getattr(messages[0], "content", ""))
+
+
+def _semantic_route_for_messages(messages: list[ChatMessage]) -> str:
+    current_message = ""
+    try:
+        current_message = json.loads(messages[1].content).get("currentMessage", "")
+    except Exception:
+        current_message = ""
+    normalized = current_message.lower()
+    if any(marker in normalized for marker in ("hello", "what can you do")):
+        return "response_only"
+    if any(marker in normalized for marker in ("latest", "release")):
+        return "web_answer"
+    if any(marker in normalized for marker in ("research", "compare")):
+        return "research_planning"
+    return "deep_planning"
+
+
 def _plan_payload(step_ids: list[str]) -> dict[str, Any]:
     return {
         "plan_draft_id": "plan-dynamic",
@@ -138,12 +187,19 @@ def _patch_deep_planning_model(
     monkeypatch,
     *,
     step_ids: list[str] | None = None,
+    semantic_route: str | None = None,
 ) -> FakeModelClient:
+    step_ids = step_ids or ["understand", "execute"]
+    plan_payload = _plan_payload(step_ids)
+    if any("research" in step_id or "compare" in step_id for step_id in step_ids):
+        plan_payload["steps"][0]["required_capabilities"] = ["web.search"]
+        plan_payload["steps"][0]["preferred_node_ids"] = ["web.search.parallel"]
     client = FakeModelClient(
         "unused",
+        semantic_route=semantic_route,
         deep_payloads=[
             _reasoning_payload(),
-            _plan_payload(step_ids or ["understand", "execute"]),
+            plan_payload,
         ],
     )
     monkeypatch.setattr(
@@ -201,6 +257,7 @@ def test_simple_web_inquiry_returns_source_metadata_with_no_graph() -> None:
 
     events = run_agent(
         UserMessage(task_id="simple-web", content="What is the latest Python release?"),
+        model_client=FakeModelClient("unused", semantic_route="web_answer"),
         search_provider=provider,
     )
 
@@ -221,6 +278,7 @@ def test_complex_web_inquiry_enters_deep_planning_confirmation(monkeypatch) -> N
     client = _patch_deep_planning_model(
         monkeypatch,
         step_ids=["compare_options", "recommend_path"],
+        semantic_route="research_planning",
     )
 
     response = TestClient(app).post(
@@ -239,6 +297,9 @@ def test_complex_web_inquiry_enters_deep_planning_confirmation(monkeypatch) -> N
     assert "research.choice_required" not in [event["type"] for event in events]
     graph = graph_event["payload"]["graph"]
     assert graph["metadata"]["generatedBy"] == "deep_agent_runtime"
+    assert client.semantic_routes_returned == ["research_planning"]
+    assert graph["nodes"][0]["toolRef"] == "web.search.parallel"
+    assert graph["nodes"][0]["metadata"]["requiredCapabilities"] == ["web.search"]
     assert [
         node["metadata"]["sourcePlanStepId"]
         for node in graph["nodes"]

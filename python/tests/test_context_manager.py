@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from agent_service.context_manager import ToolCapability, build_context_bundle
 from agent_service.goal_spec import GoalSpec, parse_goal_spec
 from agent_service.memory_store import MemoryRecord, MemoryStore
+from agent_service.node_catalog import NodeCatalogBuilder
 from agent_service.schemas import Attachment, UserMessage
 from agent_service.tool_gateway import UnifiedToolGateway
 from agent_service.tool_providers.internal import InternalToolProvider
@@ -112,6 +115,94 @@ def test_build_context_bundle_can_use_filtered_unified_tool_catalog(
 
     assert "internal:document.markitdown_convert" in tool_ids
     assert "internal:document.typst_compile" not in tool_ids
+
+
+def test_build_context_bundle_includes_compact_catalog_node_summaries(
+    tmp_path: Path,
+) -> None:
+    registry = ToolRegistry.from_packages_root(
+        Path(__file__).resolve().parents[2] / "tool-packages"
+    )
+    catalog = NodeCatalogBuilder(tool_registry=registry).build()
+
+    bundle = build_context_bundle(
+        message=UserMessage(task_id="task-1", content="convert this docx to markdown"),
+        goal_spec=parse_goal_spec(
+            UserMessage(task_id="task-1", content="convert this docx to markdown")
+        ),
+        project_path=str(tmp_path / "workspace.alita"),
+        tool_registry=registry,
+        node_catalog=catalog,
+    )
+
+    node_by_id = {node.node_id: node for node in bundle.available_nodes}
+    convert_node = node_by_id["document.convert.markdown"]
+
+    assert convert_node.kind == "tool"
+    assert convert_node.display_name
+    assert convert_node.category == "document"
+    assert "document.convert.markdown" in convert_node.capabilities
+    assert convert_node.description
+    assert convert_node.input_summary == ["Document (document, required)"]
+    assert convert_node.output_summary == ["Markdown (markdown, required)"]
+    assert convert_node.risk_level == "high"
+    assert convert_node.availability["status"] == "available"
+
+
+def test_build_context_bundle_includes_available_system_tool_nodes(
+    tmp_path: Path,
+) -> None:
+    registry = ToolRegistry.from_packages_root(
+        Path(__file__).resolve().parents[2] / "tool-packages"
+    )
+    catalog = NodeCatalogBuilder(tool_registry=registry).build()
+
+    bundle = build_context_bundle(
+        message=UserMessage(task_id="task-1", content="请上网搜索电脑配件价格"),
+        goal_spec=parse_goal_spec(
+            UserMessage(task_id="task-1", content="请上网搜索电脑配件价格")
+        ),
+        project_path=str(tmp_path / "workspace.alita"),
+        tool_registry=registry,
+        node_catalog=catalog,
+    )
+
+    node_ids = {node.node_id for node in bundle.available_nodes}
+
+    assert "web.search.parallel" in node_ids
+    assert "web.fetch.sources" in node_ids
+
+
+@pytest.mark.parametrize(
+    "disabled_tool_id",
+    ["document.markitdown_convert", "internal:document.markitdown_convert"],
+)
+def test_build_context_bundle_filters_disabled_catalog_tool_nodes(
+    tmp_path: Path,
+    disabled_tool_id: str,
+) -> None:
+    registry = ToolRegistry.from_packages_root(
+        Path(__file__).resolve().parents[2] / "tool-packages"
+    )
+    catalog = NodeCatalogBuilder(tool_registry=registry).build()
+
+    bundle = build_context_bundle(
+        message=UserMessage(task_id="task-1", content="convert this docx to markdown"),
+        goal_spec=parse_goal_spec(
+            UserMessage(task_id="task-1", content="convert this docx to markdown")
+        ),
+        project_path=str(tmp_path / "workspace.alita"),
+        tool_registry=registry,
+        disabled_tool_ids=[disabled_tool_id],
+        node_catalog=catalog,
+    )
+
+    tool_ids = {tool.tool_id for tool in bundle.available_tools}
+    node_ids = {node.node_id for node in bundle.available_nodes}
+
+    assert "document.markitdown_convert" not in tool_ids
+    assert "document.convert.markdown" not in node_ids
+    assert "model.reasoning" in node_ids
 
 
 def test_context_bundle_includes_selected_memory_summaries(tmp_path: Path) -> None:

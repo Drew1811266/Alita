@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from agent_service.intent import classify_route
 from agent_service.schemas import AgentEvent, RunGraph, UserMessage
-from agent_service.web_search import SearchResponse, SearchResult
+from agent_service.web_search import SearchFailure, SearchResponse, SearchResult
 
 
 class FakeSearchProvider:
@@ -204,6 +204,36 @@ def test_simple_web_inquiry_does_not_cite_rejected_sources() -> None:
     assert "Top10 Python releases" not in payload["message"]["content"]
 
 
+def test_chinese_simple_web_failure_uses_chinese_message() -> None:
+    from agent_service.web_research import answer_simple_web_inquiry
+
+    provider = FakeSearchProvider(
+        [
+            SearchResponse(
+                results=[],
+                failure=SearchFailure(
+                    kind="network_error",
+                    message="所有搜索服务暂时不可用。",
+                ),
+            )
+        ]
+    )
+    message = UserMessage(
+        task_id="simple-web",
+        content="现在最新的 Python 稳定版本是什么？请给出来源。",
+    )
+
+    event = answer_simple_web_inquiry(
+        message,
+        classify_route(message),
+        search_provider=provider,
+    )
+
+    content = event.payload["message"]["content"]
+    assert content == "联网搜索暂时没有完成：所有搜索服务暂时不可用。请稍后重试，或提供一个可直接读取的来源链接。"
+    assert "I could not complete" not in content
+
+
 class FakeWeatherProvider:
     def __init__(self) -> None:
         self.current_locations: list[str] = []
@@ -299,6 +329,29 @@ def test_simple_weather_inquiry_uses_weather_provider_without_search() -> None:
     assert "上海当前天气" in event.payload["message"]["content"]
     assert "26.1°C" in event.payload["message"]["content"]
     assert event.payload["sources"][0]["provider"] == "open_meteo"
+    assert event.payload["sourceMetadata"]["toolName"] == "weather.current"
+
+
+def test_semantic_weather_candidate_uses_weather_provider_without_keyword() -> None:
+    from agent_service.web_research import answer_simple_web_inquiry
+
+    weather_provider = FakeWeatherProvider()
+    message = UserMessage(task_id="weather-semantic", content="今天上海怎么样？")
+    event = answer_simple_web_inquiry(
+        message,
+        {
+            "semanticRoute": {
+                "route": "simple_tool_answer",
+                "toolCandidates": ["weather.current"],
+            },
+            "toolCandidates": ["weather.current"],
+        },
+        search_provider=FailingSearchProvider(),
+        weather_provider=weather_provider,
+    )
+
+    assert event.type == "message.created"
+    assert weather_provider.current_locations == ["上海"]
     assert event.payload["sourceMetadata"]["toolName"] == "weather.current"
 
 

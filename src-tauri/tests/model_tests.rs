@@ -13,7 +13,8 @@ fn default_local_capabilities_are_text_and_embedding_ready() {
     assert!(capabilities.supports_embeddings);
     assert!(!capabilities.supports_images);
     assert!(!capabilities.supports_audio);
-    assert_eq!(capabilities.context_window, 16384);
+    assert_eq!(capabilities.context_window, 131072);
+    assert_eq!(capabilities.max_output_tokens, 4096);
     assert!(capabilities.local_only);
 }
 

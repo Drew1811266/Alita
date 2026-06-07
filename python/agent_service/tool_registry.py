@@ -45,6 +45,8 @@ class ToolRegistry:
             for manifest_path in sorted(root.glob("*/manifest.json"))
         ]
         tools.append(_virtual_document_input_tool())
+        tools.append(_virtual_web_search_tool())
+        tools.append(_virtual_web_fetch_sources_tool())
         return cls(tools)
 
     def get(self, tool_id: str) -> ToolManifestSpec:
@@ -127,6 +129,100 @@ def _virtual_document_input_tool() -> ToolManifestSpec:
         timeout_policy={},
         artifact_policy={},
         security_policy={"network": False, "plugins": False},
+        examples=[],
+        node_templates=[],
+    )
+
+
+def _virtual_web_search_tool() -> ToolManifestSpec:
+    return ToolManifestSpec(
+        tool_id="web.search.parallel",
+        name="Web Search",
+        description="Search the web for sources relevant to the current task.",
+        version="1.0.0",
+        source_type="virtual_system_tool",
+        license="internal",
+        runtime="python_sidecar",
+        entrypoint=None,
+        capabilities=["web_search", "research.web_search"],
+        operations=[
+            ToolOperationSpec(
+                name="search",
+                description="Run one or more web search queries.",
+            )
+        ],
+        input_schema={
+            "type": "object",
+            "required": ["operation", "query"],
+            "properties": {
+                "operation": {"type": "string", "enum": ["search"]},
+                "query": {"type": "string"},
+                "queries": {"type": "array"},
+                "max_results": {"type": "number"},
+            },
+        },
+        output_schema={
+            "type": "object",
+            "required": ["results"],
+            "properties": {
+                "query": {"type": "string"},
+                "queries": {"type": "array"},
+                "results": {"type": "array"},
+                "acceptedSources": {"type": "array"},
+                "failures": {"type": "array"},
+            },
+        },
+        permissions=["network"],
+        error_codes=["invalid_tool_input", "web_search_failed"],
+        timeout_policy={"seconds": 30},
+        artifact_policy={},
+        security_policy={"network": True, "plugins": False},
+        examples=[],
+        node_templates=[],
+    )
+
+
+def _virtual_web_fetch_sources_tool() -> ToolManifestSpec:
+    return ToolManifestSpec(
+        tool_id="web.fetch.sources",
+        name="Fetch Web Sources",
+        description="Fetch readable text from selected web search results.",
+        version="1.0.0",
+        source_type="virtual_system_tool",
+        license="internal",
+        runtime="python_sidecar",
+        entrypoint=None,
+        capabilities=["web_fetch", "research.web_fetch"],
+        operations=[
+            ToolOperationSpec(
+                name="fetch_sources",
+                description="Fetch and normalize selected web sources.",
+            )
+        ],
+        input_schema={
+            "type": "object",
+            "required": ["operation", "sources"],
+            "properties": {
+                "operation": {"type": "string", "enum": ["fetch_sources"]},
+                "sources": {"type": "array"},
+                "max_sources": {"type": "number"},
+            },
+        },
+        output_schema={
+            "type": "object",
+            "required": ["sourceContents"],
+            "properties": {
+                "sources": {"type": "array"},
+                "sourceContents": {"type": "array"},
+                "failedSourceReads": {"type": "array"},
+                "text": {"type": "string"},
+            },
+        },
+        permissions=["network"],
+        error_codes=["invalid_tool_input", "web_fetch_failed"],
+        timeout_policy={"seconds": 45},
+        artifact_policy={},
+        security_policy={"network": True, "plugins": False},
         examples=[],
         node_templates=[],
     )

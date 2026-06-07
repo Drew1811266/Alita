@@ -44,6 +44,7 @@ def test_router_v2_decision_payload_uses_frontend_safe_keys() -> None:
         "source": "deterministic",
         "shouldClarify": True,
         "clarificationPrompt": "What should I do?",
+        "semanticRoute": {},
     }
     assert decision.legacy_route == {"intent": {"kind": "task"}}
 
@@ -284,35 +285,88 @@ class FakeRouterModelClient:
         return self.response
 
 
+class FakeRouterModel:
+    def __init__(self, response: dict):
+        self.response = response
+        self.calls = 0
+
+    def chat(self, messages, *, temperature=None, max_tokens=None, policy=None) -> str:
+        self.calls += 1
+        return json.dumps(self.response)
+
+
+def _semantic_router_payload(route: str, *, confidence: float = 0.94) -> dict:
+    return {
+        "route": route,
+        "intent": "greeting",
+        "complexity": "simple",
+        "requiresGraph": False,
+        "requiresTools": False,
+        "requiresWeb": False,
+        "requiresFiles": False,
+        "requiresClarification": False,
+        "language": "zh",
+        "confidence": confidence,
+        "contextUsed": ["current_message"],
+        "missingInputs": [],
+        "requiredCapabilities": [],
+        "toolCandidates": [],
+        "reason": "用户是在问候。",
+    }
+
+
 def test_structured_router_enabled_defaults_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(STRUCTURED_ROUTER_ENV, raising=False)
 
     assert structured_router_enabled() is False
 
 
-def test_route_message_env_off_does_not_call_model_and_returns_deterministic(
+def test_route_message_uses_semantic_router_without_structured_router_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(STRUCTURED_ROUTER_ENV, raising=False)
-    model_client = FakeRouterModelClient(
-        json.dumps(
-            {
-                "intent": "task",
-                "confidence": 0.95,
-                "task_type": "code_task",
-                "reason": "model route",
-            }
-        )
-    )
+    model = FakeRouterModel(_semantic_router_payload("response_only"))
 
     decision = route_message(
-        UserMessage(task_id="env-off", content="What is the latest Python release?"),
-        model_client=model_client,
+        UserMessage(task_id="semantic-router-v2", content="你好"),
+        model_client=model,
     )
 
-    assert model_client.calls == 0
-    assert decision.source == "deterministic"
-    assert decision.intent == "web_simple_inquiry"
+    assert decision.intent == "chat"
+    assert decision.source == "model"
+    assert decision.structured_route["route"] == "response_only"
+    assert model.calls == 1
+
+
+def test_route_message_does_not_call_classify_route_for_natural_language(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_classify_route(message):
+        raise AssertionError("classify_route must not be used by route_message")
+
+    monkeypatch.setattr("agent_service.router_v2.classify_route", fail_classify_route)
+    model = FakeRouterModel(_semantic_router_payload("response_only"))
+
+    decision = route_message(
+        UserMessage(task_id="no-keyword-router", content="可以跟我聊聊吗"),
+        model_client=model,
+    )
+
+    assert decision.intent == "chat"
+    assert model.calls == 1
+
+
+def test_route_message_model_failure_keeps_nonempty_message_in_chat_path() -> None:
+    decision = route_message(
+        UserMessage(task_id="router-model-missing", content="帮我做一下这个"),
+        model_client=None,
+    )
+
+    assert decision.intent == "chat"
+    assert decision.source == "fallback"
+    assert decision.should_clarify is False
+    assert decision.missing_inputs == []
+    assert decision.structured_route["route"] == "response_only"
 
 
 def test_route_message_malformed_model_output_falls_back_safely(
@@ -326,9 +380,11 @@ def test_route_message_malformed_model_output_falls_back_safely(
         model_client=model_client,
     )
 
-    assert model_client.calls == 1
+    assert model_client.calls == 2
     assert decision.source == "fallback"
-    assert decision.intent == "web_simple_inquiry"
+    assert decision.intent == "chat"
+    assert decision.missing_inputs == []
+    assert decision.structured_route["route"] == "response_only"
 
 
 def test_route_message_malformed_model_output_preserves_complex_choice_fallback(
@@ -345,13 +401,13 @@ def test_route_message_malformed_model_output_preserves_complex_choice_fallback(
         model_client=model_client,
     )
 
-    assert model_client.calls == 1
+    assert model_client.calls == 2
     assert decision.source == "fallback"
-    assert decision.intent == "web_complex_choice"
+    assert decision.intent == "chat"
     assert decision.missing_inputs == []
-    assert decision.legacy_route["intent"]["kind"] == "inquiry"
-    assert decision.legacy_route["inquiry"]["mode"] == "web_complex"
+    assert decision.legacy_route["intent"]["kind"] == "chat"
     assert decision.legacy_route["missing_inputs"] == []
+    assert decision.structured_route["route"] == "response_only"
 
 
 def test_route_message_invalid_model_payload_falls_back_safely(
@@ -374,9 +430,11 @@ def test_route_message_invalid_model_payload_falls_back_safely(
         model_client=model_client,
     )
 
-    assert model_client.calls == 1
+    assert model_client.calls == 2
     assert decision.source == "fallback"
-    assert decision.intent == "web_simple_inquiry"
+    assert decision.intent == "chat"
+    assert decision.missing_inputs == []
+    assert decision.structured_route["route"] == "response_only"
 
 
 def test_route_message_string_list_model_payload_falls_back_without_character_list(
@@ -400,10 +458,11 @@ def test_route_message_string_list_model_payload_falls_back_without_character_li
         model_client=model_client,
     )
 
-    assert model_client.calls == 1
+    assert model_client.calls == 2
     assert decision.source == "fallback"
-    assert decision.intent == "web_simple_inquiry"
+    assert decision.intent == "chat"
     assert decision.missing_inputs == []
+    assert decision.structured_route["route"] == "response_only"
 
 
 def test_route_message_string_bool_model_payload_falls_back_safely(
@@ -427,25 +486,18 @@ def test_route_message_string_bool_model_payload_falls_back_safely(
         model_client=model_client,
     )
 
-    assert model_client.calls == 1
+    assert model_client.calls == 2
     assert decision.source == "fallback"
-    assert decision.intent == "web_simple_inquiry"
+    assert decision.intent == "chat"
+    assert decision.missing_inputs == []
+    assert decision.structured_route["route"] == "response_only"
 
 
 def test_route_message_high_confidence_model_route_returns_model_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
-    model_client = FakeRouterModelClient(
-        json.dumps(
-            {
-                "intent": "task",
-                "confidence": 0.9,
-                "task_type": "code_task",
-                "reason": "model selected task",
-            }
-        )
-    )
+    model_client = FakeRouterModel(_semantic_router_payload("deep_planning"))
 
     decision = route_message(
         UserMessage(task_id="model-task", content="What is the latest Python release?"),
@@ -463,16 +515,11 @@ def test_model_route_payload_does_not_include_raw_local_paths(
 ) -> None:
     monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
     local_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
+    response = _semantic_router_payload("deep_planning")
+    response["reason"] = f"Route based on {local_path}"
+    response["toolCandidates"] = [f"inspect:{local_path}"]
     model_client = FakeRouterModelClient(
-        json.dumps(
-            {
-                "intent": "task",
-                "confidence": 0.9,
-                "task_type": "code_task",
-                "reason": f"Route based on {local_path}",
-                "tool_candidates": [f"inspect:{local_path}"],
-            }
-        )
+        json.dumps(response)
     )
 
     decision = route_message(
@@ -499,16 +546,10 @@ def test_model_route_missing_inputs_payload_does_not_include_raw_local_paths(
 ) -> None:
     monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
     local_path = r"D:\Software Project\Alita\python\agent_service\graph.py"
+    response = _semantic_router_payload("deep_planning")
+    response["missingInputs"] = [local_path]
     model_client = FakeRouterModelClient(
-        json.dumps(
-            {
-                "intent": "task",
-                "confidence": 0.9,
-                "task_type": "code_task",
-                "missing_inputs": [local_path],
-                "reason": "model selected task",
-            }
-        )
+        json.dumps(response)
     )
 
     decision = route_message(
@@ -533,16 +574,10 @@ def test_route_message_medium_confidence_model_route_asks_for_clarification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
-    model_client = FakeRouterModelClient(
-        json.dumps(
-            {
-                "intent": "task",
-                "confidence": 0.61,
-                "task_type": "code_task",
-                "reason": "model selected task but needs confirmation",
-            }
-        )
-    )
+    response = _semantic_router_payload("clarification_required", confidence=0.61)
+    response["requiresClarification"] = True
+    response["clarificationPrompt"] = "请确认你的意图。"
+    model_client = FakeRouterModel(response)
 
     decision = route_message(
         UserMessage(task_id="model-medium", content="Please handle the Python thing."),
@@ -560,19 +595,12 @@ def test_route_message_medium_confidence_model_route_asks_for_clarification(
     assert decision.legacy_route["missing_inputs"] == ["clarification"]
 
 
-def test_route_message_low_confidence_model_route_uses_deterministic_fallback(
+def test_route_message_low_confidence_model_route_does_not_use_deterministic_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
-    model_client = FakeRouterModelClient(
-        json.dumps(
-            {
-                "intent": "task",
-                "confidence": 0.3,
-                "task_type": "code_task",
-                "reason": "uncertain model route",
-            }
-        )
+    model_client = FakeRouterModel(
+        _semantic_router_payload("deep_planning", confidence=0.3)
     )
 
     decision = route_message(
@@ -581,15 +609,17 @@ def test_route_message_low_confidence_model_route_uses_deterministic_fallback(
     )
 
     assert model_client.calls == 1
-    assert decision.source == "fallback"
-    assert decision.intent == "web_simple_inquiry"
+    assert decision.source == "model"
+    assert decision.intent == "task"
 
 
-def test_route_message_protected_document_processing_does_not_call_model(
+def test_route_message_document_processing_uses_semantic_router(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
-    model_client = FakeRouterModelClient("not json")
+    response = _semantic_router_payload("deep_planning")
+    response["requiresFiles"] = True
+    model_client = FakeRouterModel(response)
 
     decision = route_message(
         UserMessage(
@@ -608,32 +638,32 @@ def test_route_message_protected_document_processing_does_not_call_model(
         model_client=model_client,
     )
 
-    assert model_client.calls == 0
-    assert decision.source == "deterministic"
+    assert model_client.calls == 1
+    assert decision.source == "model"
     assert decision.task_type == "document_processing"
 
 
-def test_route_message_protected_weather_route_does_not_call_model(
+def test_route_message_weather_route_uses_semantic_router(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
-    model_client = FakeRouterModelClient("not json")
+    model_client = FakeRouterModel(_semantic_router_payload("simple_tool_answer"))
 
     decision = route_message(
         UserMessage(task_id="weather", content="What's the weather in Seattle today?"),
         model_client=model_client,
     )
 
-    assert model_client.calls == 0
-    assert decision.source == "deterministic"
+    assert model_client.calls == 1
+    assert decision.source == "model"
     assert decision.intent == "web_simple_inquiry"
 
 
-def test_route_message_protected_inquiry_choice_does_not_call_model(
+def test_route_message_inquiry_choice_uses_semantic_router(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(STRUCTURED_ROUTER_ENV, "1")
-    model_client = FakeRouterModelClient("not json")
+    model_client = FakeRouterModel(_semantic_router_payload("research_planning"))
 
     decision = route_message(
         UserMessage(
@@ -644,6 +674,6 @@ def test_route_message_protected_inquiry_choice_does_not_call_model(
         model_client=model_client,
     )
 
-    assert model_client.calls == 0
-    assert decision.source == "deterministic"
+    assert model_client.calls == 1
+    assert decision.source == "model"
     assert decision.intent == "web_simple_inquiry"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from time import perf_counter
 
@@ -9,11 +9,16 @@ from pydantic import BaseModel, Field
 from agent_service.context_policy import budget_for_mode, select_memory_for_context
 from agent_service.goal_spec import GoalSpec, TaskType
 from agent_service.memory_store import MemoryRecord, MemoryStore, sanitize_memory_summary
+from agent_service.node_catalog import (
+    NodeCatalogSnapshot,
+    NodeDefinition,
+    NodePortDefinition,
+)
 from agent_service.runtime_events import utc_now_iso
 from agent_service.runtime_trace import RuntimeSpan, next_span_id, trace_id_for_run
 from agent_service.schemas import UserMessage
 from agent_service.tool_gateway import UnifiedToolGateway
-from agent_service.tool_protocol import UnifiedToolDefinition
+from agent_service.tool_protocol import UnifiedToolDefinition, equivalent_tool_ids
 from agent_service.tool_registry import ToolRegistry
 from agent_service.tool_resolver import resolve_tools_for_task
 
@@ -41,6 +46,19 @@ class ToolCapability(BaseModel):
     runtime: str | None = None
 
 
+class CatalogNodeSummary(BaseModel):
+    node_id: str
+    kind: str
+    display_name: str
+    category: str
+    capabilities: list[str] = Field(default_factory=list)
+    description: str
+    input_summary: list[str] = Field(default_factory=list)
+    output_summary: list[str] = Field(default_factory=list)
+    risk_level: str
+    availability: dict[str, str | None]
+
+
 class ContextBundle(BaseModel):
     project_path: str
     artifact_dir: str
@@ -48,6 +66,7 @@ class ContextBundle(BaseModel):
     task_type: TaskType
     attachments: list[AttachmentContext] = Field(default_factory=list)
     available_tools: list[ToolCapability] = Field(default_factory=list)
+    available_nodes: list[CatalogNodeSummary] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     memory_summaries: list[str] = Field(default_factory=list)
 
@@ -64,6 +83,7 @@ def build_context_bundle(
     memory_store: MemoryStore | None = None,
     context_mode: str = "planning",
     trace_span_sink: TraceSpanSink | None = None,
+    node_catalog: NodeCatalogSnapshot | None = None,
 ) -> ContextBundle:
     project_file = Path(project_path)
     budget = budget_for_mode(context_mode)
@@ -124,6 +144,7 @@ def build_context_bundle(
         external_tools or [],
         disabled_tool_ids or [],
     )
+    available_tool_ids = _expanded_tool_ids(tool.tool_id for tool in available_tools)
     return ContextBundle(
         project_path=project_path,
         artifact_dir=str(project_file.parent / "artifacts"),
@@ -140,12 +161,90 @@ def build_context_bundle(
             for attachment in message.attachments
         ],
         available_tools=available_tools,
+        available_nodes=(
+            _catalog_node_summaries(
+                node_catalog,
+                available_tool_ids=available_tool_ids,
+                disabled_tool_ids=disabled_tool_ids or [],
+            )
+            if node_catalog is not None
+            else []
+        ),
         constraints=list(goal_spec.constraints),
         memory_summaries=[
             sanitize_memory_summary(record.summary, max_chars=budget.max_chars)
             for record in selected_memory
         ],
     )
+
+
+def _catalog_node_summaries(
+    node_catalog: NodeCatalogSnapshot,
+    *,
+    available_tool_ids: set[str],
+    disabled_tool_ids: list[str],
+) -> list[CatalogNodeSummary]:
+    return [
+        _catalog_node_summary(node)
+        for node in node_catalog.nodes
+        if _catalog_node_is_available_for_context(
+            node,
+            available_tool_ids=available_tool_ids,
+            disabled_tool_ids=disabled_tool_ids,
+        )
+    ]
+
+
+def _catalog_node_is_available_for_context(
+    node: NodeDefinition,
+    *,
+    available_tool_ids: set[str],
+    disabled_tool_ids: list[str],
+) -> bool:
+    if node.availability.status != "available":
+        return False
+    if node.execution.type != "tool":
+        return True
+    disabled = _expanded_tool_ids(disabled_tool_ids)
+    if node.source == "system":
+        return not (
+            equivalent_tool_ids(node.execution.tool_id or node.node_id) & disabled
+        )
+
+    tool_id = node.execution.tool_id
+    if not tool_id:
+        return False
+
+    tool_equivalents = equivalent_tool_ids(tool_id)
+    return bool(tool_equivalents & available_tool_ids) and not (
+        tool_equivalents & disabled
+    )
+
+
+def _catalog_node_summary(node: NodeDefinition) -> CatalogNodeSummary:
+    return CatalogNodeSummary(
+        node_id=node.node_id,
+        kind=node.kind,
+        display_name=node.display_name,
+        category=node.category,
+        capabilities=list(node.capabilities),
+        description=node.description,
+        input_summary=_port_summary(node.input_ports),
+        output_summary=_port_summary(node.output_ports),
+        risk_level=node.permissions.risk_level,
+        availability=node.availability.model_dump(),
+    )
+
+
+def _port_summary(ports: list[NodePortDefinition]) -> list[str]:
+    return [_format_port_summary(port) for port in ports]
+
+
+def _format_port_summary(port: NodePortDefinition) -> str:
+    attributes = [port.data_type, "required" if port.required else "optional"]
+    if port.multiple:
+        attributes.append("multiple")
+    return f"{port.label} ({', '.join(attributes)})"
 
 
 def _tool_capabilities_from_registry(tool_registry: ToolRegistry) -> list[ToolCapability]:
@@ -185,17 +284,25 @@ def _merge_tool_capabilities(
     external_tools: list[ToolCapability],
     disabled_tool_ids: list[str],
 ) -> list[ToolCapability]:
-    disabled = set(disabled_tool_ids)
+    disabled = _expanded_tool_ids(disabled_tool_ids)
     merged: list[ToolCapability] = []
     seen: set[str] = set()
     for tool in [*base_tools, *external_tools]:
-        if tool.tool_id in disabled:
+        tool_equivalents = equivalent_tool_ids(tool.tool_id)
+        if tool_equivalents & disabled:
             continue
-        if tool.tool_id in seen:
+        if tool_equivalents & seen:
             continue
-        seen.add(tool.tool_id)
+        seen.update(tool_equivalents)
         merged.append(tool)
     return merged
+
+
+def _expanded_tool_ids(tool_ids: Iterable[str]) -> set[str]:
+    expanded: set[str] = set()
+    for tool_id in tool_ids:
+        expanded.update(equivalent_tool_ids(str(tool_id)))
+    return expanded
 
 
 def _operation_names_from_schema(schema: dict) -> list[str]:

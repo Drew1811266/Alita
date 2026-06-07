@@ -1,9 +1,11 @@
 use std::{
+    io::{Read, Write},
     net::{SocketAddr, TcpStream},
     sync::Mutex,
     time::Duration,
 };
 
+use serde::Deserialize;
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent},
@@ -42,6 +44,12 @@ impl Default for AgentSidecarState {
 pub enum AgentSidecarStartup {
     AlreadyRunning,
     Spawned { pid: u32 },
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentHealthResponse {
+    name: Option<String>,
+    status: Option<String>,
 }
 
 pub fn agent_base_url() -> &'static str {
@@ -88,7 +96,7 @@ pub fn dev_sidecar_command() -> SidecarCommand {
 }
 
 pub fn start_agent_sidecar<R: Runtime>(app: &AppHandle<R>) -> Result<AgentSidecarStartup, String> {
-    if is_agent_port_open(Duration::from_millis(250)) {
+    if is_agent_sidecar_running(Duration::from_millis(250)) {
         return Ok(AgentSidecarStartup::AlreadyRunning);
     }
 
@@ -163,7 +171,37 @@ pub fn stop_agent_sidecar<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-fn is_agent_port_open(timeout: Duration) -> bool {
+fn is_agent_sidecar_running(timeout: Duration) -> bool {
     let address = SocketAddr::from(([127, 0, 0, 1], AGENT_PORT));
-    TcpStream::connect_timeout(&address, timeout).is_ok()
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, timeout) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+
+    let request = b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    if stream.write_all(request).is_err() {
+        return false;
+    }
+
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+    is_agent_health_response(&response)
+}
+
+pub fn is_agent_health_response(response: &str) -> bool {
+    if !response.starts_with("HTTP/1.1 200 ") && !response.starts_with("HTTP/1.0 200 ") {
+        return false;
+    }
+
+    let Some((_, body)) = response.split_once("\r\n\r\n") else {
+        return false;
+    };
+    let Ok(payload) = serde_json::from_str::<AgentHealthResponse>(body.trim()) else {
+        return false;
+    };
+    payload.name.as_deref() == Some(PACKAGED_SIDECAR_NAME)
+        && payload.status.as_deref() == Some("ok")
 }

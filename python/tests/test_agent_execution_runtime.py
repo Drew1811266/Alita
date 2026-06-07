@@ -304,12 +304,12 @@ def test_execution_summary_marks_failed_and_collects_recovery_actions() -> None:
 def test_execution_review_approves_completed_result_with_expected_artifact() -> None:
     compiled = _execution_ready(
         _compile(
-            _deep_graph(
-                ["write"],
-                capabilities_by_step={"write": ["document.write"]},
-                expected_artifact_path="artifacts/report.md",
+                _deep_graph(
+                    ["write"],
+                    capabilities_by_step={"write": ["document.render.typst_pdf"]},
+                    expected_artifact_path="artifacts/report.md",
+                )
             )
-        )
     )
     result = _completed_result(compiled, artifact_refs=["artifacts/report.md"])
 
@@ -325,12 +325,12 @@ def test_execution_review_approves_completed_result_with_expected_artifact() -> 
 def test_execution_review_approves_expanded_template_expected_artifact() -> None:
     compiled = _execution_ready(
         _compile(
-            _deep_graph(
-                ["write"],
-                capabilities_by_step={"write": ["document.write"]},
-                expected_artifact_path=(
-                    "artifacts/converted/{index:02d}-{attachment_stem}.md"
-                ),
+                _deep_graph(
+                    ["write"],
+                    capabilities_by_step={"write": ["document.render.typst_pdf"]},
+                    expected_artifact_path=(
+                        "artifacts/converted/{index:02d}-{attachment_stem}.md"
+                    ),
             )
         )
     )
@@ -349,12 +349,12 @@ def test_execution_review_approves_expanded_template_expected_artifact() -> None
 def test_execution_review_fails_when_template_expected_artifact_has_no_match() -> None:
     compiled = _execution_ready(
         _compile(
-            _deep_graph(
-                ["write"],
-                capabilities_by_step={"write": ["document.write"]},
-                expected_artifact_path=(
-                    "artifacts/converted/{index:02d}-{attachment_stem}.md"
-                ),
+                _deep_graph(
+                    ["write"],
+                    capabilities_by_step={"write": ["document.render.typst_pdf"]},
+                    expected_artifact_path=(
+                        "artifacts/converted/{index:02d}-{attachment_stem}.md"
+                    ),
             )
         )
     )
@@ -390,12 +390,12 @@ def test_execution_review_requires_repair_for_recovery_suggestion() -> None:
 def test_execution_review_fails_when_expected_artifact_missing() -> None:
     compiled = _execution_ready(
         _compile(
-            _deep_graph(
-                ["write"],
-                capabilities_by_step={"write": ["document.write"]},
-                expected_artifact_path="artifacts/report.md",
+                _deep_graph(
+                    ["write"],
+                    capabilities_by_step={"write": ["document.render.typst_pdf"]},
+                    expected_artifact_path="artifacts/report.md",
+                )
             )
-        )
     )
     result = _completed_result(compiled, artifact_refs=["artifacts/other.md"])
 

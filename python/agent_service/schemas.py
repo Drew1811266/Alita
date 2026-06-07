@@ -16,11 +16,22 @@ class Attachment(BaseModel):
     mime_type: str
 
 
+class ConversationTurn(BaseModel):
+    role: Literal["user", "assistant", "system"]
+    content: str
+
+
 class UserMessage(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     task_id: str
     content: str
     attachments: list[Attachment] = Field(default_factory=list)
     model_session_id: str | None = None
+    conversation_history: list[ConversationTurn] = Field(
+        default_factory=list,
+        alias="conversationHistory",
+    )
 
 
 class AgentMessageRequest(UserMessage):
@@ -39,6 +50,7 @@ class AgentMessageRequest(UserMessage):
             content=self.content,
             attachments=list(self.attachments),
             model_session_id=self.model_session_id,
+            conversation_history=list(self.conversation_history),
         )
 
 

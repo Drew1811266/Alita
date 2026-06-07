@@ -117,6 +117,33 @@ describe("runNodeGraphStream", () => {
     );
   });
 
+  it("posts recent conversation history when submitting a user message", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await submitUserMessage({
+      taskId: "task-1",
+      content: "继续按刚才的预算来。",
+      attachments: [],
+      conversationHistory: [
+        { role: "user", content: "预算是一万元。" },
+        { role: "assistant", content: "请补充用途。" },
+      ],
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({
+      task_id: "task-1",
+      content: "继续按刚才的预算来。",
+      conversation_history: [
+        { role: "user", content: "预算是一万元。" },
+        { role: "assistant", content: "请补充用途。" },
+      ],
+    });
+  });
+
   it("posts research choices to the sidecar command endpoint", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify([]), {

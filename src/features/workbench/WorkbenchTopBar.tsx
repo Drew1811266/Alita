@@ -4,6 +4,7 @@ type WorkbenchTopBarProps = {
   saving: boolean;
   onSave(): void;
   onSaveAs(): void;
+  onOpenNodeCatalog(): void;
   onOpenPreferences(): void;
 };
 
@@ -13,6 +14,7 @@ export function WorkbenchTopBar({
   saving,
   onSave,
   onSaveAs,
+  onOpenNodeCatalog,
   onOpenPreferences,
 }: WorkbenchTopBarProps) {
   return (
@@ -39,6 +41,13 @@ export function WorkbenchTopBar({
           type="button"
         >
           另存为
+        </button>
+        <button
+          className="secondaryButton"
+          onClick={onOpenNodeCatalog}
+          type="button"
+        >
+          节点库
         </button>
         <button
           className="secondaryButton"
