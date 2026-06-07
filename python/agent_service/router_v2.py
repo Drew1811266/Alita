@@ -17,6 +17,10 @@ from agent_service.intent import (
 from agent_service.model_client import ChatMessage as ModelChatMessage
 from agent_service.model_policy import ModelCallPolicy
 from agent_service.schemas import UserMessage
+from agent_service.semantic_router import (
+    SemanticRouteDecision,
+    route_semantically,
+)
 from agent_service.tool_router import route_tool_for_message
 
 
@@ -69,6 +73,7 @@ class RouterV2Decision(BaseModel):
     should_clarify: bool = False
     clarification_prompt: str | None = None
     legacy_route: dict[str, Any] = Field(default_factory=dict)
+    structured_route: dict[str, Any] = Field(default_factory=dict)
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -82,6 +87,7 @@ class RouterV2Decision(BaseModel):
             "source": self.source,
             "shouldClarify": self.should_clarify,
             "clarificationPrompt": _safe_optional_text(self.clarification_prompt),
+            "semanticRoute": _scrub_payload(dict(self.structured_route)),
         }
 
 
@@ -98,6 +104,12 @@ def deterministic_route(
     message: UserMessage,
     inquiry_choice: InquiryChoice | None = None,
 ) -> RouterV2Decision:
+    """Legacy compatibility helper.
+
+    This function must not be called by RuntimeEngine or route_message() for
+    natural-language intent routing. It exists only for older tests and migration
+    diagnostics while Semantic Router becomes the default route source.
+    """
     decision = classify_route(message)
     goal_spec = parse_goal_spec(message)
     intent = compatible_intent(
@@ -134,35 +146,81 @@ def route_message(
     *,
     inquiry_choice: InquiryChoice | None = None,
     model_client: RouterModelClient | None = None,
+    current_graph: Any | None = None,
+    pending_choice: dict[str, Any] | None = None,
+    available_capabilities: list[str] | None = None,
 ) -> RouterV2Decision:
-    deterministic = deterministic_route(message, inquiry_choice=inquiry_choice)
-    if not structured_router_enabled():
-        return deterministic
-    if _is_protected_fast_path(message, deterministic, inquiry_choice):
-        return deterministic
-    if model_client is None:
-        return _fallback_decision(deterministic, "model router unavailable")
+    semantic = route_semantically(
+        message,
+        model_client=model_client,
+        current_graph=current_graph,
+        pending_choice=pending_choice,
+        available_capabilities=available_capabilities,
+    )
+    return _router_v2_from_semantic_decision(
+        semantic,
+        inquiry_choice=inquiry_choice,
+    )
 
-    try:
-        response = model_client.chat(
-            _build_model_router_messages(message),
-            temperature=0.0,
-            max_tokens=512,
-        )
-        model_decision = parse_model_route_response(
-            response,
-            fallback=deterministic,
-        )
-    except Exception:
-        return _fallback_decision(deterministic, "model router failed")
 
-    if model_decision.source == "fallback":
-        return model_decision
-    if model_decision.confidence < LOW_CONFIDENCE_THRESHOLD:
-        return _fallback_decision(deterministic, "model router confidence too low")
-    if model_decision.confidence < HIGH_CONFIDENCE_THRESHOLD:
-        return _clarification_decision_from_model_decision(model_decision)
-    return model_decision
+def _router_v2_from_semantic_decision(
+    semantic: SemanticRouteDecision,
+    *,
+    inquiry_choice: InquiryChoice | None,
+) -> RouterV2Decision:
+    intent = _intent_from_semantic_route(semantic.route, inquiry_choice=inquiry_choice)
+    missing_inputs = list(semantic.missing_inputs)
+    if semantic.requires_clarification and not missing_inputs:
+        missing_inputs = ["clarification"]
+    reason = _safe_reason(semantic.reason)
+    return RouterV2Decision(
+        intent=intent,
+        confidence=semantic.confidence,
+        task_type=_task_type_from_semantic(semantic),
+        missing_inputs=missing_inputs,
+        required_permissions=[],
+        tool_candidates=list(semantic.tool_candidates),
+        reason=reason,
+        source="model" if semantic.confidence > 0 else "fallback",
+        should_clarify=semantic.requires_clarification or intent == "missing_input",
+        clarification_prompt=semantic.clarification_prompt,
+        legacy_route=_legacy_route_for_router_decision(intent, reason, missing_inputs),
+        structured_route=semantic.to_payload(),
+    )
+
+
+def _intent_from_semantic_route(
+    route: str,
+    *,
+    inquiry_choice: InquiryChoice | None,
+) -> AgentRouteIntent:
+    if route in {"response_only", "local_answer"}:
+        return "chat" if route == "response_only" else "local_inquiry"
+    if route == "simple_tool_answer":
+        return "web_simple_inquiry"
+    if route == "web_answer":
+        return "web_simple_inquiry"
+    if route == "research_planning":
+        if inquiry_choice == "quick_answer":
+            return "web_simple_inquiry"
+        return "web_complex_research_flow"
+    if route == "deep_planning":
+        return "task"
+    if route == "graph_feedback":
+        return "task"
+    return "missing_input"
+
+
+def _task_type_from_semantic(semantic: SemanticRouteDecision) -> TaskType:
+    if semantic.requires_files:
+        return "document_processing"
+    if semantic.route in {"web_answer", "research_planning"}:
+        return "research"
+    if semantic.route in {"response_only", "local_answer"}:
+        return "chat"
+    if semantic.route == "deep_planning":
+        return "unknown"
+    return "chat"
 
 
 def compatible_intent(
